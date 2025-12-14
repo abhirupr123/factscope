@@ -1,0 +1,95 @@
+.factscope-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 4px 8px;
+  color: #fff;
+  font-weight: 700;
+  border-radius: 12px;
+  font-size: 12px;
+  z-index: 99999;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(3px);
+}
+
+.factscope-popup {
+  position: absolute;
+  z-index: 999999;
+  width: 340px;
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 14px;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.28);
+  padding: 14px;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+  backdrop-filter: blur(6px);
+}
+
+.factscope-popup .tl-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.factscope-popup .logo-dot {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  letter-spacing: 0.5px;
+}
+
+.factscope-popup .tl-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .tl-score {
+  font-size: 12px;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.factscope-popup .tl-close {
+  margin-left: auto;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.factscope-popup .tl-close:hover {
+  background: #e2e8f0;
+}
+
+.factscope-popup .tl-body {
+  margin-bottom: 10px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.factscope-popup .tl-evidence strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.factscope-popup .tl-evidence ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #475569;
+}

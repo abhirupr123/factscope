@@ -1,0 +1,25 @@
+# General env and secrets
+.env
+.env.local
+*.pem
+secrets.env
+
+# Python caches and logs
+__pycache__/
+*.pyc
+*cache*
+logs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Frontend build artifacts
+node_modules/
+dist/
+build/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
