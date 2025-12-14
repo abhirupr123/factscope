@@ -61,6 +61,7 @@ Unlike many “AI vs AI” detection tools, FactScope:
 
 ## 🏗️ Architecture Overview
 
+```
 Browser Extension
 |
 v
@@ -71,7 +72,7 @@ FastAPI Backend (Python)
 +--> AWS Bedrock (LLM explanations)
 |
 +--> AWS Textract / Rekognition / Transcribe (media processing)
-
+```
 
 ---
 
@@ -98,7 +99,7 @@ FastAPI Backend (Python)
 
 ## 📂 Repository Structure (Example)
 
-
+```
 ├── frontend/ # Browser extension code
 │   ├── manifest.json
 │   ├── popup.html
@@ -118,7 +119,7 @@ FastAPI Backend (Python)
 │ ├── main.py
 │ └── config.py
 ├── README.md
-
+```
 
 ---
 
@@ -127,20 +128,25 @@ FastAPI Backend (Python)
 1. Start Elasticsearch (local or cloud).
 2. Configure AWS credentials in `config.py`.
 3. Run backend:
-   ```bash
+   ```
    uvicorn main:app --reload
+   ```
 
 
 Load the browser extension via chrome://extensions.
 
 Open any news site and click Scan current tab.
 
-🎯 Hackathon Context
+---
 
-This project was built as part of Hack-the-Impossible / Hack-to-the-Future, with over 7,000+ participants.
+## 🎯 Hackathon Context
+
+This project was built as part of Elastic Forge the Future hackathon 2025, with over 7,000+ participants.
 FactScope focuses on future-ready digital trust, addressing misinformation challenges that will only intensify in the coming decade.
 
-🌱 Future Improvements
+---
+
+## 🌱 Future Improvements
 
 Native mobile integration (SMS & messaging apps)
 
@@ -151,7 +157,3 @@ Enterprise phishing protection
 Kibana dashboards for trend monitoring
 
 Stronger media deepfake detection
-
-🙌 Acknowledgements
-
-Built during a hackathon using Elasticsearch and AWS AI services, with a focus on real-world impact, explainability, and usability.
