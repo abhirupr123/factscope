@@ -7,18 +7,26 @@ metadata completeness, and known spam/phishing signals.
 from urllib.parse import urlparse
 
 REPUTABLE_DOMAINS = frozenset({
-    # News
+    # International news
     "bbc.com", "bbc.co.uk", "nytimes.com", "reuters.com", "apnews.com",
     "theguardian.com", "washingtonpost.com", "npr.org", "aljazeera.com",
-    "economist.com", "ft.com", "bloomberg.com", "wsj.com",
+    "economist.com", "ft.com", "bloomberg.com", "wsj.com", "cnn.com",
+    "abcnews.go.com", "nbcnews.com", "cbsnews.com", "forbes.com",
+    # Indian news
+    "hindustantimes.com", "timesofindia.indiatimes.com", "ndtv.com",
+    "thehindu.com", "indianexpress.com", "livemint.com", "scroll.in",
+    "thewire.in", "news18.com", "deccanherald.com", "telegraphindia.com",
+    "business-standard.com", "moneycontrol.com",
     # Science / health
     "nature.com", "science.org", "who.int", "nih.gov", "cdc.gov",
     # Reference / govt
     "wikipedia.org", "britannica.com", "un.org", "europa.eu",
-    "gov.uk", "usa.gov", "india.gov.in",
+    "gov.uk", "usa.gov", "india.gov.in", "pib.gov.in",
     # Tech
     "github.com", "stackoverflow.com", "developer.mozilla.org",
     "docs.python.org", "learn.microsoft.com",
+    # Entertainment / media
+    "imdb.com", "rottentomatoes.com", "youtube.com",
 })
 
 SUSPICIOUS_TLDS = frozenset({

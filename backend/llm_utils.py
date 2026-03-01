@@ -14,23 +14,26 @@ from config import (
 logger = logging.getLogger(__name__)
 
 STRUCTURED_SYSTEM_PROMPT = """\
-You are FactScope, a content-authenticity analyst.
+You are FactScope, a content-authenticity analyst. Today's date is {today}.
 
 Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
-{
+{{
   "trust_score": <integer 0-100>,
   "verdict": "<authentic|misleading|ai_generated|spam|phishing|suspicious>",
   "explanation": "<MAX 2 short sentences. Be direct and insightful.>",
   "evidence": ["<short point 1>", "<short point 2>"]
-}
+}}
 
 Scoring: 80-100 authentic, 60-79 minor concerns, 40-59 mixed, 20-39 red flags, 0-19 clearly fake/spam.
 
-Rules:
+CRITICAL RULES:
+- Focus on SOURCE CREDIBILITY, WRITING STYLE, STRUCTURE, and METADATA. Fact verification of specific claims is handled separately by FactScope's fact-check engine.
+- Judge by: Is this from a known publication? Is the writing professional? Are there spam/phishing patterns? Does it look AI-generated stylistically? Is the metadata consistent?
+- Do NOT attempt to verify whether specific current-event claims are true or false from your training data alone — that is unreliable. Instead assess whether the source and presentation are trustworthy.
 - Keep explanation under 40 words and each evidence item under 15 words. Max 3 evidence items.
-- For well-known reputable sites (news outlets, Wikipedia, IMDb, government sites, etc.), be brief and confident. Do NOT over-explain why a trusted source looks trusted — that is obvious to the user.
-- Focus evidence on things the user might NOT already know. Never state the obvious (e.g. don't say "this is IMDb" when the user is on IMDb).
-- Be most detailed when content is genuinely suspicious, misleading, or AI-generated — that is where your analysis adds real value."""
+- For well-known reputable sites, be brief and confident.
+- Focus evidence on things the user might NOT already know.
+- Be most detailed when content is genuinely suspicious, misleading, or AI-generated."""
 
 FREETEXT_SYSTEM_PROMPT = """\
 You are FactScope, an expert content-authenticity analyst. \
@@ -78,16 +81,19 @@ def _call_llm(
     media_data: bytes = None,
     media_type: str = None,
     min_tokens: int = 0,
+    model_override: str = None,
 ) -> str:
     """Send a prompt to the configured LLM provider and return the raw text response.
     min_tokens ensures the max_tokens sent to the provider is at least this value.
+    model_override lets callers use a specific model (e.g. cheaper model for simple tasks).
     """
     provider = LLM_PROVIDER
     max_tokens = max(DEFAULT_MAX_TOKENS, min_tokens)
-    logger.info("LLM call via provider=%s has_media=%s max_tokens=%d", provider, media_data is not None, max_tokens)
+    logger.info("LLM call via provider=%s has_media=%s max_tokens=%d model=%s",
+                provider, media_data is not None, max_tokens, model_override or "default")
 
     if provider == "gemini":
-        return _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens)
+        return _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override)
     elif provider == "openai":
         return _call_openai(system_prompt, user_content, media_data, media_type, max_tokens)
     elif provider == "bedrock":
@@ -98,18 +104,27 @@ def _call_llm(
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
-def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens):
+def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override=None):
     import google.generativeai as genai
 
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        system_instruction=system_prompt,
-        generation_config=genai.GenerationConfig(
+    model_name = model_override or GEMINI_MODEL
+    is_gemma = "gemma" in model_name.lower()
+
+    model_kwargs = {
+        "model_name": model_name,
+        "generation_config": genai.GenerationConfig(
             temperature=DEFAULT_TEMPERATURE,
             max_output_tokens=max_tokens,
         ),
-    )
+    }
+    if not is_gemma:
+        model_kwargs["system_instruction"] = system_prompt
+
+    model = genai.GenerativeModel(**model_kwargs)
+
+    if is_gemma and system_prompt:
+        user_content = f"[INSTRUCTIONS]\n{system_prompt}\n\n[CONTENT]\n{user_content}"
 
     parts = [user_content]
     if media_data and media_type and media_type.startswith("image/"):
@@ -197,8 +212,10 @@ def get_structured_analysis(
 ) -> dict:
     """Return a dict with trust_score, verdict, explanation, evidence."""
     try:
+        from datetime import date
+        prompt = STRUCTURED_SYSTEM_PROMPT.format(today=date.today().isoformat())
         raw_text = _call_llm(
-            STRUCTURED_SYSTEM_PROMPT, content, media_data, media_type,
+            prompt, content, media_data, media_type,
             min_tokens=2048,
         )
         return _parse_structured_response(raw_text)

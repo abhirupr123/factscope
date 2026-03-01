@@ -5,7 +5,7 @@ python-multipart>=0.0.18
 requests>=2.32.0
 beautifulsoup4>=4.12.0
 PyMuPDF>=1.25.0
-elasticsearch>=8.17.0
+feedparser>=6.0.0
 
 # LLM providers (install the one you need, or all three)
 google-generativeai>=0.8.0

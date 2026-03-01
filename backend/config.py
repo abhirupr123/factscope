@@ -41,7 +41,5 @@ MULTIMODAL_MODEL_ID = os.getenv("MULTIMODAL_MODEL_ID", "anthropic.claude-3-5-son
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "500"))
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.2"))
 
-# ── Elasticsearch ─────────────────────────────────────────────────────────────
-ELASTIC_URL = os.getenv("ELASTIC_URL")
-ELASTIC_INDEX = os.getenv("ELASTIC_INDEX", "fake_content")
-ELASTIC_API_KEY = os.getenv("ELASTIC_API_KEY")
+# ── Google Fact Check API ─────────────────────────────────────────────────────
+GOOGLE_FACTCHECK_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY")

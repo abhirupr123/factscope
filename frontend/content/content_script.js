@@ -107,11 +107,69 @@
     return (lines || []).join('\n').substring(0, 3000);
   }
 
+  /* ── Video detection ───────────────────────────────────────────────── */
+
+  const AI_VIDEO_DOMAINS = ['runway', 'runwayml', 'pika', 'sora', 'synthesia', 'heygen', 'colossyan', 'deepbrain', 'd-id'];
+
+  function extractVideoInfo() {
+    const url = window.location.href;
+    const hostname = window.location.hostname;
+
+    let videoInfo = null;
+
+    // YouTube page
+    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+      videoInfo = {
+        platform: 'youtube',
+        title: document.querySelector('meta[name="title"]')?.content || document.title,
+        channel: document.querySelector('[itemprop="author"] link[itemprop="name"]')?.content
+          || document.querySelector('#channel-name a')?.textContent?.trim() || null,
+        description: document.querySelector('meta[name="description"]')?.content || null,
+      };
+    }
+
+    // Vimeo page
+    if (hostname.includes('vimeo.com')) {
+      videoInfo = {
+        platform: 'vimeo',
+        title: document.title,
+        channel: document.querySelector('[itemprop="author"]')?.textContent?.trim() || null,
+        description: document.querySelector('meta[name="description"]')?.content || null,
+      };
+    }
+
+    // AI video platform detection
+    if (AI_VIDEO_DOMAINS.some((d) => hostname.includes(d))) {
+      videoInfo = videoInfo || { platform: 'ai_video', title: document.title };
+      videoInfo.ai_platform = true;
+      videoInfo.platform_name = AI_VIDEO_DOMAINS.find((d) => hostname.includes(d));
+    }
+
+    // Embedded videos on any page
+    if (!videoInfo) {
+      const iframes = document.querySelectorAll('iframe[src]');
+      for (const iframe of iframes) {
+        const src = iframe.src || '';
+        if (src.includes('youtube.com') || src.includes('vimeo.com')) {
+          videoInfo = { platform: 'embedded', embed_src: src.substring(0, 200) };
+          break;
+        }
+      }
+      const videoEls = document.querySelectorAll('video[src], video source[src]');
+      if (!videoInfo && videoEls.length > 0) {
+        videoInfo = { platform: 'html5_video', video_count: videoEls.length };
+      }
+    }
+
+    return videoInfo;
+  }
+
   /* ── Full page extraction ─────────────────────────────────────────── */
 
   function extractPageContent() {
     const metadata = extractMetadata();
     const text = extractArticleBody();
+    const videoInfo = extractVideoInfo();
 
     const links = [
       ...new Set(
@@ -128,6 +186,7 @@
       text,
       links,
       metadata,
+      video_info: videoInfo,
       sample_img: null,
     };
   }
@@ -191,6 +250,70 @@
     `);
   }
 
+  const FC_STATUS_ICONS = {
+    verified: '\u2714',
+    disputed: '\u2716',
+    mixed: '\u26A0',
+    no_fact_check_found: '\u2022',
+  };
+
+  const FC_STATUS_LABELS = {
+    verified: 'Verified',
+    disputed: 'Disputed',
+    mixed: 'Mixed',
+  };
+
+  const CORR_ICONS = {
+    widely_reported: '\u2714',
+    multiple_sources: '\u2714',
+    lightly_reported: '\u2139',
+    not_corroborated: '\u26A0',
+  };
+
+  const CORR_LABELS = {
+    widely_reported: 'Widely reported',
+    multiple_sources: 'Multiple sources',
+    lightly_reported: 'Lightly reported',
+    not_corroborated: 'Not corroborated',
+  };
+
+  function buildFactChecksHTML(factChecks) {
+    if (!factChecks || factChecks.length === 0) return '';
+
+    const items = factChecks.map((fc) => {
+      const hasFactCheck = fc.status && fc.status !== 'no_fact_check_found';
+      const corr = fc.corroboration || 'not_corroborated';
+      const sourceCount = fc.source_count || 0;
+
+      let primaryClass, primaryIcon, primaryLabel, secondaryHTML;
+
+      if (hasFactCheck) {
+        primaryClass = `fs-claim-${fc.status.replace(/_/g, '-')}`;
+        primaryIcon = FC_STATUS_ICONS[fc.status] || '\u2022';
+        primaryLabel = FC_STATUS_LABELS[fc.status] || fc.status;
+        const sourceLink = fc.source_url && fc.source
+          ? ` <a class="fs-claim-source" href="${fc.source_url}" target="_blank" rel="noopener">${fc.source}</a>`
+          : (fc.source ? ` <span class="fs-claim-source">${fc.source}</span>` : '');
+        secondaryHTML = sourceLink;
+        if (sourceCount > 0) {
+          secondaryHTML += ` <span class="fs-corr-count">${sourceCount} source${sourceCount !== 1 ? 's' : ''}</span>`;
+        }
+      } else {
+        primaryClass = `fs-claim-${corr.replace(/_/g, '-')}`;
+        primaryIcon = CORR_ICONS[corr] || '\u2022';
+        primaryLabel = CORR_LABELS[corr] || corr;
+        if (sourceCount > 0) {
+          primaryLabel += ` (${sourceCount} source${sourceCount !== 1 ? 's' : ''})`;
+        }
+        secondaryHTML = '';
+      }
+
+      return `<div class="fs-factcheck-item ${primaryClass}"><span class="fs-claim-icon">${primaryIcon}</span><div class="fs-claim-body"><span class="fs-claim-text">${fc.claim}</span><div class="fs-claim-meta"><span class="fs-claim-badge">${primaryLabel}</span>${secondaryHTML}</div></div></div>`;
+    }).join('');
+
+    return `<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div>${items}</div>`;
+  }
+
   function showResultPanel(result) {
     const score = result.trust_score;
     const color = scoreColor(score);
@@ -207,12 +330,13 @@
       ? `<div class="fs-source">${[sourceInfo.site_name, sourceInfo.author, sourceInfo.publish_date].filter(Boolean).join(' &middot; ')}</div>`
       : '';
 
-    // Structural signals -- only show notable ones (|delta| >= 5), in plain English
+    const factChecksHTML = buildFactChecksHTML(result.fact_checks);
+
     const notableSignals = (result.structural_signals || [])
       .filter((s) => Math.abs(s.delta) >= 5)
       .map((s) => {
-        const icon = s.delta > 0 ? '\u2714' : '\u26A0';
-        return `<li>${icon} ${s.detail}</li>`;
+        const sIcon = s.delta > 0 ? '\u2714' : '\u26A0';
+        return `<li>${sIcon} ${s.detail}</li>`;
       })
       .join('');
 
@@ -238,6 +362,7 @@
       <div class="fs-divider"></div>
       <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
       ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">Supporting evidence</div><ul>${evidenceItems}</ul></div>` : ''}
+      ${factChecksHTML}
       ${signalsHTML}
       <div class="fs-footer">Scanned by FactScope</div>
     `);

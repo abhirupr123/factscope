@@ -3,6 +3,8 @@
 .env.local
 *.pem
 secrets.env
+gcp-service-account.json
+*-service-account*.json
 
 # Python caches and logs
 __pycache__/
