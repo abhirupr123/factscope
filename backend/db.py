@@ -85,6 +85,20 @@ def init_db():
                 INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
             END;
 
+            CREATE TABLE IF NOT EXISTS image_scans (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_url           TEXT,
+                url_hash            TEXT,
+                authenticity_score  INTEGER,
+                verdict             TEXT,
+                explanation         TEXT,
+                evidence            TEXT,
+                claim_analysis      TEXT,
+                timestamp           TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_image_scans_url_hash ON image_scans(url_hash);
+
             CREATE TABLE IF NOT EXISTS domains (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 domain          TEXT UNIQUE NOT NULL,
@@ -217,6 +231,90 @@ def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
     finally:
         conn.close()
     return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Image scan storage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _url_hash(url: str) -> str:
+    import hashlib
+    return hashlib.sha256(url.encode()).hexdigest()[:32]
+
+
+def store_image_scan(image_url: str, result: dict):
+    """Store an image verification result for caching."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO image_scans
+               (image_url, url_hash, authenticity_score, verdict,
+                explanation, evidence, claim_analysis, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                image_url,
+                _url_hash(image_url),
+                result.get("authenticity_score"),
+                result.get("verdict"),
+                result.get("explanation"),
+                json.dumps(result.get("evidence", [])),
+                json.dumps(result.get("claim_analysis")) if result.get("claim_analysis") else None,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to store image scan: %s", exc)
+    finally:
+        conn.close()
+
+
+def find_image_scan(image_url: str, max_age_hours: int = 24) -> dict | None:
+    """Return cached image scan if it exists and isn't too old."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM image_scans WHERE url_hash = ? ORDER BY timestamp DESC LIMIT 1",
+            (_url_hash(image_url),),
+        ).fetchone()
+        if row:
+            doc = dict(row)
+            scan_time = datetime.fromisoformat(doc["timestamp"])
+            age = (datetime.now(timezone.utc) - scan_time).total_seconds() / 3600
+            if age > max_age_hours:
+                return None
+            if doc.get("evidence"):
+                try:
+                    doc["evidence"] = json.loads(doc["evidence"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["evidence"] = []
+            if doc.get("claim_analysis"):
+                try:
+                    doc["claim_analysis"] = json.loads(doc["claim_analysis"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["claim_analysis"] = None
+            logger.info("Image cache hit: %s", image_url[:60])
+            return doc
+    except Exception as exc:
+        logger.debug("Image scan lookup failed: %s", exc)
+    finally:
+        conn.close()
+    return None
+
+
+def count_image_verdicts(verdict: str) -> int:
+    """Count how many images have been flagged with a specific verdict."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM image_scans WHERE verdict = ?",
+            (verdict,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

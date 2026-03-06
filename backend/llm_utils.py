@@ -41,6 +41,37 @@ Analyze the provided content and explain in simple, plain English \
 whether it appears to be fake, spam, AI-generated, phishing, or authentic — and why. \
 Be concise (3-5 sentences). Mention specific red flags or trust signals you observe."""
 
+IMAGE_VERIFICATION_PROMPT = """\
+You are an image forensics tool. Analyze ONLY the technical properties of this image.
+
+Respond with ONLY valid JSON. No markdown, no backticks.
+{{
+  "authenticity_score": <integer 0-100>,
+  "verdict": "<authentic|ai_generated|manipulated|out_of_context|uncertain>",
+  "explanation": "<2-3 sentences about what you observe in the image.>",
+  "evidence": ["<sign 1>", "<sign 2>", "<sign 3>"]
+}}
+
+RULES:
+1. You CANNOT identify specific people. Never say someone "is" or "is not" in the photo.
+2. Never say a claimed event is "improbable" or "unverifiable" — event verification is not your job.
+3. WATERMARKS — distinguish between these two categories:
+   a. AI TOOL logos/watermarks (Gemini, Google AI, DALL-E, Midjourney, Stable Diffusion, Adobe Firefly, \
+Copilot, ChatGPT, Leonardo AI) = STRONG evidence of AI generation. Score 20 or below.
+   b. Official/institutional watermarks (.gov, .ir, .org, AP, Reuters, Getty, news agencies) = provenance, \
+NOT tampering. Treat as a positive signal.
+4. Old photos have low resolution, grain, and artifacts. That is normal, not suspicious.
+5. Check for AI generation: bad hands/fingers, warped text, plastic skin, impossible geometry, \
+overly perfect symmetry. CRITICALLY: examine the BOTTOM EDGE and ALL CORNERS of the image for \
+any AI tool text, logos, or watermarks (e.g. "Gemini", sparkle icon, "DALL-E", "Made with AI"). \
+If found, the image is AI-generated regardless of how realistic it looks.
+6. Check for manipulation: splicing edges, cloned regions, inconsistent lighting/noise/shadows.
+7. Check scene consistency: clothing, setting, architecture, technology vs claimed time period.
+
+Scoring: 80-100 no signs of AI/manipulation, 50-79 uncertain or too low quality to tell, \
+20-49 likely AI or manipulated, 0-19 clearly fake.
+Keep evidence items under 12 words each. Max 3 items."""
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Provider clients (lazy-initialized to avoid import errors for unused providers)
@@ -82,18 +113,21 @@ def _call_llm(
     media_type: str = None,
     min_tokens: int = 0,
     model_override: str = None,
+    extra_images: list[tuple[str, bytes]] = None,
 ) -> str:
     """Send a prompt to the configured LLM provider and return the raw text response.
     min_tokens ensures the max_tokens sent to the provider is at least this value.
     model_override lets callers use a specific model (e.g. cheaper model for simple tasks).
+    extra_images is a list of (mime_type, data) tuples for additional images.
     """
     provider = LLM_PROVIDER
     max_tokens = max(DEFAULT_MAX_TOKENS, min_tokens)
-    logger.info("LLM call via provider=%s has_media=%s max_tokens=%d model=%s",
-                provider, media_data is not None, max_tokens, model_override or "default")
+    logger.info("LLM call via provider=%s has_media=%s extra_imgs=%d max_tokens=%d model=%s",
+                provider, media_data is not None, len(extra_images or []),
+                max_tokens, model_override or "default")
 
     if provider == "gemini":
-        return _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override)
+        return _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override, extra_images)
     elif provider == "openai":
         return _call_openai(system_prompt, user_content, media_data, media_type, max_tokens)
     elif provider == "bedrock":
@@ -104,7 +138,7 @@ def _call_llm(
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
-def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override=None):
+def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override=None, extra_images=None):
     import google.generativeai as genai
 
     genai.configure(api_key=GEMINI_API_KEY)
@@ -129,6 +163,9 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
     parts = [user_content]
     if media_data and media_type and media_type.startswith("image/"):
         parts.append({"mime_type": media_type, "data": media_data})
+    if extra_images:
+        for emime, edata in extra_images:
+            parts.append({"mime_type": emime, "data": edata})
 
     response = model.generate_content(parts)
     return response.text
@@ -320,6 +357,89 @@ def _validate_result(result: dict) -> dict:
         "verdict": verdict,
         "explanation": explanation,
         "evidence": [str(e) for e in evidence],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Public API — image verification
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_image_verification(image_data: bytes, media_type: str, context: str = "", bottom_crop: bytes = None) -> dict:
+    """Analyze an image for AI generation, manipulation, or misuse."""
+    try:
+        user_msg = "Analyze this image for authenticity."
+        if context:
+            user_msg += f"\n\nSurrounding context from the page:\n{context[:800]}"
+
+        extra_images = []
+        if bottom_crop:
+            extra_images.append(("image/jpeg", bottom_crop))
+            user_msg += "\n\nA zoomed-in crop of the bottom edge is also provided. Check it carefully for any AI tool logos or watermarks."
+
+        raw_text = _call_llm(
+            IMAGE_VERIFICATION_PROMPT,
+            user_msg,
+            media_data=image_data,
+            media_type=media_type,
+            min_tokens=1024,
+            extra_images=extra_images,
+        )
+        return _parse_image_response(raw_text)
+    except Exception as exc:
+        logger.error("Image verification failed: %s", exc)
+        return {
+            "authenticity_score": 50,
+            "verdict": "uncertain",
+            "explanation": f"Image analysis could not be completed: {exc}",
+            "evidence": [],
+        }
+
+
+def _parse_image_response(raw_text: str) -> dict:
+    """Parse image verification JSON with fallback."""
+    for candidate in (raw_text, _extract_json_block(raw_text)):
+        if candidate is None:
+            continue
+        try:
+            result = json.loads(candidate)
+            return _validate_image_result(result)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    score_match = re.search(r'"authenticity_score"\s*:\s*(\d+)', raw_text)
+    verdict_match = re.search(r'"verdict"\s*:\s*"([^"]*)"?', raw_text)
+    if score_match or verdict_match:
+        result = {}
+        if score_match:
+            result["authenticity_score"] = int(score_match.group(1))
+        if verdict_match:
+            result["verdict"] = verdict_match.group(1)
+        return _validate_image_result(result)
+
+    return {
+        "authenticity_score": 50,
+        "verdict": "uncertain",
+        "explanation": "Could not fully analyze this image. Try again.",
+        "evidence": [],
+    }
+
+
+def _validate_image_result(result: dict) -> dict:
+    score = result.get("authenticity_score", 50)
+    if not isinstance(score, (int, float)):
+        score = 50
+    score = max(0, min(100, int(score)))
+
+    valid_verdicts = {"authentic", "ai_generated", "manipulated", "out_of_context", "uncertain"}
+    verdict = result.get("verdict", "uncertain")
+    if verdict not in valid_verdicts:
+        verdict = "uncertain"
+
+    return {
+        "authenticity_score": score,
+        "verdict": verdict,
+        "explanation": str(result.get("explanation", "No explanation available.")),
+        "evidence": [str(e) for e in result.get("evidence", []) if e][:3],
     }
 
 

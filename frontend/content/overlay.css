@@ -345,6 +345,42 @@
   color: #64748b;
 }
 
+.factscope-popup .fs-related-articles {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.factscope-popup .fs-related-articles li {
+  margin-bottom: 2px;
+  padding-left: 12px;
+  position: relative;
+}
+
+.factscope-popup .fs-related-articles li::before {
+  content: '\203A';
+  position: absolute;
+  left: 2px;
+  color: #94a3b8;
+}
+
+.factscope-popup .fs-article-link {
+  color: #2563eb;
+  text-decoration: none;
+  font-size: 11px;
+}
+
+.factscope-popup .fs-article-link:hover {
+  text-decoration: underline;
+}
+
+.factscope-popup .fs-article-source {
+  color: #94a3b8;
+  font-size: 10px;
+}
+
 @media (prefers-color-scheme: dark) {
   .factscope-popup .fs-factchecks-title { color: #cbd5e1; }
   .factscope-popup .fs-factcheck-item { background: #1e293b; border-color: #334155; }
@@ -368,6 +404,8 @@
   .factscope-popup .fs-claim-not-corroborated .fs-claim-icon { background: #451a03; }
   .factscope-popup .fs-claim-not-corroborated .fs-claim-badge { color: #fcd34d; background: #451a03; }
   .factscope-popup .fs-corr-count { color: #94a3b8; }
+  .factscope-popup .fs-article-link { color: #60a5fa; }
+  .factscope-popup .fs-article-source { color: #64748b; }
 }
 
 /* ── Collapsible score details ────────────────────────────────────── */
@@ -414,6 +452,41 @@
 @media (prefers-color-scheme: dark) {
   .factscope-popup .fs-details-summary { color: #94a3b8; }
   .factscope-popup .fs-details-list { color: #94a3b8; }
+}
+
+/* ── Google Lens button ──────────────────────────────────────────── */
+
+.factscope-popup .fs-lens-wrap {
+  margin: 10px 0 6px;
+}
+
+.factscope-popup .fs-lens-btn {
+  display: block;
+  text-align: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.factscope-popup .fs-lens-btn:hover {
+  background: #e0f2fe;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-lens-btn {
+    background: #0c4a6e;
+    border-color: #075985;
+    color: #7dd3fc;
+  }
+  .factscope-popup .fs-lens-btn:hover {
+    background: #075985;
+  }
 }
 
 /* ── Footer ──────────────────────────────────────────────────────── */

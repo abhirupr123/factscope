@@ -90,11 +90,19 @@ def _classify_corroboration(count: int) -> str:
     return "widely_reported"
 
 
+_NOISE_WORDS = frozenset({
+    "rare", "photo", "photos", "picture", "pictures", "image", "images",
+    "video", "videos", "clip", "watch", "look", "see", "seen", "shows",
+    "showing", "viral", "breaking", "exclusive", "shocking", "amazing",
+})
+
 def _extract_keywords(text: str, max_words: int = 8) -> str:
     """Extract significant keywords from text for a search query."""
-    clean = re.sub(r"[-/]", " ", text)
+    clean = re.sub(r"['\u2019]s\b", "", text)
+    clean = re.sub(r"[-/]", " ", clean)
     clean = re.sub(r"[^\w\s]", "", clean).strip().lower()
-    words = [w for w in clean.split() if len(w) >= 3 and w not in _STOP_WORDS]
+    words = [w for w in clean.split()
+             if len(w) >= 3 and w not in _STOP_WORDS and w not in _NOISE_WORDS]
     return " ".join(words[:max_words])
 
 
@@ -286,7 +294,67 @@ def search_factcheck_api(claim: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Main pipeline
+# Lightweight single-claim verification (for image captions, short posts)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def verify_image_claim(caption: str) -> list[dict]:
+    """Verify a short image caption/claim directly without LLM extraction.
+
+    Treats the caption as a single claim and checks it against Google Fact
+    Check API + Google News RSS. No LLM tokens used.
+    Returns claim result with matching article titles/sources.
+    """
+    if not caption or len(caption.strip()) < 10:
+        return []
+
+    claim = caption.strip()[:200]
+    logger.info("Verifying image claim directly: %s", claim[:60])
+
+    fc_result = search_factcheck_api(claim)
+
+    search_query = _extract_keywords(claim, max_words=10)
+    articles = _search_news(search_query)
+
+    matching_articles = []
+    claim_keywords = set(_extract_keywords(claim, max_words=10).split())
+    for a in articles:
+        combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
+        overlap = sum(1 for kw in claim_keywords if kw in combined)
+        if overlap >= min(2, len(claim_keywords)):
+            source = (a.get("source") or {}).get("name") or ""
+            title = a.get("title") or ""
+            url = a.get("url") or ""
+            if title:
+                matching_articles.append({"title": title, "source": source, "url": url})
+
+    seen_sources = set()
+    unique_articles = []
+    for ma in matching_articles:
+        if ma["source"] not in seen_sources:
+            seen_sources.add(ma["source"])
+            unique_articles.append(ma)
+
+    source_count = len(unique_articles)
+    corr = _classify_corroboration(source_count)
+
+    result = {
+        "claim": claim,
+        "status": fc_result.get("status", "no_fact_check_found"),
+        "source": fc_result.get("source"),
+        "source_url": fc_result.get("source_url"),
+        "rating": fc_result.get("rating"),
+        "source_count": source_count,
+        "corroboration": corr,
+        "related_articles": unique_articles[:5],
+    }
+
+    logger.info("Image claim result: corr=%s sources=%d fc=%s",
+                corr, source_count, result["status"])
+    return [result]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main pipeline (article-length text)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _EMPTY_RESULT = {

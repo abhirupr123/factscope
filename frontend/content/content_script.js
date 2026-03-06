@@ -308,7 +308,19 @@
         secondaryHTML = '';
       }
 
-      return `<div class="fs-factcheck-item ${primaryClass}"><span class="fs-claim-icon">${primaryIcon}</span><div class="fs-claim-body"><span class="fs-claim-text">${fc.claim}</span><div class="fs-claim-meta"><span class="fs-claim-badge">${primaryLabel}</span>${secondaryHTML}</div></div></div>`;
+      let articlesHTML = '';
+      if (fc.related_articles && fc.related_articles.length > 0) {
+        const articleItems = fc.related_articles.slice(0, 3).map((a) => {
+          const link = a.url
+            ? `<a class="fs-article-link" href="${a.url}" target="_blank" rel="noopener">${a.title}</a>`
+            : `<span>${a.title}</span>`;
+          const src = a.source ? `<span class="fs-article-source">${a.source}</span>` : '';
+          return `<li>${link} ${src}</li>`;
+        }).join('');
+        articlesHTML = `<ul class="fs-related-articles">${articleItems}</ul>`;
+      }
+
+      return `<div class="fs-factcheck-item ${primaryClass}"><span class="fs-claim-icon">${primaryIcon}</span><div class="fs-claim-body"><span class="fs-claim-text">${fc.claim}</span><div class="fs-claim-meta"><span class="fs-claim-badge">${primaryLabel}</span>${secondaryHTML}</div>${articlesHTML}</div></div>`;
     }).join('');
 
     return `<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div>${items}</div>`;
@@ -368,6 +380,190 @@
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
   }
+
+  /* ── Social media context extraction ─────────────────────────────── */
+
+  function extractSocialContext(imageUrl) {
+    const hostname = window.location.hostname;
+    const ctx = { platform: null, username: null, post_text: null, timestamp: null };
+
+    if (hostname.includes('x.com') || hostname.includes('twitter.com')) {
+      ctx.platform = 'x/twitter';
+
+      let tweetArticle = null;
+      if (imageUrl) {
+        const imgs = document.querySelectorAll('img');
+        for (const img of imgs) {
+          if (img.src === imageUrl || img.currentSrc === imageUrl) {
+            tweetArticle = img.closest('article[data-testid="tweet"]');
+            break;
+          }
+        }
+      }
+
+      if (tweetArticle) {
+        const userLink = tweetArticle.querySelector('a[href*="/"] div[dir="ltr"] > span');
+        if (userLink) ctx.username = userLink.textContent?.replace('@', '').trim();
+        const tweetText = tweetArticle.querySelector('[data-testid="tweetText"]');
+        if (tweetText) ctx.post_text = tweetText.textContent?.substring(0, 500);
+        const time = tweetArticle.querySelector('time');
+        if (time) ctx.timestamp = time.getAttribute('datetime');
+      }
+    } else if (hostname.includes('facebook.com') || hostname.includes('fb.com')) {
+      ctx.platform = 'facebook';
+      const postText = document.querySelector('[data-ad-preview="message"]')?.textContent;
+      if (postText) ctx.post_text = postText.substring(0, 500);
+    } else if (hostname.includes('instagram.com')) {
+      ctx.platform = 'instagram';
+      const caption = document.querySelector('h1')?.textContent;
+      if (caption) ctx.post_text = caption.substring(0, 500);
+    } else if (hostname.includes('reddit.com')) {
+      ctx.platform = 'reddit';
+      const title = document.querySelector('h1')?.textContent;
+      if (title) ctx.post_text = title.substring(0, 500);
+      const author = document.querySelector('a[href*="/user/"]')?.textContent;
+      if (author) ctx.username = author.replace('u/', '').trim();
+    }
+
+    return ctx;
+  }
+
+  /* ── Image verification UI ─────────────────────────────────────── */
+
+  const IMG_VERDICT_LABELS = {
+    authentic: 'Likely Authentic',
+    ai_generated: 'Likely AI-Generated',
+    manipulated: 'Possibly Manipulated',
+    out_of_context: 'Possibly Out of Context',
+    uncertain: 'Uncertain',
+    error: 'Analysis Error',
+  };
+
+  const IMG_VERDICT_ICONS = {
+    authentic: '\u2714',
+    ai_generated: '\u2699',
+    manipulated: '\u26A0',
+    out_of_context: '\u{1F504}',
+    uncertain: '\u2753',
+    error: '\u2716',
+  };
+
+  function imgScoreColor(s) { return s > 70 ? '#10b981' : s > 40 ? '#f59e0b' : '#ef4444'; }
+
+  function showImageScanningIndicator() {
+    createPanel(`
+      <div class="fs-header">
+        <div class="fs-logo">FS</div>
+        <div class="fs-header-text">
+          <div class="fs-brand">FactScope</div>
+          <div class="fs-subtitle">Verifying image&hellip;</div>
+        </div>
+      </div>
+      <div class="fs-loader"><div class="fs-loader-bar"></div></div>
+      <div class="fs-body fs-scanning-text">Checking image for AI generation, manipulation, and misuse&hellip;</div>
+    `);
+  }
+
+  function showImageResultPanel(result) {
+    const score = result.authenticity_score;
+    const color = imgScoreColor(score);
+    const label = IMG_VERDICT_LABELS[result.verdict] || result.verdict;
+    const icon = IMG_VERDICT_ICONS[result.verdict] || '';
+
+    const evidenceItems = (result.evidence || [])
+      .map((e) => `<li>${e}</li>`)
+      .join('');
+
+    const claimHTML = result.claim_analysis ? buildFactChecksHTML(result.claim_analysis) : '';
+
+    const lensBtn = result.reverse_search_url
+      ? `<a class="fs-lens-btn" href="${result.reverse_search_url}" target="_blank" rel="noopener">\u{1F50D} Search for original (Google Lens)</a>`
+      : '';
+
+    const panel = createPanel(`
+      <div class="fs-header">
+        <div class="fs-logo">FS</div>
+        <div class="fs-header-text">
+          <div class="fs-brand">FactScope</div>
+          <div class="fs-subtitle">Image Verification</div>
+        </div>
+        <button class="fs-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="fs-verdict-row">
+        <span class="fs-verdict-icon">${icon}</span>
+        <span class="fs-verdict-label" style="color:${color}">${label}</span>
+      </div>
+      <div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div>
+      <div class="fs-score-text"><strong style="color:${color}">${score}%</strong> authenticity score</div>
+      <div class="fs-divider"></div>
+      <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
+      ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">What we found</div><ul>${evidenceItems}</ul></div>` : ''}
+      ${claimHTML}
+      ${lensBtn ? `<div class="fs-lens-wrap">${lensBtn}</div>` : ''}
+      <div class="fs-footer">Scanned by FactScope</div>
+    `);
+    panel.querySelector('.fs-close').addEventListener('click', removePanel);
+  }
+
+  /* ── Image verification flow (triggered by context menu) ─────────── */
+
+  async function verifyImage(imageUrl, pageUrl) {
+    showImageScanningIndicator();
+
+    const socialContext = extractSocialContext(imageUrl);
+    const pageText = socialContext.post_text
+      || (socialContext.platform ? null : extractArticleBody().substring(0, 1000));
+
+    const payload = {
+      image_url: imageUrl,
+      page_url: pageUrl,
+      page_text: pageText || null,
+      social_context: socialContext.platform ? socialContext : null,
+    };
+
+    const result = await new Promise((resolve) => {
+      if (!chrome.runtime?.id) {
+        resolve({
+          authenticity_score: 0,
+          verdict: 'error',
+          explanation: 'Extension was reloaded. Please refresh this page and try again.',
+          evidence: [],
+        });
+        return;
+      }
+      chrome.runtime.sendMessage({ type: 'verify-image', payload }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({
+            authenticity_score: 0,
+            verdict: 'error',
+            explanation: 'Lost connection to FactScope. Please refresh this page and try again.',
+            evidence: [],
+          });
+          return;
+        }
+        resolve(response);
+      });
+    });
+
+    if (result && result.authenticity_score !== undefined) {
+      showImageResultPanel(result);
+    } else {
+      showImageResultPanel({
+        authenticity_score: 0,
+        verdict: 'error',
+        explanation: 'Could not verify this image. Make sure the FactScope backend is running.',
+        evidence: [],
+      });
+    }
+  }
+
+  /* ── Listen for messages from service worker ────────────────────── */
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'factscope-verify-image-start') {
+      verifyImage(message.imageUrl, message.pageUrl);
+    }
+  });
 
   /* ── Scan orchestration ───────────────────────────────────────────── */
 
