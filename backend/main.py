@@ -631,6 +631,30 @@ async def health():
     return {"status": "ok", "version": "0.4.0"}
 
 
+@app.get("/debug/db-status")
+async def db_status():
+    """Check database connectivity and row counts."""
+    from db import _get_conn, _use_turso
+    try:
+        conn = _get_conn()
+        scans = conn.execute("SELECT COUNT(*) as cnt FROM scans").fetchone()
+        images = conn.execute("SELECT COUNT(*) as cnt FROM image_scans").fetchone()
+        flags = conn.execute("SELECT COUNT(*) as cnt FROM community_flags").fetchone()
+        latest = conn.execute(
+            "SELECT fingerprint, trust_score, timestamp FROM scans ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return {
+            "turso": _use_turso,
+            "scans_count": scans[0] if scans else 0,
+            "image_scans_count": images[0] if images else 0,
+            "flags_count": flags[0] if flags else 0,
+            "latest_scan": dict(latest) if latest else None,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 # --------------- legacy per-type endpoints (direct API usage) ---------------
 
 @app.post("/analyze/text")

@@ -156,7 +156,7 @@ def _sync_and_close(conn):
         try:
             conn.sync()
         except Exception as exc:
-            logger.debug("Turso sync failed: %s", exc)
+            logger.warning("Turso sync failed: %s", exc)
     conn.close()
 
 
@@ -325,8 +325,10 @@ def find_by_fingerprint(fingerprint: str) -> dict | None:
                 except (json.JSONDecodeError, TypeError):
                     doc["evidence"] = []
             return doc
+        else:
+            logger.warning("Fingerprint cache MISS: %s", fingerprint[:16])
     except Exception as exc:
-        logger.debug("Fingerprint lookup failed: %s", exc)
+        logger.warning("Fingerprint lookup failed: %s", exc)
     finally:
         conn.close()
     return None
