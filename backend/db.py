@@ -131,7 +131,12 @@ class _TursoConn:
 
 
 def _get_conn():
-    """Return a database connection (Turso cloud or local SQLite)."""
+    """Return a database connection (Turso cloud or local SQLite).
+
+    For Turso, we do NOT sync on every connection — only on startup (init_db)
+    and after writes (_sync_and_close). This prevents cloud pulls from
+    overwriting locally committed data that hasn't propagated yet.
+    """
     if _use_turso:
         import libsql_experimental as libsql
         raw = libsql.connect(
@@ -139,7 +144,6 @@ def _get_conn():
             sync_url=_TURSO_URL,
             auth_token=_TURSO_TOKEN,
         )
-        raw.sync()
         conn = _TursoConn(raw)
     else:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
@@ -241,6 +245,20 @@ _SCHEMA_STATEMENTS = [
 
 def init_db():
     """Create tables and FTS index if they don't exist."""
+    if _use_turso:
+        import libsql_experimental as libsql
+        raw = libsql.connect(
+            str(DB_PATH),
+            sync_url=_TURSO_URL,
+            auth_token=_TURSO_TOKEN,
+        )
+        try:
+            raw.sync()
+            logger.info("Turso initial sync complete")
+        except Exception as exc:
+            logger.warning("Turso initial sync failed: %s", exc)
+        raw.close()
+
     conn = _get_conn()
     try:
         for stmt in _SCHEMA_STATEMENTS:
