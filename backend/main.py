@@ -14,6 +14,7 @@ from fingerprinting import compute_fingerprint
 from trust_graph import update_domain_stats, compute_domain_trust_signal
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
 from config import TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+import json
 import re
 import uvicorn
 import logging
@@ -399,18 +400,38 @@ async def analyze_page(request: AnalyzeRequest):
     """Unified endpoint for the browser extension."""
 
     # ── Fingerprint check (instant cache) ─────────────────────────────
-    fingerprint = compute_fingerprint(request.text) if request.text else None
+    fp_input = ""
+    if request.title:
+        fp_input += request.title + "\n"
+    if request.text:
+        fp_input += request.text
+    fingerprint = compute_fingerprint(fp_input) if fp_input else None
 
     if fingerprint:
         cached = find_by_fingerprint(fingerprint)
         if cached:
             logger.info("Returning cached result for fingerprint %s", fingerprint[:16])
+
+            fc_response = None
+            if cached.get("judgement"):
+                try:
+                    fc_data = json.loads(cached["judgement"])
+                    fc_response = [FactCheckResult(**fc) for fc in fc_data] if fc_data else None
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            comm_flags = get_flag_count(fingerprint)
+            comm_scans = count_scans_for_fingerprint(fingerprint)
             return AnalyzeResponse(
                 trust_score=cached.get("trust_score", 50),
                 verdict=cached.get("verdict", "suspicious"),
                 explanation=cached.get("explanation", ""),
                 evidence=cached.get("evidence", []),
                 cached=True,
+                fact_checks=fc_response,
+                community_flags=comm_flags if comm_flags > 0 else None,
+                community_scans=comm_scans if comm_scans > 1 else None,
+                fingerprint=fingerprint,
             )
 
     # ── Build the LLM prompt with metadata + video context ────────────
@@ -568,6 +589,7 @@ async def analyze_page(request: AnalyzeRequest):
         "verdict": llm_result.get("verdict", "suspicious"),
         "explanation": llm_result.get("explanation", ""),
         "evidence": all_evidence,
+        "judgement": json.dumps(fact_checks) if fact_checks else None,
     }
     try:
         store_analysis_result(

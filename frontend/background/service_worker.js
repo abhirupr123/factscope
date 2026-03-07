@@ -3,15 +3,13 @@ const DEV_BASE = 'http://localhost:8000';
 
 let API_BASE = PROD_BASE;
 
-async function getApiBase() {
+const _apiReady = (async () => {
   try {
     const resp = await fetch(`${DEV_BASE}/models/info`, { signal: AbortSignal.timeout(1500) });
-    if (resp.ok) return DEV_BASE;
+    if (resp.ok) { API_BASE = DEV_BASE; return; }
   } catch { /* dev server not running */ }
-  return PROD_BASE;
-}
-
-getApiBase().then((base) => { API_BASE = base; });
+  API_BASE = PROD_BASE;
+})();
 
 function getUserId() {
   return new Promise((resolve) => {
@@ -52,6 +50,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'analyze') {
     (async () => {
+      await _apiReady;
       const userId = await getUserId();
       const payload = { ...message.payload, user_id: userId };
       try {
@@ -78,6 +77,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'verify-image') {
     (async () => {
+      await _apiReady;
       const userId = await getUserId();
       const payload = { ...message.payload, user_id: userId };
       try {
@@ -104,6 +104,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'flag-content') {
     (async () => {
+      await _apiReady;
       const userId = await getUserId();
       try {
         const r = await fetch(`${API_BASE}/flag`, {

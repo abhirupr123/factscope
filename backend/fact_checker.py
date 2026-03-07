@@ -33,6 +33,9 @@ Respond with ONLY a JSON array of short claim strings. No markdown, no backticks
 Example: ["Claim one here", "Claim two here", "Claim three here"]
 
 Rules:
+- FOCUS ON THE MAIN ARTICLE ONLY. The text may contain sidebar content, trending stories, \
+or related article snippets from the same website. IGNORE those completely. \
+Only extract claims from the primary article identified by the title/headline at the top.
 - Prioritize the article's PRIMARY claims — what the headline and lead paragraphs assert. \
 Do not elevate minor or secondary details over the main story.
 - FAITHFULNESS IS CRITICAL: preserve the original meaning exactly as stated in the text. \
@@ -154,7 +157,7 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict]) -> dict[i
     """Match each claim to articles by keyword overlap.
 
     For each claim, count how many articles have meaningful keyword overlap
-    with the claim text. Returns {claim_index: {source_count, corroboration}}.
+    with the claim text. Returns {claim_index: {source_count, corroboration, related_articles}}.
     """
     article_texts = []
     article_sources = []
@@ -175,19 +178,28 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict]) -> dict[i
     for i, claim in enumerate(claims):
         claim_keywords = set(_extract_keywords(claim, max_words=10).split())
         if len(claim_keywords) < 2:
-            results[i] = {"source_count": 0, "corroboration": "not_corroborated"}
+            results[i] = {"source_count": 0, "corroboration": "not_corroborated", "related_articles": []}
             continue
 
         matching_sources = set()
+        matched_articles = []
         for j, atext in enumerate(article_texts):
             overlap = sum(1 for kw in claim_keywords if kw in atext)
             if overlap >= min(3, len(claim_keywords)):
-                matching_sources.add(article_sources[j] or f"source_{j}")
+                src = article_sources[j] or f"source_{j}"
+                if src not in matching_sources:
+                    matching_sources.add(src)
+                    matched_articles.append({
+                        "title": articles[j].get("title") or "",
+                        "source": src,
+                        "url": articles[j].get("url") or "",
+                    })
 
         source_count = len(matching_sources)
         results[i] = {
             "source_count": source_count,
             "corroboration": _classify_corroboration(source_count),
+            "related_articles": matched_articles[:5],
         }
 
     return results
@@ -197,18 +209,21 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict]) -> dict[i
 # Claim extraction
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def extract_claims(text: str) -> list[str]:
+def extract_claims(text: str, title: str = "") -> list[str]:
     """Use the LLM to extract verifiable factual claims from text."""
     from llm_utils import _call_llm
 
     if not text or len(text.strip()) < 80:
         return []
 
-    trimmed = text[:2500]
+    user_content = ""
+    if title:
+        user_content = f"ARTICLE TITLE: {title}\n\n"
+    user_content += text[:2500]
     try:
         raw = _call_llm(
             CLAIM_EXTRACTION_PROMPT,
-            trimmed,
+            user_content,
             min_tokens=512,
         )
         raw = raw.strip()
@@ -366,7 +381,7 @@ _EMPTY_RESULT = {
     "corroboration": "not_corroborated",
 }
 
-_NEWS_DEFAULT = {"source_count": 0, "corroboration": "not_corroborated"}
+_NEWS_DEFAULT = {"source_count": 0, "corroboration": "not_corroborated", "related_articles": []}
 
 
 def verify_claims(text: str, title: str = "") -> list[dict]:
@@ -381,7 +396,7 @@ def verify_claims(text: str, title: str = "") -> list[dict]:
     if not is_available():
         return []
 
-    claims = extract_claims(text)
+    claims = extract_claims(text, title=title)
     if not claims:
         return []
 
@@ -434,6 +449,7 @@ def verify_claims(text: str, title: str = "") -> list[dict]:
         nr = news_results.get(i, _NEWS_DEFAULT)
         fc["source_count"] = nr["source_count"]
         fc["corroboration"] = nr["corroboration"]
+        fc["related_articles"] = nr.get("related_articles", [])
         logger.info("Claim %d: corr=%s sources=%d fc=%s | %s",
                     i + 1, fc.get("corroboration"), fc.get("source_count", 0),
                     fc.get("status"), claim[:50])
