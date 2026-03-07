@@ -1,159 +1,72 @@
-# 🛡️ FactScope  
-**Real-time Misinformation, Spam & Phishing Detection with Explainable AI**
+# FactScope
 
-FactScope is an AI-powered browser-based solution that helps users identify **fake news, AI-generated content, spam links, phishing messages, and misleading media** in real time.  
-Instead of just labeling content as *fake* or *safe*, FactScope explains **why** something looks suspicious in **plain English**, helping users make informed decisions online.
+**Know what to trust online.**
 
----
-
-## 🚀 Problem Statement
-
-As AI-generated content becomes more sophisticated, misinformation, phishing, and spam are spreading faster than ever across news websites, emails, and messaging platforms.  
-Existing tools are often reactive, require manual uploads, or provide binary verdicts without explanation—making them impractical for everyday users.
-
-**FactScope addresses this gap by acting as an always-on, explainable trust layer directly where users consume content.**
+FactScope is a browser extension that helps you instantly check if a news article, social media post, or image is trustworthy -- right where you're reading it. No extra tabs, no sign-ups, no technical knowledge needed.
 
 ---
 
-## 💡 Solution Overview
+## The Problem
 
-FactScope works as a **browser extension** with a **Python backend** that analyzes content from the current tab with a single click.
+Misinformation spreads faster than ever. Fake news articles look real. AI-generated images are nearly indistinguishable from photos. Misleading posts go viral before anyone can verify them.
 
-### What it can analyze:
-- 📰 News articles  
-- 💬 Messages & text content  
-- 🔗 Links & URLs  
-- 🖼️ Images  
-- 📄 PDFs  
-- 🎥 Videos (via metadata & transcription pipeline)
+Most people don't have the time or tools to fact-check everything they see online.
 
-### How it works:
-1. User clicks **“Scan current tab”** in the extension.
-2. Content is extracted and sent to the backend.
-3. **Elasticsearch** checks the content against known spam/misinformation patterns.
-4. **AWS Bedrock LLMs** analyze semantics and generate a plain-English explanation.
-5. The user receives:
-   - A **Trust Score**
-   - A **clear explanation of why the content is suspicious or safe**
+## The Solution
+
+FactScope sits quietly in your browser. When something looks off, click the extension and get an instant trust assessment with a clear explanation of *why* the content is or isn't trustworthy.
+
+No jargon. No dashboards. Just a straight answer.
 
 ---
 
-## ✨ Key Features
+## What You Can Do
 
-- ✅ One-click scanning (no uploads required)
-- ✅ Real-time analysis on websites users already visit
-- ✅ Explainable AI (no technical jargon)
-- ✅ Covers spam, phishing, misinformation, and AI-generated content
-- ✅ Scalable architecture using Elasticsearch + AWS AI services
+**Scan any webpage** -- One click on any news article, blog post, or social media page gives you:
+- A trust score with a plain-English verdict
+- An explanation of what makes the content credible or suspicious
+- Key claims automatically checked against real news sources
+- Links to supporting or contradicting articles
 
----
+**Verify images** -- Right-click any image on social media to check:
+- Whether the image is AI-generated or manipulated
+- Whether the caption or claim attached to it is backed by real reporting
+- Links to news articles covering the same event
 
-## 🧠 Why This Is Unique
-
-Unlike many “AI vs AI” detection tools, FactScope:
-- Works **inline** instead of forcing users into dashboards
-- Focuses on **everyday threats** (spam links, phishing emails, fake forwards)
-- Explains *why* content is flagged, not just *what*
-- Uses **Elasticsearch as a knowledge base**, not just for logging
-- Is designed for the **Hack-to-the-Future** theme—solving a growing 2030-era trust problem today
-
----
-
-## 🏗️ Architecture Overview
-
-```
-Browser Extension
-|
-v
-FastAPI Backend (Python)
-|
-+--> Elasticsearch (pattern matching, similarity search)
-|
-+--> AWS Bedrock (LLM explanations)
-|
-+--> AWS Textract / Rekognition / Transcribe (media processing)
-```
+**See what others found** -- Every scan contributes to a shared trust layer:
+- See if other FactScope users have already verified the same content
+- Flag content you believe is misinformation
+- Build collective trust signals across the web
 
 ---
 
-## 🧰 Tech Stack
+## How It Works (From Your Side)
 
-### Frontend
-- Chrome Extension (Manifest V3)
-- JavaScript, HTML, CSS
+1. Install FactScope from the Chrome Web Store
+2. Browse the web as usual
+3. See something questionable? Click the FactScope icon or right-click an image
+4. Get your result in seconds -- a trust score, a verdict, and the reasoning behind it
 
-### Backend
-- Python
-- FastAPI
-- REST APIs
-
-### AI & Search
-- **AWS Bedrock** (LLM-based analysis & explanations)
-- **Elasticsearch** (spam/misinformation indexing & similarity search)
-
-### Cloud & Utilities
-- AWS SDK (boto3)
-- Elastic Cloud / Local Elasticsearch
+That's it. FactScope does the heavy lifting.
 
 ---
 
-## 📂 Repository Structure (Example)
+## Privacy
 
-```
-├── frontend/ # Browser extension code
-│   ├── manifest.json
-│   ├── popup.html
-│   ├── popup.js
-│   ├── popup.css
-│   ├── background.js
-│   ├── content/
-│   │   ├── content.js
-│   │   └── inject.js
-│   └── assets/
-│       ├── icon.png
-│       └── logo.svg
-├── backend/ # FastAPI backend
-│ ├── analyzers/ # Text, image, pdf, video analyzers
-│ ├── elastic_utils.py
-│ ├── llm_utils.py
-│ ├── main.py
-│ └── config.py
-├── README.md
-```
+FactScope does not collect any personal information.
+
+- No accounts or sign-ups
+- No browsing history tracked
+- No cookies or identifiers
+- Only the content you explicitly choose to scan is processed
+- Your identity is fully anonymous
+
+Read the full [privacy policy](docs/privacy-policy.html).
 
 ---
 
-## 🧪 How to Run (High Level)
+## License
 
-1. Start Elasticsearch (local or cloud).
-2. Configure AWS credentials in `config.py`.
-3. Run backend:
-   ```
-   uvicorn main:app --reload
-   ```
+Copyright (C) 2025-2026 Abhirup Roy
 
-
-Load the browser extension via chrome://extensions.
-
-Open any news site and click Scan current tab.
-
----
-
-## 🎯 Hackathon Context
-
-This project was built as part of Elastic Forge the Future hackathon 2025, with over 7,000+ participants.
-FactScope focuses on future-ready digital trust, addressing misinformation challenges that will only intensify in the coming decade.
-
----
-
-## 🌱 Future Improvements
-
-Native mobile integration (SMS & messaging apps)
-
-Multilingual misinformation detection
-
-Enterprise phishing protection
-
-Kibana dashboards for trend monitoring
-
-Stronger media deepfake detection
+Licensed under [AGPL-3.0](LICENSE). You may view and fork the source code, but any modified version deployed as a service must also be open-sourced under the same license.
