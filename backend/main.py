@@ -655,6 +655,30 @@ async def db_status():
         return {"error": str(exc)}
 
 
+@app.get("/debug/find/{fp}")
+async def debug_find(fp: str):
+    """Test fingerprint lookup directly."""
+    from db import _get_conn
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT fingerprint, trust_score, verdict FROM scans WHERE fingerprint = ?",
+            (fp,),
+        ).fetchone()
+        all_fps = conn.execute(
+            "SELECT fingerprint FROM scans ORDER BY timestamp DESC LIMIT 5"
+        ).fetchall()
+        conn.close()
+        return {
+            "query_hit": row is not None,
+            "result": dict(row) if row else None,
+            "stored_fingerprints": [dict(r)["fingerprint"][:20] for r in all_fps],
+        }
+    except Exception as exc:
+        conn.close()
+        return {"error": str(exc)}
+
+
 # --------------- legacy per-type endpoints (direct API usage) ---------------
 
 @app.post("/analyze/text")
