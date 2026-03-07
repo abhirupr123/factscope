@@ -46,19 +46,95 @@ _STOP_WORDS = frozenset({
 # Connection
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+class _Row:
+    """Row supporting both index-based and key-based access (like sqlite3.Row)."""
+    __slots__ = ("_keys", "_values", "_map")
+
+    def __init__(self, keys, values):
+        self._keys = keys
+        self._values = values
+        self._map = dict(zip(keys, values))
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._map[key]
+
+    def get(self, key, default=None):
+        return self._map.get(key, default)
+
+    def keys(self):
+        return self._keys
+
+    def __contains__(self, key):
+        return key in self._map
+
+
+class _DictCursor:
+    """Wraps a libsql cursor to return _Row objects instead of raw tuples."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def _to_row(self, raw):
+        if raw is None or self._cursor.description is None:
+            return raw
+        cols = [d[0] for d in self._cursor.description]
+        return _Row(cols, raw)
+
+    def fetchone(self):
+        return self._to_row(self._cursor.fetchone())
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not rows or self._cursor.description is None:
+            return rows
+        cols = [d[0] for d in self._cursor.description]
+        return [_Row(cols, r) for r in rows]
+
+    @property
+    def lastrowid(self):
+        return self._cursor.lastrowid
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+
+class _TursoConn:
+    """Wraps a libsql connection so queries return dict-like rows."""
+
+    def __init__(self, raw):
+        self._conn = raw
+
+    def execute(self, sql, params=()):
+        return _DictCursor(self._conn.execute(sql, params))
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+    def sync(self):
+        self._conn.sync()
+
+
 def _get_conn():
     """Return a database connection (Turso cloud or local SQLite)."""
     if _use_turso:
         import libsql_experimental as libsql
-        conn = libsql.connect(
+        raw = libsql.connect(
             str(DB_PATH),
             sync_url=_TURSO_URL,
             auth_token=_TURSO_TOKEN,
         )
-        conn.sync()
+        raw.sync()
+        conn = _TursoConn(raw)
     else:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
+        conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -67,7 +143,7 @@ def _get_conn():
 def _sync_and_close(conn):
     """Commit, sync to Turso if needed, then close."""
     conn.commit()
-    if _use_turso and hasattr(conn, "sync"):
+    if _use_turso:
         try:
             conn.sync()
         except Exception as exc:
