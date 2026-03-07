@@ -43,3 +43,11 @@ DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.2"))
 
 # ── Google Fact Check API ─────────────────────────────────────────────────────
 GOOGLE_FACTCHECK_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY")
+
+# ── Turso Database (cloud libSQL — https://turso.tech) ───────────────────────
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+
+# ── Deployment ───────────────────────────────────────────────────────────────
+PORT = int(os.getenv("PORT", "8000"))
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")

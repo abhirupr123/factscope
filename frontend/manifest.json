@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FactScope",
-  "version": "0.2",
-  "description": "Inline detection of spam, phishing and AI-generated content with plain-English explanations.",
+  "version": "1.0.0",
+  "description": "AI-powered misinformation detection. Scan any page or image for trust signals, fact-checks, and community verification.",
   "permissions": [
     "storage",
     "scripting",
@@ -12,6 +12,7 @@
   ],
   "host_permissions": [
     "http://localhost:8000/*",
+    "https://factscope-api.onrender.com/*",
     "https://*/*",
     "http://*/*"
   ],
@@ -26,8 +27,18 @@
       "run_at": "document_idle"
     }
   ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "FactScope"
+    "default_title": "FactScope",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }

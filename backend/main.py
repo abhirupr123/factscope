@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, find_flagged_similar
-from db import store_image_scan, find_image_scan
+from db import (store_image_scan, find_image_scan, add_community_flag,
+                get_flag_count, has_user_flagged, count_scans_for_fingerprint)
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score
 from fingerprinting import compute_fingerprint
@@ -62,6 +63,7 @@ class AnalyzeRequest(BaseModel):
     metadata: Optional[PageMetadata] = None
     video_info: Optional[VideoInfo] = None
     sample_img: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class SourceInfo(BaseModel):
@@ -97,6 +99,21 @@ class AnalyzeResponse(BaseModel):
     structural_signals: Optional[list[dict]] = None
     fact_checks: Optional[list[FactCheckResult]] = None
     cached: Optional[bool] = None
+    community_flags: Optional[int] = None
+    community_scans: Optional[int] = None
+    fingerprint: Optional[str] = None
+
+
+class FlagRequest(BaseModel):
+    fingerprint: str
+    user_id: str
+    reason: Optional[str] = None
+
+
+class FlagResponse(BaseModel):
+    success: bool
+    flag_count: int
+    already_flagged: bool = False
 
 
 class ImageVerifyRequest(BaseModel):
@@ -104,6 +121,7 @@ class ImageVerifyRequest(BaseModel):
     page_url: Optional[str] = None
     page_text: Optional[str] = None
     social_context: Optional[dict] = None
+    user_id: Optional[str] = None
 
 
 class ImageVerifyResponse(BaseModel):
@@ -111,7 +129,6 @@ class ImageVerifyResponse(BaseModel):
     verdict: str
     explanation: str
     evidence: list[str]
-    reverse_search_url: Optional[str] = None
     claim_analysis: Optional[list[FactCheckResult]] = None
 
 
@@ -198,7 +215,6 @@ async def verify_image(request: ImageVerifyRequest):
             verdict=cached.get("verdict", "uncertain"),
             explanation=cached.get("explanation", ""),
             evidence=cached.get("evidence", []),
-            reverse_search_url=f"https://lens.google.com/uploadbyurl?url={request.image_url}",
             claim_analysis=[FactCheckResult(**c) for c in cached["claim_analysis"]]
             if cached.get("claim_analysis") else None,
         )
@@ -344,14 +360,11 @@ async def verify_image(request: ImageVerifyRequest):
             elif final_score <= 25 and final_verdict == "uncertain":
                 final_verdict = "manipulated"
 
-    reverse_url = f"https://lens.google.com/uploadbyurl?url={request.image_url}"
-
     response = ImageVerifyResponse(
         authenticity_score=final_score,
         verdict=final_verdict,
         explanation=final_explanation,
         evidence=result["evidence"],
-        reverse_search_url=reverse_url,
         claim_analysis=claim_results,
     )
 
@@ -362,11 +375,23 @@ async def verify_image(request: ImageVerifyRequest):
             "explanation": final_explanation,
             "evidence": result["evidence"],
             "claim_analysis": [c.model_dump() for c in claim_results] if claim_results else None,
-        })
+        }, user_id=request.user_id)
     except Exception as exc:
         logger.warning("Image scan storage failed: %s", exc)
 
     return response
+
+
+@app.post("/flag", response_model=FlagResponse)
+async def flag_content(request: FlagRequest):
+    """Flag content as misinformation."""
+    if has_user_flagged(request.fingerprint, request.user_id):
+        count = get_flag_count(request.fingerprint)
+        return FlagResponse(success=True, flag_count=count, already_flagged=True)
+
+    added = add_community_flag(request.fingerprint, request.user_id, request.reason)
+    count = get_flag_count(request.fingerprint)
+    return FlagResponse(success=added, flag_count=count)
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -548,6 +573,7 @@ async def analyze_page(request: AnalyzeRequest):
         store_analysis_result(
             "page_scan", combined[:500], result_dict,
             fingerprint=fingerprint, url=request.url,
+            user_id=request.user_id,
         )
     except Exception as exc:
         logger.warning("Storage failed: %s", exc)
@@ -560,6 +586,9 @@ async def analyze_page(request: AnalyzeRequest):
 
     fc_response = [FactCheckResult(**fc) for fc in fact_checks] if fact_checks else None
 
+    comm_flags = get_flag_count(fingerprint) if fingerprint else 0
+    comm_scans = count_scans_for_fingerprint(fingerprint) if fingerprint else 0
+
     return AnalyzeResponse(
         trust_score=combined_score,
         verdict=llm_result.get("verdict", "suspicious"),
@@ -569,6 +598,9 @@ async def analyze_page(request: AnalyzeRequest):
         structural_signals=signals,
         fact_checks=fc_response,
         cached=False,
+        community_flags=comm_flags if comm_flags > 0 else None,
+        community_scans=comm_scans if comm_scans > 1 else None,
+        fingerprint=fingerprint,
     )
 
 
@@ -625,4 +657,10 @@ async def get_model_info():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    from config import PORT, ENVIRONMENT
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=PORT,
+        reload=(ENVIRONMENT == "development"),
+    )

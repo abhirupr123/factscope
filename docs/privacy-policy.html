@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FactScope — Privacy Policy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.7;
+      color: #1e293b;
+      background: #f8fafc;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      background: #fff;
+      padding: 48px 40px;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: #0f172a;
+    }
+    .updated {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 32px;
+    }
+    h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 28px 0 12px;
+      color: #0f172a;
+    }
+    p, li {
+      font-size: 15px;
+      color: #475569;
+      margin-bottom: 12px;
+    }
+    ul { padding-left: 24px; }
+    li { margin-bottom: 6px; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .highlight {
+      background: #f0fdf4;
+      border-left: 3px solid #22c55e;
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 20px 0;
+    }
+    .highlight p { margin: 0; color: #166534; font-weight: 500; }
+    footer {
+      text-align: center;
+      margin-top: 40px;
+      font-size: 13px;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>FactScope Privacy Policy</h1>
+    <p class="updated">Last updated: February 27, 2026</p>
+
+    <div class="highlight">
+      <p>FactScope does not collect personal information. No accounts, no emails, no tracking.</p>
+    </div>
+
+    <h2>What FactScope Does</h2>
+    <p>FactScope is a browser extension that analyzes web content for misinformation signals. When you scan a page or image, the extension sends the page content to our backend for AI analysis.</p>
+
+    <h2>Data We Collect</h2>
+    <ul>
+      <li><strong>Page content you scan</strong> — the URL, title, and text of pages you explicitly choose to analyze. We only process content when you click "Scan" or "Verify image".</li>
+      <li><strong>Anonymous user ID</strong> — a random UUID generated locally on your device. This is not linked to your identity, browser, or any personal information. It's used solely to prevent duplicate community flags.</li>
+      <li><strong>Scan results</strong> — AI-generated trust scores, verdicts, and evidence for scanned content. These are stored to enable the community verification feature.</li>
+    </ul>
+
+    <h2>Data We Do NOT Collect</h2>
+    <ul>
+      <li>Browsing history or pages you visit without scanning</li>
+      <li>Personal information (name, email, location, IP address)</li>
+      <li>Cookies or tracking identifiers</li>
+      <li>Data from other browser extensions</li>
+      <li>Keystrokes or form data</li>
+    </ul>
+
+    <h2>How Data Is Used</h2>
+    <ul>
+      <li><strong>AI Analysis:</strong> Scanned content is sent to our backend, which uses AI models to assess credibility. The content is not stored beyond caching for performance.</li>
+      <li><strong>Community Features:</strong> Scan results are shared anonymously so other users can see if content was previously verified or flagged.</li>
+      <li><strong>Caching:</strong> Results are cached to avoid redundant analysis. Cached entries expire after 24 hours.</li>
+    </ul>
+
+    <h2>Third-Party Services</h2>
+    <p>FactScope uses the following third-party services to perform analysis:</p>
+    <ul>
+      <li><strong>Google Gemini / Gemma AI</strong> — for content and image analysis</li>
+      <li><strong>Google Fact Check Tools API</strong> — for checking existing fact-checks</li>
+      <li><strong>Google News RSS</strong> — for news corroboration</li>
+      <li><strong>Turso (libSQL)</strong> — for anonymous result storage</li>
+    </ul>
+    <p>No personal data is shared with these services. Only the page content you explicitly scan is sent for analysis.</p>
+
+    <h2>Data Storage & Security</h2>
+    <p>Scan results are stored in a cloud database (Turso) with no personal identifiers. The anonymous user ID stored on your device can be reset at any time by clearing the extension's local storage.</p>
+
+    <h2>Your Rights</h2>
+    <ul>
+      <li>You can stop using FactScope at any time by uninstalling the extension.</li>
+      <li>You can clear your anonymous ID by going to Chrome Settings &gt; Extensions &gt; FactScope &gt; Clear data.</li>
+      <li>FactScope never scans anything without your explicit action.</li>
+    </ul>
+
+    <h2>Changes to This Policy</h2>
+    <p>We may update this policy as features evolve. The "Last updated" date at the top will reflect any changes.</p>
+
+    <h2>Contact</h2>
+    <p>Questions? Open an issue on our <a href="https://github.com/your-username/factscope">GitHub repository</a>.</p>
+  </div>
+
+  <footer>
+    &copy; 2026 FactScope &mdash; Open-source misinformation detection
+  </footer>
+</body>
+</html>

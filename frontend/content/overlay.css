@@ -454,38 +454,77 @@
   .factscope-popup .fs-details-list { color: #94a3b8; }
 }
 
-/* ── Google Lens button ──────────────────────────────────────────── */
+/* ── Community signals ────────────────────────────────────────────── */
 
-.factscope-popup .fs-lens-wrap {
-  margin: 10px 0 6px;
-}
-
-.factscope-popup .fs-lens-btn {
-  display: block;
+.factscope-popup .fs-community {
+  font-size: 11px;
+  color: #64748b;
+  margin: 4px 0;
+  padding: 4px 8px;
+  background: #f8fafc;
+  border-radius: 6px;
   text-align: center;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  color: #0369a1;
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-  transition: background 0.15s;
-}
-
-.factscope-popup .fs-lens-btn:hover {
-  background: #e0f2fe;
 }
 
 @media (prefers-color-scheme: dark) {
-  .factscope-popup .fs-lens-btn {
-    background: #0c4a6e;
-    border-color: #075985;
-    color: #7dd3fc;
+  .factscope-popup .fs-community {
+    background: #1e293b;
+    color: #94a3b8;
   }
-  .factscope-popup .fs-lens-btn:hover {
-    background: #075985;
+}
+
+/* ── Flag button ─────────────────────────────────────────────────── */
+
+.factscope-popup .fs-actions {
+  margin: 8px 0 4px;
+  text-align: center;
+}
+
+.factscope-popup .fs-flag-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.factscope-popup .fs-flag-btn:hover:not(:disabled) {
+  border-color: #ef4444;
+  color: #ef4444;
+  background: #fef2f2;
+}
+
+.factscope-popup .fs-flag-btn:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.factscope-popup .fs-flag-btn.fs-flag-done {
+  border-color: #10b981;
+  color: #10b981;
+  background: #ecfdf5;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-flag-btn {
+    background: #1e293b;
+    border-color: #334155;
+    color: #94a3b8;
+  }
+  .factscope-popup .fs-flag-btn:hover:not(:disabled) {
+    border-color: #ef4444;
+    color: #fca5a5;
+    background: #450a0a;
+  }
+  .factscope-popup .fs-flag-btn.fs-flag-done {
+    border-color: #10b981;
+    color: #6ee7b7;
+    background: #064e3b;
   }
 }
 

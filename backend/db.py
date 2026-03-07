@@ -1,16 +1,20 @@
-"""SQLite + FTS5 storage layer — zero-cost replacement for Elasticsearch.
+"""Storage layer — supports local SQLite (dev) and Turso libSQL (production).
+
+When TURSO_DATABASE_URL + TURSO_AUTH_TOKEN are set, uses an embedded replica
+that syncs with Turso cloud. Otherwise falls back to plain local SQLite.
 
 Provides:
   - Scan result storage with content fingerprint caching
+  - Image scan storage and caching
   - Full-text similarity search via FTS5 + BM25 ranking
   - Domain trust statistics
-
-The database file (factscope.db) lives alongside the backend code.
-No external services needed.
+  - Community flags
 """
 
+import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -19,6 +23,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "factscope.db"
+
+_TURSO_URL = os.getenv("TURSO_DATABASE_URL")
+_TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+_use_turso = bool(_TURSO_URL and _TURSO_TOKEN)
 
 _STOP_WORDS = frozenset({
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -34,87 +42,131 @@ _STOP_WORDS = frozenset({
 })
 
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Connection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_conn():
+    """Return a database connection (Turso cloud or local SQLite)."""
+    if _use_turso:
+        import libsql_experimental as libsql
+        conn = libsql.connect(
+            str(DB_PATH),
+            sync_url=_TURSO_URL,
+            auth_token=_TURSO_TOKEN,
+        )
+        conn.sync()
+    else:
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
+def _sync_and_close(conn):
+    """Commit, sync to Turso if needed, then close."""
+    conn.commit()
+    if _use_turso and hasattr(conn, "sync"):
+        try:
+            conn.sync()
+        except Exception as exc:
+            logger.debug("Turso sync failed: %s", exc)
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Schema
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SCHEMA_STATEMENTS = [
+    """CREATE TABLE IF NOT EXISTS scans (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_type    TEXT,
+        source      TEXT,
+        url         TEXT,
+        fingerprint TEXT,
+        trust_score INTEGER,
+        verdict     TEXT,
+        explanation TEXT,
+        evidence    TEXT,
+        judgement   TEXT,
+        user_id     TEXT,
+        timestamp   TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scans_fingerprint ON scans(fingerprint)",
+    "CREATE INDEX IF NOT EXISTS idx_scans_trust_score ON scans(trust_score)",
+
+    """CREATE VIRTUAL TABLE IF NOT EXISTS scans_fts USING fts5(
+        source,
+        content=scans,
+        content_rowid=id,
+        tokenize='porter unicode61'
+    )""",
+
+    """CREATE TRIGGER IF NOT EXISTS scans_ai AFTER INSERT ON scans BEGIN
+        INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS scans_ad AFTER DELETE ON scans BEGIN
+        INSERT INTO scans_fts(scans_fts, rowid, source)
+            VALUES ('delete', old.id, old.source);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS scans_au AFTER UPDATE ON scans BEGIN
+        INSERT INTO scans_fts(scans_fts, rowid, source)
+            VALUES ('delete', old.id, old.source);
+        INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
+    END""",
+
+    """CREATE TABLE IF NOT EXISTS image_scans (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        image_url           TEXT,
+        url_hash            TEXT,
+        authenticity_score  INTEGER,
+        verdict             TEXT,
+        explanation         TEXT,
+        evidence            TEXT,
+        claim_analysis      TEXT,
+        user_id             TEXT,
+        timestamp           TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_image_scans_url_hash ON image_scans(url_hash)",
+
+    """CREATE TABLE IF NOT EXISTS domains (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain          TEXT UNIQUE NOT NULL,
+        total_scans     INTEGER DEFAULT 0,
+        avg_trust_score REAL DEFAULT 50.0,
+        flag_count      INTEGER DEFAULT 0,
+        last_scan       TEXT,
+        last_verdict    TEXT,
+        last_trust_score INTEGER
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS community_flags (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL,
+        user_id     TEXT NOT NULL,
+        reason      TEXT,
+        timestamp   TEXT,
+        UNIQUE(fingerprint, user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_flags_fingerprint ON community_flags(fingerprint)",
+]
+
+
 def init_db():
     """Create tables and FTS index if they don't exist."""
     conn = _get_conn()
     try:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS scans (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                doc_type    TEXT,
-                source      TEXT,
-                url         TEXT,
-                fingerprint TEXT,
-                trust_score INTEGER,
-                verdict     TEXT,
-                explanation TEXT,
-                evidence    TEXT,
-                judgement   TEXT,
-                timestamp   TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_scans_fingerprint ON scans(fingerprint);
-            CREATE INDEX IF NOT EXISTS idx_scans_trust_score ON scans(trust_score);
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS scans_fts USING fts5(
-                source,
-                content=scans,
-                content_rowid=id,
-                tokenize='porter unicode61'
-            );
-
-            -- Triggers to keep FTS index in sync
-            CREATE TRIGGER IF NOT EXISTS scans_ai AFTER INSERT ON scans BEGIN
-                INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
-            END;
-            CREATE TRIGGER IF NOT EXISTS scans_ad AFTER DELETE ON scans BEGIN
-                INSERT INTO scans_fts(scans_fts, rowid, source)
-                    VALUES ('delete', old.id, old.source);
-            END;
-            CREATE TRIGGER IF NOT EXISTS scans_au AFTER UPDATE ON scans BEGIN
-                INSERT INTO scans_fts(scans_fts, rowid, source)
-                    VALUES ('delete', old.id, old.source);
-                INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
-            END;
-
-            CREATE TABLE IF NOT EXISTS image_scans (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                image_url           TEXT,
-                url_hash            TEXT,
-                authenticity_score  INTEGER,
-                verdict             TEXT,
-                explanation         TEXT,
-                evidence            TEXT,
-                claim_analysis      TEXT,
-                timestamp           TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_image_scans_url_hash ON image_scans(url_hash);
-
-            CREATE TABLE IF NOT EXISTS domains (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain          TEXT UNIQUE NOT NULL,
-                total_scans     INTEGER DEFAULT 0,
-                avg_trust_score REAL DEFAULT 50.0,
-                flag_count      INTEGER DEFAULT 0,
-                last_scan       TEXT,
-                last_verdict    TEXT,
-                last_trust_score INTEGER
-            );
-        """)
-        conn.commit()
-        logger.info("SQLite database initialized at %s", DB_PATH)
+        for stmt in _SCHEMA_STATEMENTS:
+            try:
+                conn.execute(stmt)
+            except Exception as exc:
+                logger.debug("Schema statement skipped (may already exist): %s", exc)
+        _sync_and_close(conn)
+        logger.info("Database initialized (%s)", "Turso" if _use_turso else DB_PATH)
     except Exception as exc:
         logger.error("Failed to initialize database: %s", exc)
-    finally:
         conn.close()
 
 
@@ -122,7 +174,8 @@ def init_db():
 # Scan storage
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def store_scan(doc_type: str, source, result, fingerprint: str = None, url: str = None):
+def store_scan(doc_type: str, source, result, fingerprint: str = None,
+               url: str = None, user_id: str = None):
     """Store an analysis result."""
     conn = _get_conn()
     try:
@@ -136,6 +189,7 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None, url: str 
             "explanation": None,
             "evidence": None,
             "judgement": None,
+            "user_id": user_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -151,15 +205,15 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None, url: str 
         conn.execute(
             """INSERT INTO scans
                (doc_type, source, url, fingerprint, trust_score, verdict,
-                explanation, evidence, judgement, timestamp)
+                explanation, evidence, judgement, user_id, timestamp)
                VALUES (:doc_type, :source, :url, :fingerprint, :trust_score,
-                       :verdict, :explanation, :evidence, :judgement, :timestamp)""",
+                       :verdict, :explanation, :evidence, :judgement,
+                       :user_id, :timestamp)""",
             doc,
         )
-        conn.commit()
+        _sync_and_close(conn)
     except Exception as exc:
         logger.warning("Failed to store scan result: %s", exc)
-    finally:
         conn.close()
 
 
@@ -190,12 +244,25 @@ def find_by_fingerprint(fingerprint: str) -> dict | None:
     return None
 
 
-def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
-    """Find previously scanned content that is similar AND was flagged as low-trust.
+def count_scans_for_fingerprint(fingerprint: str) -> int:
+    """Count how many unique users scanned content with this fingerprint."""
+    if not fingerprint:
+        return 0
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) as cnt FROM scans WHERE fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
 
-    Extracts keywords from the text and uses FTS5 MATCH + BM25 ranking,
-    then filters to rows with trust_score <= threshold.
-    """
+
+def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
+    """Find previously scanned content that is similar AND was flagged as low-trust."""
     if not text:
         return []
 
@@ -238,19 +305,18 @@ def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _url_hash(url: str) -> str:
-    import hashlib
     return hashlib.sha256(url.encode()).hexdigest()[:32]
 
 
-def store_image_scan(image_url: str, result: dict):
+def store_image_scan(image_url: str, result: dict, user_id: str = None):
     """Store an image verification result for caching."""
     conn = _get_conn()
     try:
         conn.execute(
             """INSERT INTO image_scans
                (image_url, url_hash, authenticity_score, verdict,
-                explanation, evidence, claim_analysis, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                explanation, evidence, claim_analysis, user_id, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 image_url,
                 _url_hash(image_url),
@@ -259,13 +325,13 @@ def store_image_scan(image_url: str, result: dict):
                 result.get("explanation"),
                 json.dumps(result.get("evidence", [])),
                 json.dumps(result.get("claim_analysis")) if result.get("claim_analysis") else None,
+                user_id,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
-        conn.commit()
+        _sync_and_close(conn)
     except Exception as exc:
         logger.warning("Failed to store image scan: %s", exc)
-    finally:
         conn.close()
 
 
@@ -313,6 +379,65 @@ def count_image_verdicts(verdict: str) -> int:
         return row["cnt"] if row else 0
     except Exception:
         return 0
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Community flags
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def add_community_flag(fingerprint: str, user_id: str, reason: str = None) -> bool:
+    """Flag content as misinformation. Returns True if new flag, False if duplicate."""
+    if not fingerprint or not user_id:
+        return False
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO community_flags
+               (fingerprint, user_id, reason, timestamp)
+               VALUES (?, ?, ?, ?)""",
+            (fingerprint, user_id, reason, datetime.now(timezone.utc).isoformat()),
+        )
+        changed = conn.execute("SELECT changes()").fetchone()[0]
+        _sync_and_close(conn)
+        return changed > 0
+    except Exception as exc:
+        logger.warning("Failed to store community flag: %s", exc)
+        conn.close()
+        return False
+
+
+def get_flag_count(fingerprint: str) -> int:
+    """Count community flags for a piece of content."""
+    if not fingerprint:
+        return 0
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM community_flags WHERE fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def has_user_flagged(fingerprint: str, user_id: str) -> bool:
+    """Check if a specific user already flagged this content."""
+    if not fingerprint or not user_id:
+        return False
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM community_flags WHERE fingerprint = ? AND user_id = ?",
+            (fingerprint, user_id),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
     finally:
         conn.close()
 
@@ -376,10 +501,9 @@ def update_domain_stats(domain: str, trust_score: int, verdict: str):
                 (domain, float(trust_score), 1 if trust_score < 40 else 0,
                  now, verdict, trust_score),
             )
-        conn.commit()
+        _sync_and_close(conn)
     except Exception as exc:
         logger.debug("Domain stats update failed: %s", exc)
-    finally:
         conn.close()
 
 

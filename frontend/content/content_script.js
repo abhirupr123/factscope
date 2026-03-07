@@ -356,6 +356,18 @@
       ? `<details class="fs-details"><summary class="fs-details-summary">Why this score?</summary><ul class="fs-details-list">${notableSignals}</ul></details>`
       : '';
 
+    let communityHTML = '';
+    if (result.community_scans || result.community_flags) {
+      const parts = [];
+      if (result.community_scans) parts.push(`Verified by ${result.community_scans} user(s)`);
+      if (result.community_flags) parts.push(`\u26A0 Flagged by ${result.community_flags} user(s)`);
+      communityHTML = `<div class="fs-community">${parts.join(' \u00B7 ')}</div>`;
+    }
+
+    const flagBtnHTML = result.fingerprint
+      ? `<button class="fs-flag-btn" data-fp="${result.fingerprint}">\u{1F6A9} Flag as misinformation</button>`
+      : '';
+
     const panel = createPanel(`
       <div class="fs-header">
         <div class="fs-logo">FS</div>
@@ -371,14 +383,36 @@
       <div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div>
       <div class="fs-score-text"><strong style="color:${color}">${score}%</strong> trust score</div>
       ${sourceHTML}
+      ${communityHTML}
       <div class="fs-divider"></div>
       <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
       ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">Supporting evidence</div><ul>${evidenceItems}</ul></div>` : ''}
       ${factChecksHTML}
       ${signalsHTML}
+      <div class="fs-actions">${flagBtnHTML}</div>
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
+
+    const flagBtn = panel.querySelector('.fs-flag-btn');
+    if (flagBtn) {
+      flagBtn.addEventListener('click', () => {
+        const fp = flagBtn.dataset.fp;
+        flagBtn.disabled = true;
+        flagBtn.textContent = 'Flagging...';
+        chrome.runtime.sendMessage({ type: 'flag-content', fingerprint: fp }, (resp) => {
+          if (resp && resp.success) {
+            flagBtn.textContent = resp.already_flagged
+              ? `Already flagged (${resp.flag_count} total)`
+              : `\u2714 Flagged (${resp.flag_count} total)`;
+            flagBtn.classList.add('fs-flag-done');
+          } else {
+            flagBtn.textContent = 'Flag failed';
+            flagBtn.disabled = false;
+          }
+        });
+      });
+    }
   }
 
   /* ── Social media context extraction ─────────────────────────────── */
@@ -476,10 +510,6 @@
 
     const claimHTML = result.claim_analysis ? buildFactChecksHTML(result.claim_analysis) : '';
 
-    const lensBtn = result.reverse_search_url
-      ? `<a class="fs-lens-btn" href="${result.reverse_search_url}" target="_blank" rel="noopener">\u{1F50D} Search for original (Google Lens)</a>`
-      : '';
-
     const panel = createPanel(`
       <div class="fs-header">
         <div class="fs-logo">FS</div>
@@ -499,7 +529,6 @@
       <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
       ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">What we found</div><ul>${evidenceItems}</ul></div>` : ''}
       ${claimHTML}
-      ${lensBtn ? `<div class="fs-lens-wrap">${lensBtn}</div>` : ''}
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);

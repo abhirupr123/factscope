@@ -9,8 +9,12 @@ gcp-service-account.json
 # Python caches and logs
 __pycache__/
 *.pyc
-*cache*
 logs/
+
+# SQLite local database
+*.db
+*.db-shm
+*.db-wal
 
 # Virtual environments
 .venv/

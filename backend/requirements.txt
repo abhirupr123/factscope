@@ -7,6 +7,8 @@ beautifulsoup4>=4.12.0
 PyMuPDF>=1.25.0
 feedparser>=6.0.0
 Pillow>=9.0.0
+libsql-experimental>=0.0.68
+gunicorn>=21.2.0
 
 # LLM providers (install the one you need, or all three)
 google-generativeai>=0.8.0

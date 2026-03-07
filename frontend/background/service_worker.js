@@ -1,5 +1,31 @@
-const BACKEND_URL = 'http://localhost:8000/analyze';
-const IMAGE_VERIFY_URL = 'http://localhost:8000/analyze/verify-image';
+const PROD_BASE = 'https://factscope-api.onrender.com';
+const DEV_BASE = 'http://localhost:8000';
+
+let API_BASE = PROD_BASE;
+
+async function getApiBase() {
+  try {
+    const resp = await fetch(`${DEV_BASE}/models/info`, { signal: AbortSignal.timeout(1500) });
+    if (resp.ok) return DEV_BASE;
+  } catch { /* dev server not running */ }
+  return PROD_BASE;
+}
+
+getApiBase().then((base) => { API_BASE = base; });
+
+function getUserId() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get('factscope_user_id', (data) => {
+      if (data.factscope_user_id) {
+        resolve(data.factscope_user_id);
+      } else {
+        const id = crypto.randomUUID();
+        chrome.storage.local.set({ factscope_user_id: id });
+        resolve(id);
+      }
+    });
+  });
+}
 
 /* ── Context menu for image verification ──────────────────────────── */
 
@@ -25,41 +51,45 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'analyze') {
-    fetch(BACKEND_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(message.payload),
-    })
-      .then((r) => {
+    (async () => {
+      const userId = await getUserId();
+      const payload = { ...message.payload, user_id: userId };
+      try {
+        const r = await fetch(`${API_BASE}/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
-        return r.json();
-      })
-      .then((data) => sendResponse(data))
-      .catch((err) => {
+        const data = await r.json();
+        sendResponse(data);
+      } catch (err) {
         console.error('FactScope backend error:', err);
         sendResponse({
           trust_score: 0,
           verdict: 'error',
-          explanation: `Could not reach the FactScope backend. Make sure it is running on localhost:8000. (${err.message})`,
+          explanation: `Could not reach the FactScope backend. (${err.message})`,
           evidence: [],
         });
-      });
-
+      }
+    })();
     return true;
   }
 
   if (message.type === 'verify-image') {
-    fetch(IMAGE_VERIFY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(message.payload),
-    })
-      .then((r) => {
+    (async () => {
+      const userId = await getUserId();
+      const payload = { ...message.payload, user_id: userId };
+      try {
+        const r = await fetch(`${API_BASE}/analyze/verify-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
-        return r.json();
-      })
-      .then((data) => sendResponse(data))
-      .catch((err) => {
+        const data = await r.json();
+        sendResponse(data);
+      } catch (err) {
         console.error('FactScope image verify error:', err);
         sendResponse({
           authenticity_score: 0,
@@ -67,8 +97,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           explanation: `Could not reach the FactScope backend. (${err.message})`,
           evidence: [],
         });
-      });
+      }
+    })();
+    return true;
+  }
 
+  if (message.type === 'flag-content') {
+    (async () => {
+      const userId = await getUserId();
+      try {
+        const r = await fetch(`${API_BASE}/flag`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fingerprint: message.fingerprint,
+            user_id: userId,
+            reason: message.reason || null,
+          }),
+        });
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        const data = await r.json();
+        sendResponse(data);
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
     return true;
   }
 });
