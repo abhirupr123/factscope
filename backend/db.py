@@ -70,6 +70,15 @@ class _Row:
     def __contains__(self, key):
         return key in self._map
 
+    def items(self):
+        return self._map.items()
+
+    def values(self):
+        return self._map.values()
+
+    def __iter__(self):
+        return iter(self._keys)
+
 
 class _DictCursor:
     """Wraps a libsql cursor to return _Row objects instead of raw tuples."""
@@ -282,10 +291,13 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
             """INSERT INTO scans
                (doc_type, source, url, fingerprint, trust_score, verdict,
                 explanation, evidence, judgement, user_id, timestamp)
-               VALUES (:doc_type, :source, :url, :fingerprint, :trust_score,
-                       :verdict, :explanation, :evidence, :judgement,
-                       :user_id, :timestamp)""",
-            doc,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                doc["doc_type"], doc["source"], doc["url"], doc["fingerprint"],
+                doc["trust_score"], doc["verdict"], doc["explanation"],
+                doc["evidence"], doc["judgement"], doc["user_id"],
+                doc["timestamp"],
+            ),
         )
         _sync_and_close(conn)
     except Exception as exc:
