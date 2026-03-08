@@ -24,6 +24,12 @@
   .factscope-popup .fs-divider { background: #334155; }
   .factscope-popup .fs-evidence ul { color: #94a3b8; }
   .factscope-popup .fs-source { color: #94a3b8; }
+  .factscope-popup .fs-domain-profile { background: #0f172a; border-color: #334155; }
+  .factscope-popup .fs-domain-name { color: #e2e8f0; }
+  .factscope-popup .fs-domain-stats { color: #94a3b8; }
+  .factscope-popup .fs-domain-bar { background: #334155; }
+  .factscope-popup .fs-domain-rep-tag { color: #4ade80; }
+  .factscope-popup .fs-domain-flags { color: #f87171; }
   .factscope-popup .fs-footer { color: #475569; }
   .factscope-popup .fs-close { background: #334155; border-color: #475569; color: #e2e8f0; }
   .factscope-popup .fs-close:hover { background: #475569; }
@@ -139,6 +145,81 @@
   font-size: 11px;
   color: #94a3b8;
   margin-bottom: 4px;
+}
+
+/* ── Domain Profile Widget ──────────────────────────────────────── */
+
+.factscope-popup .fs-domain-profile {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0 4px;
+}
+
+.factscope-popup .fs-domain-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .fs-domain-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factscope-popup .fs-domain-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+.factscope-popup .fs-domain-stats {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .fs-domain-bar {
+  height: 3px;
+  background: #e2e8f0;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .fs-domain-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.factscope-popup .fs-domain-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.factscope-popup .fs-domain-rep-tag {
+  font-size: 10px;
+  color: #16a34a;
+  font-weight: 500;
+}
+
+.factscope-popup .fs-domain-flags {
+  font-size: 10px;
+  color: #dc2626;
+  font-weight: 500;
 }
 
 /* ── Divider ─────────────────────────────────────────────────────── */
@@ -454,78 +535,386 @@
   .factscope-popup .fs-details-list { color: #94a3b8; }
 }
 
-/* ── Community signals ────────────────────────────────────────────── */
+/* ── Vote buttons ────────────────────────────────────────────────── */
 
-.factscope-popup .fs-community {
+.factscope-popup .fs-vote-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.factscope-popup .fs-vote-label {
   font-size: 11px;
   color: #64748b;
-  margin: 4px 0;
-  padding: 4px 8px;
-  background: #f8fafc;
-  border-radius: 6px;
-  text-align: center;
+}
+
+.factscope-popup .fs-vote-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.factscope-popup .fs-vote-btn:hover {
+  background: #f1f5f9;
+}
+
+.factscope-popup .fs-vote-btn.fs-vote-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.factscope-popup .fs-vote-count {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-left: 4px;
 }
 
 @media (prefers-color-scheme: dark) {
-  .factscope-popup .fs-community {
-    background: #1e293b;
-    color: #94a3b8;
-  }
+  .factscope-popup .fs-vote-label { color: #94a3b8; }
+  .factscope-popup .fs-vote-btn { background: #1e293b; border-color: #334155; }
+  .factscope-popup .fs-vote-btn:hover { background: #334155; }
+  .factscope-popup .fs-vote-btn.fs-vote-active { border-color: #60a5fa; background: #1e3a5f; }
+  .factscope-popup .fs-vote-count { color: #64748b; }
 }
 
-/* ── Flag button ─────────────────────────────────────────────────── */
+/* ── Scans count ─────────────────────────────────────────────────── */
 
-.factscope-popup .fs-actions {
-  margin: 8px 0 4px;
+.factscope-popup .fs-scans-count {
+  font-size: 11px;
+  color: #64748b;
+  margin: 2px 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-scans-count { color: #94a3b8; }
+}
+
+/* ── Community section (THE MOAT) ────────────────────────────────── */
+
+.factscope-popup .fs-community-section {
+  margin: 10px 0;
+  padding: 10px;
+  border-left: 3px solid #2563eb;
+  background: #f0f7ff;
+  border-radius: 0 10px 10px 0;
+}
+
+.factscope-popup .fs-community-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.factscope-popup .fs-community-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e40af;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.factscope-popup .fs-flag-count-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: #ef4444;
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 16px;
   text-align: center;
 }
 
-.factscope-popup .fs-flag-btn {
+.factscope-popup .fs-no-notes {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 6px;
+  font-style: italic;
+}
+
+/* ── Note cards ──────────────────────────────────────────────────── */
+
+.factscope-popup .fs-note-card {
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+
+.factscope-popup .fs-category-badge {
   display: inline-block;
-  padding: 6px 14px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .fs-note-text {
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.factscope-popup .fs-note-sources {
+  margin-top: 4px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.factscope-popup .fs-note-source {
+  font-size: 10px;
+  color: #2563eb;
+  text-decoration: none;
+  background: #eff6ff;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.factscope-popup .fs-note-source:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-community-section { background: #172135; border-left-color: #3b82f6; }
+  .factscope-popup .fs-community-title { color: #93c5fd; }
+  .factscope-popup .fs-no-notes { color: #94a3b8; }
+  .factscope-popup .fs-note-card { background: #1e293b; border-color: #334155; }
+  .factscope-popup .fs-note-text { color: #e2e8f0; }
+  .factscope-popup .fs-note-source { color: #60a5fa; background: #1e3a5f; }
+}
+
+/* ── Add note button ─────────────────────────────────────────────── */
+
+.factscope-popup .fs-add-note-btn {
+  display: block;
+  width: 100%;
+  padding: 7px;
+  border: 1px dashed #93c5fd;
+  border-radius: 8px;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.factscope-popup .fs-add-note-btn:hover {
+  background: #eff6ff;
+  border-style: solid;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-add-note-btn { border-color: #3b82f6; color: #60a5fa; }
+  .factscope-popup .fs-add-note-btn:hover { background: #1e3a5f; }
+}
+
+/* ── Flag form ───────────────────────────────────────────────────── */
+
+.factscope-popup .fs-flag-form {
+  margin-top: 8px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.factscope-popup .fs-flag-category {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   background: #fff;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
+  color: #334155;
+  margin-bottom: 6px;
+  appearance: auto;
 }
 
-.factscope-popup .fs-flag-btn:hover:not(:disabled) {
-  border-color: #ef4444;
-  color: #ef4444;
-  background: #fef2f2;
+.factscope-popup .fs-textarea-wrap {
+  position: relative;
+  margin-bottom: 6px;
 }
 
-.factscope-popup .fs-flag-btn:disabled {
-  cursor: default;
-  opacity: 0.8;
+.factscope-popup .fs-flag-justification {
+  width: 100%;
+  min-height: 60px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  resize: vertical;
+  color: #334155;
+  background: #fff;
+  box-sizing: border-box;
 }
 
-.factscope-popup .fs-flag-btn.fs-flag-done {
-  border-color: #10b981;
+.factscope-popup .fs-flag-justification:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.factscope-popup .fs-char-counter {
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.factscope-popup .fs-char-counter.fs-char-ok {
   color: #10b981;
-  background: #ecfdf5;
+}
+
+.factscope-popup .fs-source-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.factscope-popup .fs-source-url {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #334155;
+  background: #fff;
+}
+
+.factscope-popup .fs-source-url:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.factscope-popup .fs-add-source-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 16px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.factscope-popup .fs-add-source-btn:hover {
+  background: #e2e8f0;
+}
+
+.factscope-popup .fs-submit-flag {
+  width: 100%;
+  padding: 7px;
+  border: none;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.factscope-popup .fs-submit-flag:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.factscope-popup .fs-submit-flag:disabled {
+  background: #94a3b8;
+  cursor: default;
+}
+
+.factscope-popup .fs-flag-rejection {
+  font-size: 11px;
+  color: #ef4444;
+  margin: 4px 0 0;
+  line-height: 1.4;
 }
 
 @media (prefers-color-scheme: dark) {
-  .factscope-popup .fs-flag-btn {
-    background: #1e293b;
-    border-color: #334155;
-    color: #94a3b8;
-  }
-  .factscope-popup .fs-flag-btn:hover:not(:disabled) {
-    border-color: #ef4444;
-    color: #fca5a5;
-    background: #450a0a;
-  }
-  .factscope-popup .fs-flag-btn.fs-flag-done {
-    border-color: #10b981;
-    color: #6ee7b7;
-    background: #064e3b;
-  }
+  .factscope-popup .fs-flag-form { background: #0f172a; border-color: #334155; }
+  .factscope-popup .fs-flag-category { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+  .factscope-popup .fs-flag-justification { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+  .factscope-popup .fs-source-url { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+  .factscope-popup .fs-add-source-btn { background: #334155; border-color: #475569; color: #94a3b8; }
+  .factscope-popup .fs-submit-flag:disabled { background: #475569; }
+  .factscope-popup .fs-flag-rejection { color: #fca5a5; }
+}
+
+/* ── Knowledge base matches ──────────────────────────────────────── */
+
+.factscope-popup .fs-kb-section {
+  margin: 6px 0;
+  padding: 8px;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+}
+
+.factscope-popup .fs-kb-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #92400e;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .fs-kb-match {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+
+.factscope-popup .fs-kb-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.factscope-popup .fs-kb-text {
+  font-size: 12px;
+  color: #78350f;
+  line-height: 1.4;
+  flex: 1;
+}
+
+.factscope-popup .fs-kb-conf {
+  font-size: 10px;
+  color: #92400e;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-kb-section { background: #1c1917; border-color: #78350f; }
+  .factscope-popup .fs-kb-title { color: #fcd34d; }
+  .factscope-popup .fs-kb-text { color: #fde68a; }
+  .factscope-popup .fs-kb-conf { color: #fcd34d; }
 }
 
 /* ── Footer ──────────────────────────────────────────────────────── */

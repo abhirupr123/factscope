@@ -5,16 +5,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
-from elastic_utils import store_analysis_result, find_by_fingerprint, find_flagged_similar
+from elastic_utils import store_analysis_result, find_by_fingerprint, find_flagged_similar, find_trusted_similar, get_domain_profile
 from db import (store_image_scan, find_image_scan, add_community_flag,
                 get_flag_count, has_user_flagged, count_scans_for_fingerprint,
-                update_scan_claims, get_scan_claims)
+                update_scan_claims, get_scan_claims, url_hash,
+                get_community_notes, store_vote, get_vote_stats,
+                should_invalidate_cache, graduate_flags_to_fact,
+                search_knowledge_base, VALID_FLAG_CATEGORIES)
 from llm_utils import get_structured_analysis, get_image_verification
-from scoring import compute_structural_score
+from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
-from trust_graph import update_domain_stats, compute_domain_trust_signal
+from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
-from config import TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
+from config import TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL
 import json
 import re
 import uvicorn
@@ -94,17 +97,44 @@ class FactCheckResult(BaseModel):
     related_articles: Optional[list[RelatedArticle]] = None
 
 
+class CommunityNote(BaseModel):
+    category: str
+    justification: str
+    source_urls: Optional[list[str]] = None
+    timestamp: Optional[str] = None
+
+
+class VoteStats(BaseModel):
+    likes: int = 0
+    dislikes: int = 0
+
+
+class DomainProfile(BaseModel):
+    domain: str
+    reputation_tier: str
+    is_reputable: bool = False
+    total_scans: int = 0
+    unique_users: int = 0
+    avg_trust_score: float = 50.0
+    flag_count: int = 0
+    last_verdict: Optional[str] = None
+
+
 class AnalyzeResponse(BaseModel):
     trust_score: int
     verdict: str
     explanation: str
     evidence: list[str]
     source_info: Optional[SourceInfo] = None
+    domain_profile: Optional[DomainProfile] = None
     structural_signals: Optional[list[dict]] = None
     fact_checks: Optional[list[FactCheckResult]] = None
     cached: Optional[bool] = None
     community_flags: Optional[int] = None
     community_scans: Optional[int] = None
+    community_notes: Optional[list[CommunityNote]] = None
+    vote_stats: Optional[VoteStats] = None
+    kb_matches: Optional[list[dict]] = None
     fingerprint: Optional[str] = None
     claims_pending: Optional[bool] = None
 
@@ -112,13 +142,29 @@ class AnalyzeResponse(BaseModel):
 class FlagRequest(BaseModel):
     fingerprint: str
     user_id: str
-    reason: Optional[str] = None
+    category: str
+    justification: str
+    source_urls: Optional[list[str]] = None
 
 
 class FlagResponse(BaseModel):
     success: bool
     flag_count: int
     already_flagged: bool = False
+    note: Optional[CommunityNote] = None
+    rejection_reason: Optional[str] = None
+
+
+class VoteRequest(BaseModel):
+    fingerprint: str
+    user_id: str
+    vote: int
+
+
+class VoteResponse(BaseModel):
+    success: bool
+    likes: int = 0
+    dislikes: int = 0
 
 
 class ImageVerifyRequest(BaseModel):
@@ -135,6 +181,10 @@ class ImageVerifyResponse(BaseModel):
     explanation: str
     evidence: list[str]
     claim_analysis: Optional[list[FactCheckResult]] = None
+    fingerprint: Optional[str] = None
+    community_flags: Optional[int] = None
+    community_notes: Optional[list[CommunityNote]] = None
+    vote_stats: Optional[VoteStats] = None
 
 
 MAX_IMAGE_BYTES = 1_500_000  # ~1.5 MB limit to keep tokens low
@@ -213,8 +263,14 @@ def _fetch_and_resize_image(url: str) -> tuple[bytes, str] | tuple[None, None]:
 async def verify_image(request: ImageVerifyRequest):
     """Verify an image for AI generation, manipulation, or misuse."""
 
+    img_fp = f"img:{url_hash(request.image_url)}"
+
     cached = find_image_scan(request.image_url)
     if cached:
+        img_flags = get_flag_count(img_fp)
+        img_notes_raw = get_community_notes(img_fp, limit=3)
+        img_notes = [CommunityNote(**n) for n in img_notes_raw] if img_notes_raw else None
+        img_v_stats = get_vote_stats(img_fp)
         return ImageVerifyResponse(
             authenticity_score=cached.get("authenticity_score", 50),
             verdict=cached.get("verdict", "uncertain"),
@@ -222,6 +278,10 @@ async def verify_image(request: ImageVerifyRequest):
             evidence=cached.get("evidence", []),
             claim_analysis=[FactCheckResult(**c) for c in cached["claim_analysis"]]
             if cached.get("claim_analysis") else None,
+            fingerprint=img_fp,
+            community_flags=img_flags if img_flags >= 3 else None,
+            community_notes=img_notes,
+            vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
         )
 
     image_data, media_type = _fetch_and_resize_image(request.image_url)
@@ -365,14 +425,6 @@ async def verify_image(request: ImageVerifyRequest):
             elif final_score <= 25 and final_verdict == "uncertain":
                 final_verdict = "manipulated"
 
-    response = ImageVerifyResponse(
-        authenticity_score=final_score,
-        verdict=final_verdict,
-        explanation=final_explanation,
-        evidence=result["evidence"],
-        claim_analysis=claim_results,
-    )
-
     try:
         store_image_scan(request.image_url, {
             "authenticity_score": final_score,
@@ -384,19 +436,111 @@ async def verify_image(request: ImageVerifyRequest):
     except Exception as exc:
         logger.warning("Image scan storage failed: %s", exc)
 
-    return response
+    img_flags = get_flag_count(img_fp)
+    img_notes_raw = get_community_notes(img_fp, limit=3)
+    img_notes = [CommunityNote(**n) for n in img_notes_raw] if img_notes_raw else None
+    img_v_stats = get_vote_stats(img_fp)
+    return ImageVerifyResponse(
+        authenticity_score=final_score,
+        verdict=final_verdict,
+        explanation=final_explanation,
+        evidence=result["evidence"],
+        claim_analysis=claim_results,
+        fingerprint=img_fp,
+        community_flags=img_flags if img_flags >= 3 else None,
+        community_notes=img_notes,
+        vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
+    )
+
+
+_FLAG_VALIDATION_PROMPT = """\
+You are a content moderation assistant. A user has flagged online content with the following justification.
+Rate the quality of this flag on a scale of 0-100:
+- 0-29: Low quality (vague, troll, spam, no real argument, just opinion with no substance)
+- 30-69: Medium quality (has a point but lacks specifics or sources)
+- 70-100: High quality (clear reasoning, specific claims, references evidence)
+
+Respond with ONLY a JSON object: {"score": <number>, "reason": "<brief explanation>"}"""
+
+
+def _validate_flag_quality(category: str, justification: str) -> tuple[int, str]:
+    """Use a light LLM to score the quality of a community flag. Returns (score, reason)."""
+    try:
+        from llm_utils import _call_llm
+        user_content = f"Category: {category}\nJustification: {justification}"
+        raw = _call_llm(
+            _FLAG_VALIDATION_PROMPT, user_content,
+            min_tokens=100, model_override=FLAG_VALIDATION_MODEL,
+        )
+        match = re.search(r'\{[^}]+\}', raw)
+        if match:
+            data = json.loads(match.group())
+            return int(data.get("score", 50)), data.get("reason", "")
+    except Exception as exc:
+        logger.warning("Flag validation LLM failed, defaulting to 50: %s", exc)
+    return 50, ""
 
 
 @app.post("/flag", response_model=FlagResponse)
 async def flag_content(request: FlagRequest):
-    """Flag content as misinformation."""
+    """Add a community note (flag with justification), validated by LLM."""
+    if request.category not in VALID_FLAG_CATEGORIES:
+        return FlagResponse(success=False, flag_count=get_flag_count(request.fingerprint))
+    if not request.justification or len(request.justification.strip()) < 30:
+        return FlagResponse(success=False, flag_count=get_flag_count(request.fingerprint))
+
     if has_user_flagged(request.fingerprint, request.user_id):
         count = get_flag_count(request.fingerprint)
         return FlagResponse(success=True, flag_count=count, already_flagged=True)
 
-    added = add_community_flag(request.fingerprint, request.user_id, request.reason)
+    quality_score, rejection_reason = _validate_flag_quality(
+        request.category, request.justification,
+    )
+    if quality_score < 30:
+        return FlagResponse(
+            success=False,
+            flag_count=get_flag_count(request.fingerprint),
+            rejection_reason=rejection_reason or "Please provide a more specific and substantive justification.",
+        )
+
+    note_dict = add_community_flag(
+        request.fingerprint, request.user_id,
+        request.category, request.justification,
+        request.source_urls, quality_score=quality_score,
+    )
     count = get_flag_count(request.fingerprint)
-    return FlagResponse(success=added, flag_count=count)
+
+    if note_dict:
+        graduate_flags_to_fact(request.fingerprint)
+
+    return FlagResponse(
+        success=note_dict is not None,
+        flag_count=count,
+        note=CommunityNote(**note_dict) if note_dict else None,
+    )
+
+
+@app.post("/vote", response_model=VoteResponse)
+async def vote_on_result(request: VoteRequest):
+    """Like (+1) or dislike (-1) an analysis result."""
+    if request.vote not in (1, -1):
+        return VoteResponse(success=False)
+    stored = store_vote(request.fingerprint, request.user_id, request.vote)
+    stats = get_vote_stats(request.fingerprint)
+    return VoteResponse(success=stored, likes=stats["likes"], dislikes=stats["dislikes"])
+
+
+@app.get("/community-notes/{fingerprint}")
+async def fetch_community_notes(fingerprint: str):
+    """Fetch community notes and vote stats for a fingerprint."""
+    notes = get_community_notes(fingerprint)
+    stats = get_vote_stats(fingerprint)
+    count = get_flag_count(fingerprint)
+    return {
+        "notes": [CommunityNote(**n) for n in notes],
+        "vote_stats": VoteStats(**stats),
+        "flag_count": count,
+    }
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -411,9 +555,21 @@ async def analyze_page(request: AnalyzeRequest):
         fp_input += request.text
     fingerprint = compute_fingerprint(fp_input) if fp_input else None
 
+    vote_feedback = None
+
+    # ── Build domain profile (visible to user) ────────────────────────
+    domain_prof = None
+    if request.url:
+        base_domain = extract_base_domain(request.url)
+        if base_domain:
+            is_rep = base_domain in REPUTABLE_DOMAINS
+            prof_data = get_domain_profile(base_domain, is_reputable=is_rep)
+            if prof_data:
+                domain_prof = DomainProfile(**prof_data)
+
     if fingerprint:
         cached = find_by_fingerprint(fingerprint)
-        if cached:
+        if cached and not should_invalidate_cache(fingerprint):
             logger.info("Returning cached result for fingerprint %s", fingerprint[:16])
 
             fc_response = None
@@ -426,6 +582,10 @@ async def analyze_page(request: AnalyzeRequest):
 
             comm_flags = get_flag_count(fingerprint)
             comm_scans = count_scans_for_fingerprint(fingerprint)
+            notes_raw = get_community_notes(fingerprint, limit=3)
+            notes = [CommunityNote(**n) for n in notes_raw] if notes_raw else None
+            v_stats = get_vote_stats(fingerprint)
+
             return AnalyzeResponse(
                 trust_score=cached.get("trust_score", 50),
                 verdict=cached.get("verdict", "suspicious"),
@@ -433,10 +593,21 @@ async def analyze_page(request: AnalyzeRequest):
                 evidence=cached.get("evidence", []),
                 cached=True,
                 fact_checks=fc_response,
-                community_flags=comm_flags if comm_flags > 0 else None,
+                domain_profile=domain_prof,
+                community_flags=comm_flags if comm_flags >= 3 else None,
                 community_scans=comm_scans if comm_scans > 1 else None,
+                community_notes=notes,
+                vote_stats=VoteStats(**v_stats) if (v_stats["likes"] + v_stats["dislikes"]) > 0 else None,
                 fingerprint=fingerprint,
             )
+        elif cached:
+            logger.info("Cache invalidated by votes for %s, re-analyzing", fingerprint[:16])
+            vote_feedback = {
+                "previous_verdict": cached.get("verdict"),
+                "previous_explanation": cached.get("explanation", "")[:300],
+                "vote_stats": get_vote_stats(fingerprint),
+                "community_notes": get_community_notes(fingerprint, limit=3),
+            }
 
     # ── Build the LLM prompt with metadata + video context ────────────
     content_parts = []
@@ -490,6 +661,34 @@ async def analyze_page(request: AnalyzeRequest):
             explanation="No content was provided for analysis.",
             evidence=["No text, links, or images were extracted from the page."],
         )
+
+    # ── Knowledge base lookup (community-verified facts) ───────────────
+    kb_hits = []
+    if request.text:
+        kb_hits = search_knowledge_base(request.text, limit=3)
+        if kb_hits:
+            kb_context = "\n\nCommunity-verified facts relevant to this content:"
+            for hit in kb_hits:
+                kb_context += f"\n- {hit['counter_claim']}"
+                if hit.get("sources"):
+                    kb_context += f" (Sources: {', '.join(hit['sources'][:3])})"
+                kb_context += f" [Confidence: {hit['confidence']:.0%}, flagged {hit['flag_count']} time(s)]"
+            combined += kb_context
+            logger.info("Injected %d knowledge base matches into LLM context", len(kb_hits))
+
+    # ── Vote feedback context (when re-analyzing a disliked result) ────
+    if vote_feedback:
+        feedback_ctx = "\n\nIMPORTANT — Previous analysis feedback:"
+        feedback_ctx += f"\nA prior analysis gave verdict '{vote_feedback['previous_verdict']}'"
+        feedback_ctx += f" but received {vote_feedback['vote_stats']['dislikes']} dislike(s)"
+        feedback_ctx += f" vs {vote_feedback['vote_stats']['likes']} like(s)."
+        if vote_feedback["community_notes"]:
+            feedback_ctx += "\nCommunity corrections:"
+            for n in vote_feedback["community_notes"]:
+                feedback_ctx += f"\n- [{n.get('category', 'general')}] {n.get('justification', '')[:200]}"
+        feedback_ctx += "\nPlease provide a fresh analysis, carefully considering this user feedback."
+        combined += feedback_ctx
+        logger.info("Injected vote feedback context for re-analysis")
 
     # ── Run LLM analysis + fact-checking in parallel ────────────────────
     llm_result = None
@@ -556,6 +755,19 @@ async def analyze_page(request: AnalyzeRequest):
         })
         structural_score = max(0, min(100, structural_score - 10))
 
+    # ── Positive signal: similar content previously verified as trustworthy
+    trusted_similar = find_trusted_similar(
+        request.text, threshold=80, exclude_fingerprint=fingerprint,
+    ) if request.text else []
+    if trusted_similar:
+        trust_delta = min(10, len(trusted_similar) * 5)
+        signals.append({
+            "name": "previously_trusted",
+            "delta": trust_delta,
+            "detail": f"Similar content was previously verified as trustworthy ({len(trusted_similar)} match(es))",
+        })
+        structural_score = max(0, min(100, structural_score + trust_delta))
+
     # ── Fact-check score adjustments ──────────────────────────────────
     fc_delta = 0
     for fc in fact_checks:
@@ -574,6 +786,11 @@ async def analyze_page(request: AnalyzeRequest):
     if flagged_similar:
         all_evidence.append(
             f"Similar content was previously flagged as suspicious ({len(flagged_similar)} time(s))."
+        )
+
+    if trusted_similar:
+        all_evidence.append(
+            f"Similar content was previously verified as trustworthy ({len(trusted_similar)} time(s))."
         )
 
     for fc in fact_checks:
@@ -626,6 +843,18 @@ async def analyze_page(request: AnalyzeRequest):
 
     comm_flags = get_flag_count(fingerprint) if fingerprint else 0
     comm_scans = count_scans_for_fingerprint(fingerprint) if fingerprint else 0
+    notes_raw = get_community_notes(fingerprint, limit=3) if fingerprint else []
+    notes = [CommunityNote(**n) for n in notes_raw] if notes_raw else None
+    v_stats = get_vote_stats(fingerprint) if fingerprint else {"likes": 0, "dislikes": 0}
+
+    kb_response = None
+    if kb_hits:
+        kb_response = [{
+            "counter_claim": h["counter_claim"],
+            "category": h.get("category"),
+            "confidence": h.get("confidence"),
+            "sources": h.get("sources", []),
+        } for h in kb_hits]
 
     return AnalyzeResponse(
         trust_score=combined_score,
@@ -633,11 +862,15 @@ async def analyze_page(request: AnalyzeRequest):
         explanation=llm_result.get("explanation", ""),
         evidence=all_evidence,
         source_info=source_info,
+        domain_profile=domain_prof,
         structural_signals=signals,
         fact_checks=fc_response if not claims_pending else None,
         cached=False,
-        community_flags=comm_flags if comm_flags > 0 else None,
+        community_flags=comm_flags if comm_flags >= 3 else None,
         community_scans=comm_scans if comm_scans > 1 else None,
+        community_notes=notes,
+        vote_stats=VoteStats(**v_stats) if (v_stats["likes"] + v_stats["dislikes"]) > 0 else None,
+        kb_matches=kb_response,
         fingerprint=fingerprint,
         claims_pending=claims_pending if claims_pending else None,
     )

@@ -8,7 +8,9 @@ Provides:
   - Image scan storage and caching
   - Full-text similarity search via FTS5 + BM25 ranking
   - Domain trust statistics
-  - Community flags
+  - Community flags with justifications
+  - Response voting (like/dislike)
+  - Knowledge base (graduated community facts)
 """
 
 import hashlib
@@ -180,7 +182,13 @@ def _commit_and_sync():
 # Schema
 # ═══════════════════════════════════════════════════════════════════════════════
 
+VALID_FLAG_CATEGORIES = frozenset({
+    "false_info", "misleading_headline", "out_of_context",
+    "satire_as_real", "manipulated_media", "other",
+})
+
 _SCHEMA_STATEMENTS = [
+    # ── Scans ──────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS scans (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         doc_type    TEXT,
@@ -218,6 +226,7 @@ _SCHEMA_STATEMENTS = [
         INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
     END""",
 
+    # ── Image scans ────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS image_scans (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
         image_url           TEXT,
@@ -232,6 +241,7 @@ _SCHEMA_STATEMENTS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_image_scans_url_hash ON image_scans(url_hash)",
 
+    # ── Domains ────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS domains (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         domain          TEXT UNIQUE NOT NULL,
@@ -243,20 +253,72 @@ _SCHEMA_STATEMENTS = [
         last_trust_score INTEGER
     )""",
 
+    # ── Community flags (v2: with justification) ───────────────────────
     """CREATE TABLE IF NOT EXISTS community_flags (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        fingerprint TEXT NOT NULL,
-        user_id     TEXT NOT NULL,
-        reason      TEXT,
-        timestamp   TEXT,
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint   TEXT NOT NULL,
+        user_id       TEXT NOT NULL,
+        category      TEXT NOT NULL DEFAULT 'other',
+        justification TEXT NOT NULL DEFAULT '',
+        source_urls   TEXT,
+        quality_score INTEGER DEFAULT 50,
+        reason        TEXT,
+        timestamp     TEXT,
         UNIQUE(fingerprint, user_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_flags_fingerprint ON community_flags(fingerprint)",
+
+    # ── Response votes ─────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS response_votes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint TEXT NOT NULL,
+        user_id     TEXT NOT NULL,
+        vote        INTEGER NOT NULL,
+        timestamp   TEXT,
+        UNIQUE(fingerprint, user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_votes_fingerprint ON response_votes(fingerprint)",
+
+    # ── Knowledge base (graduated facts) ───────────────────────────────
+    """CREATE TABLE IF NOT EXISTS fact_entries (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        claim_text    TEXT NOT NULL,
+        counter_claim TEXT NOT NULL,
+        sources       TEXT,
+        category      TEXT,
+        confidence    REAL DEFAULT 0.5,
+        flag_count    INTEGER DEFAULT 0,
+        fingerprints  TEXT,
+        created_at    TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_fact_confidence ON fact_entries(confidence)",
+
+    """CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+        claim_text, counter_claim,
+        content=fact_entries,
+        content_rowid=id,
+        tokenize='porter unicode61'
+    )""",
+    """CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON fact_entries BEGIN
+        INSERT INTO facts_fts(rowid, claim_text, counter_claim)
+        VALUES (new.id, new.claim_text, new.counter_claim);
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON fact_entries BEGIN
+        INSERT INTO facts_fts(facts_fts, rowid, claim_text, counter_claim)
+        VALUES ('delete', old.id, old.claim_text, old.counter_claim);
+    END""",
+]
+
+_MIGRATION_STATEMENTS = [
+    "ALTER TABLE community_flags ADD COLUMN category TEXT DEFAULT 'other'",
+    "ALTER TABLE community_flags ADD COLUMN justification TEXT DEFAULT ''",
+    "ALTER TABLE community_flags ADD COLUMN source_urls TEXT",
+    "ALTER TABLE community_flags ADD COLUMN quality_score INTEGER DEFAULT 50",
 ]
 
 
 def init_db():
-    """Create tables and FTS index if they don't exist."""
+    """Create tables, FTS indexes, and run migrations if needed."""
     conn = _get_conn()
     if _use_turso:
         try:
@@ -270,6 +332,11 @@ def init_db():
                 conn.execute(stmt)
             except Exception as exc:
                 logger.debug("Schema statement skipped (may already exist): %s", exc)
+        for stmt in _MIGRATION_STATEMENTS:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass  # column already exists
         _commit_and_sync()
         logger.info("Database initialized (%s)", "Turso" if _use_turso else DB_PATH)
     except Exception as exc:
@@ -401,11 +468,52 @@ def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
     return []
 
 
+def find_trusted_similar(text: str, threshold: int = 80,
+                         exclude_fingerprint: str = None) -> list[dict]:
+    """Find previously scanned HIGH-trust content verified by 2+ users."""
+    if not text:
+        return []
+
+    keywords = _extract_search_terms(text[:500])
+    if not keywords:
+        return []
+
+    try:
+        conn = _get_conn()
+        query = " OR ".join(keywords)
+        rows = conn.execute(
+            """SELECT s.fingerprint, s.trust_score, s.verdict, s.source,
+                      COUNT(DISTINCT s.user_id) AS user_count
+               FROM scans s
+               JOIN scans_fts f ON s.id = f.rowid
+               WHERE scans_fts MATCH ?
+                 AND s.trust_score IS NOT NULL
+                 AND s.trust_score >= ?
+               GROUP BY s.fingerprint
+               HAVING user_count >= 2
+               ORDER BY bm25(scans_fts) LIMIT 5""",
+            (query, threshold),
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            doc = dict(row)
+            if exclude_fingerprint and doc.get("fingerprint") == exclude_fingerprint:
+                continue
+            results.append(doc)
+            if len(results) >= 3:
+                break
+        return results
+    except Exception as exc:
+        logger.debug("Trusted similarity search failed: %s", exc)
+    return []
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Image scan storage
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _url_hash(url: str) -> str:
+def url_hash(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:32]
 
 
@@ -420,7 +528,7 @@ def store_image_scan(image_url: str, result: dict, user_id: str = None):
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 image_url,
-                _url_hash(image_url),
+                url_hash(image_url),
                 result.get("authenticity_score"),
                 result.get("verdict"),
                 result.get("explanation"),
@@ -441,7 +549,7 @@ def find_image_scan(image_url: str, max_age_hours: int = 24) -> dict | None:
         conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM image_scans WHERE url_hash = ? ORDER BY timestamp DESC LIMIT 1",
-            (_url_hash(image_url),),
+            (url_hash(image_url),),
         ).fetchone()
         if row:
             doc = dict(row)
@@ -483,24 +591,70 @@ def count_image_verdicts(verdict: str) -> int:
 # Community flags
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def add_community_flag(fingerprint: str, user_id: str, reason: str = None) -> bool:
-    """Flag content as misinformation. Returns True if new flag, False if duplicate."""
+def add_community_flag(fingerprint: str, user_id: str, category: str,
+                       justification: str, source_urls: list[str] | None = None,
+                       quality_score: int = 50) -> dict | None:
+    """Add a community note. Returns the stored note dict, or None on failure."""
     if not fingerprint or not user_id:
-        return False
+        return None
+    if category not in VALID_FLAG_CATEGORIES:
+        category = "other"
+    if not justification or len(justification.strip()) < 30:
+        return None
     try:
         conn = _get_conn()
+        urls_json = json.dumps(source_urls) if source_urls else None
+        now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             """INSERT OR IGNORE INTO community_flags
-               (fingerprint, user_id, reason, timestamp)
-               VALUES (?, ?, ?, ?)""",
-            (fingerprint, user_id, reason, datetime.now(timezone.utc).isoformat()),
+               (fingerprint, user_id, category, justification, source_urls,
+                quality_score, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (fingerprint, user_id, category, justification.strip(), urls_json, quality_score, now),
         )
         changed = conn.execute("SELECT changes()").fetchone()[0]
         _commit_and_sync()
-        return changed > 0
+        if changed > 0:
+            return {
+                "category": category,
+                "justification": justification.strip(),
+                "source_urls": source_urls,
+                "timestamp": now,
+            }
+        return None
     except Exception as exc:
         logger.warning("Failed to store community flag: %s", exc)
-        return False
+        return None
+
+
+def get_community_notes(fingerprint: str, limit: int = 5) -> list[dict]:
+    """Return community notes for a fingerprint, newest first."""
+    if not fingerprint:
+        return []
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT category, justification, source_urls, timestamp
+               FROM community_flags
+               WHERE fingerprint = ? AND justification != ''
+               ORDER BY timestamp DESC LIMIT ?""",
+            (fingerprint, limit),
+        ).fetchall()
+        notes = []
+        for r in rows:
+            note = dict(r)
+            if note.get("source_urls"):
+                try:
+                    note["source_urls"] = json.loads(note["source_urls"])
+                except (json.JSONDecodeError, TypeError):
+                    note["source_urls"] = []
+            else:
+                note["source_urls"] = []
+            notes.append(note)
+        return notes
+    except Exception as exc:
+        logger.debug("Community notes fetch failed: %s", exc)
+        return []
 
 
 def get_flag_count(fingerprint: str) -> int:
@@ -534,6 +688,175 @@ def has_user_flagged(fingerprint: str, user_id: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Response votes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def store_vote(fingerprint: str, user_id: str, vote: int) -> bool:
+    """Store a like (+1) or dislike (-1). Returns True if new vote stored."""
+    if not fingerprint or not user_id or vote not in (1, -1):
+        return False
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO response_votes (fingerprint, user_id, vote, timestamp)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(fingerprint, user_id) DO UPDATE SET vote = ?, timestamp = ?""",
+            (fingerprint, user_id, vote, datetime.now(timezone.utc).isoformat(),
+             vote, datetime.now(timezone.utc).isoformat()),
+        )
+        _commit_and_sync()
+        return True
+    except Exception as exc:
+        logger.warning("Failed to store vote: %s", exc)
+        return False
+
+
+def get_vote_stats(fingerprint: str) -> dict:
+    """Return {likes, dislikes} for a fingerprint."""
+    result = {"likes": 0, "dislikes": 0}
+    if not fingerprint:
+        return result
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """SELECT
+                 SUM(CASE WHEN vote = 1 THEN 1 ELSE 0 END) as likes,
+                 SUM(CASE WHEN vote = -1 THEN 1 ELSE 0 END) as dislikes
+               FROM response_votes WHERE fingerprint = ?""",
+            (fingerprint,),
+        ).fetchone()
+        if row:
+            result["likes"] = row["likes"] or 0
+            result["dislikes"] = row["dislikes"] or 0
+    except Exception as exc:
+        logger.debug("Vote stats fetch failed: %s", exc)
+    return result
+
+
+def should_invalidate_cache(fingerprint: str) -> bool:
+    """True if the cached result has been voted down badly enough to re-analyze."""
+    stats = get_vote_stats(fingerprint)
+    total = stats["likes"] + stats["dislikes"]
+    if total < 3:
+        return False
+    return stats["dislikes"] / total > 0.6
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Knowledge base
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_FLAG_GRADUATION_THRESHOLD = 3
+
+def graduate_flags_to_fact(fingerprint: str):
+    """If 3+ flags exist with a consistent category, create a knowledge base entry."""
+    if not fingerprint:
+        return
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT category, justification, source_urls
+               FROM community_flags WHERE fingerprint = ? AND justification != ''""",
+            (fingerprint,),
+        ).fetchall()
+        if len(rows) < _FLAG_GRADUATION_THRESHOLD:
+            return
+
+        categories = [dict(r)["category"] for r in rows]
+        from collections import Counter
+        top_cat, top_count = Counter(categories).most_common(1)[0]
+        if top_count < _FLAG_GRADUATION_THRESHOLD:
+            return
+
+        existing = conn.execute(
+            "SELECT 1 FROM fact_entries WHERE fingerprints LIKE ?",
+            (f"%{fingerprint}%",),
+        ).fetchone()
+        if existing:
+            return
+
+        matching = [dict(r) for r in rows if dict(r)["category"] == top_cat]
+        best = max(matching, key=lambda n: len(n["justification"]))
+        all_sources = []
+        for n in matching:
+            if n.get("source_urls"):
+                try:
+                    urls = json.loads(n["source_urls"]) if isinstance(n["source_urls"], str) else n["source_urls"]
+                    all_sources.extend(urls)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        scan = conn.execute(
+            "SELECT explanation, source FROM scans WHERE fingerprint = ? LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+        claim = (dict(scan).get("explanation") or dict(scan).get("source", ""))[:500] if scan else ""
+        if not claim:
+            claim = f"Content flagged as {top_cat.replace('_', ' ')}"
+
+        confidence = min(0.95, 0.5 + (len(matching) * 0.1))
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO fact_entries
+               (claim_text, counter_claim, sources, category, confidence,
+                flag_count, fingerprints, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                claim,
+                best["justification"],
+                json.dumps(list(set(all_sources))[:10]) if all_sources else None,
+                top_cat,
+                confidence,
+                len(matching),
+                json.dumps([fingerprint]),
+                now,
+            ),
+        )
+        _commit_and_sync()
+        logger.info("Graduated %d flags to knowledge base for %s", len(matching), fingerprint[:16])
+    except Exception as exc:
+        logger.warning("Flag graduation failed: %s", exc)
+
+
+def search_knowledge_base(text: str, limit: int = 3) -> list[dict]:
+    """Search the community knowledge base for claims matching the text."""
+    if not text:
+        return []
+    keywords = _extract_search_terms(text[:500])
+    if not keywords:
+        return []
+    try:
+        conn = _get_conn()
+        query = " OR ".join(keywords)
+        rows = conn.execute(
+            """SELECT f.* FROM fact_entries f
+               JOIN facts_fts ft ON f.id = ft.rowid
+               WHERE facts_fts MATCH ?
+                 AND f.confidence >= 0.6
+               ORDER BY bm25(facts_fts) LIMIT ?""",
+            (query, limit),
+        ).fetchall()
+        results = []
+        for r in rows:
+            entry = dict(r)
+            if entry.get("sources"):
+                try:
+                    entry["sources"] = json.loads(entry["sources"])
+                except (json.JSONDecodeError, TypeError):
+                    entry["sources"] = []
+            if entry.get("fingerprints"):
+                try:
+                    entry["fingerprints"] = json.loads(entry["fingerprints"])
+                except (json.JSONDecodeError, TypeError):
+                    entry["fingerprints"] = []
+            results.append(entry)
+        return results
+    except Exception as exc:
+        logger.debug("Knowledge base search failed: %s", exc)
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Domain stats
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -549,6 +872,59 @@ def get_domain_stats(domain: str) -> dict | None:
         return dict(row) if row else None
     except Exception as exc:
         logger.debug("Domain stats lookup failed: %s", exc)
+    return None
+
+
+def get_domain_profile(domain: str, is_reputable: bool = False) -> dict | None:
+    """Build an enriched domain profile with reputation tier and unique user count."""
+    if not domain:
+        return None
+    try:
+        conn = _get_conn()
+        stats = get_domain_stats(domain)
+
+        total_scans = 0
+        avg_trust = 50.0
+        flag_count = 0
+        last_verdict = None
+
+        if stats:
+            total_scans = stats.get("total_scans", 0)
+            avg_trust = stats.get("avg_trust_score", 50.0)
+            flag_count = stats.get("flag_count", 0)
+            last_verdict = stats.get("last_verdict")
+
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) AS cnt FROM scans WHERE url LIKE ?",
+            (f"%{domain}%",),
+        ).fetchone()
+        unique_users = (dict(row).get("cnt", 0) if row else 0)
+
+        if total_scans < 2:
+            tier = "new"
+        elif is_reputable and avg_trust >= 60:
+            tier = "trusted"
+        elif avg_trust >= 80 and total_scans >= 3 and flag_count == 0:
+            tier = "trusted"
+        elif avg_trust >= 60 and total_scans >= 2:
+            tier = "established"
+        elif avg_trust < 40 and total_scans >= 2:
+            tier = "low_trust"
+        else:
+            tier = "mixed"
+
+        return {
+            "domain": domain,
+            "reputation_tier": tier,
+            "is_reputable": is_reputable,
+            "total_scans": total_scans,
+            "unique_users": unique_users,
+            "avg_trust_score": round(avg_trust, 1),
+            "flag_count": flag_count,
+            "last_verdict": last_verdict,
+        }
+    except Exception as exc:
+        logger.debug("Domain profile lookup failed: %s", exc)
     return None
 
 

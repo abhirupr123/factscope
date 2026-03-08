@@ -127,7 +127,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           body: JSON.stringify({
             fingerprint: message.fingerprint,
             user_id: userId,
-            reason: message.reason || null,
+            category: message.category,
+            justification: message.justification,
+            source_urls: message.source_urls || null,
           }),
         });
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
@@ -135,6 +137,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(data);
       } catch (err) {
         sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'vote') {
+    (async () => {
+      await _apiReady;
+      const userId = await getUserId();
+      try {
+        const r = await fetch(`${API_BASE}/vote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fingerprint: message.fingerprint,
+            user_id: userId,
+            vote: message.vote,
+          }),
+        });
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        sendResponse(await r.json());
+      } catch (err) {
+        sendResponse({ success: false });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'get-community-notes') {
+    (async () => {
+      await _apiReady;
+      try {
+        const r = await fetch(`${API_BASE}/community-notes/${encodeURIComponent(message.fingerprint)}`);
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        sendResponse(await r.json());
+      } catch (err) {
+        sendResponse({ notes: [], vote_stats: { likes: 0, dislikes: 0 }, flag_count: 0 });
       }
     })();
     return true;

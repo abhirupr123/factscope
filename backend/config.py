@@ -37,6 +37,9 @@ AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 TEXT_MODEL_ID = os.getenv("TEXT_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
 MULTIMODAL_MODEL_ID = os.getenv("MULTIMODAL_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
 
+# Light model for flag validation (separate from main analysis model)
+FLAG_VALIDATION_MODEL = os.getenv("FLAG_VALIDATION_MODEL", "gemma-3-4b-it")
+
 # ── Shared model parameters ──────────────────────────────────────────────────
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "500"))
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.2"))
