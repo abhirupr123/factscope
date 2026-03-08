@@ -102,6 +102,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'get-claims') {
+    (async () => {
+      await _apiReady;
+      try {
+        const r = await fetch(`${API_BASE}/claims/${encodeURIComponent(message.fingerprint)}`);
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        sendResponse(await r.json());
+      } catch (err) {
+        sendResponse({ pending: true, fact_checks: null });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === 'flag-content') {
     (async () => {
       await _apiReady;

@@ -326,6 +326,24 @@
     return `<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div>${items}</div>`;
   }
 
+  function pollForClaims(fingerprint, attempts) {
+    if (attempts <= 0) {
+      const slot = document.getElementById('fs-claims-slot');
+      if (slot) slot.innerHTML = '<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div><div class="fs-body">Claims could not be loaded.</div></div>';
+      return;
+    }
+    if (!chrome.runtime?.id) return;
+    chrome.runtime.sendMessage({ type: 'get-claims', fingerprint }, (resp) => {
+      if (chrome.runtime.lastError) return;
+      if (resp && !resp.pending && resp.fact_checks) {
+        const slot = document.getElementById('fs-claims-slot');
+        if (slot) slot.innerHTML = buildFactChecksHTML(resp.fact_checks);
+      } else {
+        setTimeout(() => pollForClaims(fingerprint, attempts - 1), 3000);
+      }
+    });
+  }
+
   function showResultPanel(result) {
     const score = result.trust_score;
     const color = scoreColor(score);
@@ -342,7 +360,12 @@
       ? `<div class="fs-source">${[sourceInfo.site_name, sourceInfo.author, sourceInfo.publish_date].filter(Boolean).join(' &middot; ')}</div>`
       : '';
 
-    const factChecksHTML = buildFactChecksHTML(result.fact_checks);
+    let claimsSlotHTML;
+    if (result.claims_pending && result.fingerprint) {
+      claimsSlotHTML = '<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div><div class="fs-loader"><div class="fs-loader-bar"></div></div><div class="fs-body fs-scanning-text">Checking claims&hellip;</div></div></div>';
+    } else {
+      claimsSlotHTML = `<div id="fs-claims-slot">${buildFactChecksHTML(result.fact_checks)}</div>`;
+    }
 
     const notableSignals = (result.structural_signals || [])
       .filter((s) => Math.abs(s.delta) >= 5)
@@ -387,12 +410,16 @@
       <div class="fs-divider"></div>
       <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
       ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">Supporting evidence</div><ul>${evidenceItems}</ul></div>` : ''}
-      ${factChecksHTML}
+      ${claimsSlotHTML}
       ${signalsHTML}
       <div class="fs-actions">${flagBtnHTML}</div>
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
+
+    if (result.claims_pending && result.fingerprint) {
+      pollForClaims(result.fingerprint, 10);
+    }
 
     const flagBtn = panel.querySelector('.fs-flag-btn');
     if (flagBtn) {

@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +7,8 @@ from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, find_flagged_similar
 from db import (store_image_scan, find_image_scan, add_community_flag,
-                get_flag_count, has_user_flagged, count_scans_for_fingerprint)
+                get_flag_count, has_user_flagged, count_scans_for_fingerprint,
+                update_scan_claims, get_scan_claims)
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score
 from fingerprinting import compute_fingerprint
@@ -34,6 +35,8 @@ app.add_middleware(
 
 LLM_WEIGHT = 0.65
 STRUCTURAL_WEIGHT = 0.35
+
+_bg_pool = ThreadPoolExecutor(max_workers=3)
 
 
 class VideoInfo(BaseModel):
@@ -103,6 +106,7 @@ class AnalyzeResponse(BaseModel):
     community_flags: Optional[int] = None
     community_scans: Optional[int] = None
     fingerprint: Optional[str] = None
+    claims_pending: Optional[bool] = None
 
 
 class FlagRequest(BaseModel):
@@ -490,19 +494,31 @@ async def analyze_page(request: AnalyzeRequest):
     # ── Run LLM analysis + fact-checking in parallel ────────────────────
     llm_result = None
     fact_checks = []
+    claims_pending = False
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        llm_future = pool.submit(get_structured_analysis, combined)
-        fc_future = None
-        if factcheck_available() and request.text:
-            fc_future = pool.submit(_verify_claims, request.text, request.title or "")
+    llm_future = _bg_pool.submit(get_structured_analysis, combined)
+    fc_future = None
+    if factcheck_available() and request.text:
+        fc_future = _bg_pool.submit(_verify_claims, request.text, request.title or "")
 
-        llm_result = llm_future.result()
-        if fc_future is not None:
+    llm_result = llm_future.result()
+
+    if fc_future is not None:
+        if fc_future.done():
             try:
                 fact_checks = fc_future.result()
             except Exception as exc:
                 logger.warning("Fact-check pipeline failed: %s", exc)
+        else:
+            claims_pending = True
+            def _on_claims_done(future: Future, fp=fingerprint):
+                try:
+                    claims = future.result()
+                    if claims and fp:
+                        update_scan_claims(fp, json.dumps(claims))
+                except Exception as exc:
+                    logger.warning("Background claims storage failed: %s", exc)
+            fc_future.add_done_callback(_on_claims_done)
 
     # ── Run structural scoring ────────────────────────────────────────
     meta_dict = request.metadata.model_dump() if request.metadata else {}
@@ -618,12 +634,27 @@ async def analyze_page(request: AnalyzeRequest):
         evidence=all_evidence,
         source_info=source_info,
         structural_signals=signals,
-        fact_checks=fc_response,
+        fact_checks=fc_response if not claims_pending else None,
         cached=False,
         community_flags=comm_flags if comm_flags > 0 else None,
         community_scans=comm_scans if comm_scans > 1 else None,
         fingerprint=fingerprint,
+        claims_pending=claims_pending if claims_pending else None,
     )
+
+
+@app.get("/claims/{fingerprint}")
+async def get_claims(fingerprint: str):
+    """Fetch claim analysis for a previously scanned page (used for progressive loading)."""
+    raw = get_scan_claims(fingerprint)
+    if raw:
+        try:
+            claims = json.loads(raw)
+            fc_response = [FactCheckResult(**fc) for fc in claims] if claims else None
+            return {"pending": False, "fact_checks": fc_response}
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {"pending": True, "fact_checks": None}
 
 
 @app.get("/health")
@@ -643,7 +674,6 @@ async def db_status():
         latest = conn.execute(
             "SELECT fingerprint, trust_score, timestamp FROM scans ORDER BY timestamp DESC LIMIT 1"
         ).fetchone()
-        conn.close()
         return {
             "turso": _use_turso,
             "scans_count": scans[0] if scans else 0,
@@ -659,8 +689,8 @@ async def db_status():
 async def debug_find(fp: str):
     """Test fingerprint lookup directly."""
     from db import _get_conn
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT fingerprint, trust_score, verdict FROM scans WHERE fingerprint = ?",
             (fp,),
@@ -668,14 +698,12 @@ async def debug_find(fp: str):
         all_fps = conn.execute(
             "SELECT fingerprint FROM scans ORDER BY timestamp DESC LIMIT 5"
         ).fetchall()
-        conn.close()
         return {
             "query_hit": row is not None,
             "result": dict(row) if row else None,
             "stored_fingerprints": [dict(r)["fingerprint"][:20] for r in all_fps],
         }
     except Exception as exc:
-        conn.close()
         return {"error": str(exc)}
 
 

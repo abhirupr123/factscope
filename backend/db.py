@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -130,38 +131,49 @@ class _TursoConn:
         self._conn.sync()
 
 
+_conn = None
+_conn_lock = threading.Lock()
+
+
 def _get_conn():
-    """Return a database connection (Turso cloud or local SQLite).
+    """Return the persistent database connection, creating it on first call.
 
-    For Turso, we do NOT sync on every connection — only on startup (init_db)
-    and after writes (_sync_and_close). This prevents cloud pulls from
-    overwriting locally committed data that hasn't propagated yet.
+    A single connection is reused for the lifetime of the process.
+    For Turso, sync only happens on startup and after writes — never on reads.
     """
-    if _use_turso:
-        import libsql_experimental as libsql
-        raw = libsql.connect(
-            str(DB_PATH),
-            sync_url=_TURSO_URL,
-            auth_token=_TURSO_TOKEN,
-        )
-        conn = _TursoConn(raw)
-    else:
-        conn = sqlite3.connect(str(DB_PATH), timeout=10)
-        conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    global _conn
+    if _conn is not None:
+        return _conn
+    with _conn_lock:
+        if _conn is not None:
+            return _conn
+        if _use_turso:
+            import libsql_experimental as libsql
+            raw = libsql.connect(
+                str(DB_PATH),
+                sync_url=_TURSO_URL,
+                auth_token=_TURSO_TOKEN,
+            )
+            _conn = _TursoConn(raw)
+        else:
+            raw = sqlite3.connect(str(DB_PATH), timeout=10, check_same_thread=False)
+            raw.row_factory = sqlite3.Row
+            _conn = raw
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+        logger.info("Persistent DB connection created (%s)", "Turso" if _use_turso else "SQLite")
+    return _conn
 
 
-def _sync_and_close(conn):
-    """Commit, sync to Turso if needed, then close."""
+def _commit_and_sync():
+    """Commit current transaction and sync to Turso cloud if needed."""
+    conn = _get_conn()
     conn.commit()
     if _use_turso:
         try:
             conn.sync()
         except Exception as exc:
             logger.warning("Turso sync failed: %s", exc)
-    conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -245,32 +257,23 @@ _SCHEMA_STATEMENTS = [
 
 def init_db():
     """Create tables and FTS index if they don't exist."""
+    conn = _get_conn()
     if _use_turso:
-        import libsql_experimental as libsql
-        raw = libsql.connect(
-            str(DB_PATH),
-            sync_url=_TURSO_URL,
-            auth_token=_TURSO_TOKEN,
-        )
         try:
-            raw.sync()
+            conn.sync()
             logger.info("Turso initial sync complete")
         except Exception as exc:
             logger.warning("Turso initial sync failed: %s", exc)
-        raw.close()
-
-    conn = _get_conn()
     try:
         for stmt in _SCHEMA_STATEMENTS:
             try:
                 conn.execute(stmt)
             except Exception as exc:
                 logger.debug("Schema statement skipped (may already exist): %s", exc)
-        _sync_and_close(conn)
+        _commit_and_sync()
         logger.info("Database initialized (%s)", "Turso" if _use_turso else DB_PATH)
     except Exception as exc:
         logger.error("Failed to initialize database: %s", exc)
-        conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -280,8 +283,8 @@ def init_db():
 def store_scan(doc_type: str, source, result, fingerprint: str = None,
                url: str = None, user_id: str = None):
     """Store an analysis result."""
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         doc = {
             "doc_type": doc_type,
             "source": str(source)[:500],
@@ -317,19 +320,17 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
                 doc["timestamp"],
             ),
         )
-        _sync_and_close(conn)
+        _commit_and_sync()
     except Exception as exc:
         logger.warning("Failed to store scan result: %s", exc)
-        conn.close()
 
 
 def find_by_fingerprint(fingerprint: str) -> dict | None:
     """Return the most recent scan with this exact fingerprint, or None."""
     if not fingerprint:
         return None
-
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM scans WHERE fingerprint = ? ORDER BY timestamp DESC LIMIT 1",
             (fingerprint,),
@@ -343,12 +344,8 @@ def find_by_fingerprint(fingerprint: str) -> dict | None:
                 except (json.JSONDecodeError, TypeError):
                     doc["evidence"] = []
             return doc
-        else:
-            logger.warning("Fingerprint cache MISS: %s", fingerprint[:16])
     except Exception as exc:
         logger.warning("Fingerprint lookup failed: %s", exc)
-    finally:
-        conn.close()
     return None
 
 
@@ -356,8 +353,8 @@ def count_scans_for_fingerprint(fingerprint: str) -> int:
     """Count how many unique users scanned content with this fingerprint."""
     if not fingerprint:
         return 0
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT COUNT(DISTINCT user_id) as cnt FROM scans WHERE fingerprint = ?",
             (fingerprint,),
@@ -365,8 +362,6 @@ def count_scans_for_fingerprint(fingerprint: str) -> int:
         return row["cnt"] if row else 0
     except Exception:
         return 0
-    finally:
-        conn.close()
 
 
 def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
@@ -378,8 +373,8 @@ def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
     if not keywords:
         return []
 
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         query = " OR ".join(keywords)
         rows = conn.execute(
             """SELECT s.* FROM scans s
@@ -403,8 +398,6 @@ def find_flagged_similar(text: str, threshold: int = 40) -> list[dict]:
         return results
     except Exception as exc:
         logger.debug("Flagged similarity search failed: %s", exc)
-    finally:
-        conn.close()
     return []
 
 
@@ -418,8 +411,8 @@ def _url_hash(url: str) -> str:
 
 def store_image_scan(image_url: str, result: dict, user_id: str = None):
     """Store an image verification result for caching."""
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         conn.execute(
             """INSERT INTO image_scans
                (image_url, url_hash, authenticity_score, verdict,
@@ -437,16 +430,15 @@ def store_image_scan(image_url: str, result: dict, user_id: str = None):
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
-        _sync_and_close(conn)
+        _commit_and_sync()
     except Exception as exc:
         logger.warning("Failed to store image scan: %s", exc)
-        conn.close()
 
 
 def find_image_scan(image_url: str, max_age_hours: int = 24) -> dict | None:
     """Return cached image scan if it exists and isn't too old."""
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM image_scans WHERE url_hash = ? ORDER BY timestamp DESC LIMIT 1",
             (_url_hash(image_url),),
@@ -471,15 +463,13 @@ def find_image_scan(image_url: str, max_age_hours: int = 24) -> dict | None:
             return doc
     except Exception as exc:
         logger.debug("Image scan lookup failed: %s", exc)
-    finally:
-        conn.close()
     return None
 
 
 def count_image_verdicts(verdict: str) -> int:
     """Count how many images have been flagged with a specific verdict."""
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM image_scans WHERE verdict = ?",
             (verdict,),
@@ -487,8 +477,6 @@ def count_image_verdicts(verdict: str) -> int:
         return row["cnt"] if row else 0
     except Exception:
         return 0
-    finally:
-        conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -499,8 +487,8 @@ def add_community_flag(fingerprint: str, user_id: str, reason: str = None) -> bo
     """Flag content as misinformation. Returns True if new flag, False if duplicate."""
     if not fingerprint or not user_id:
         return False
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         conn.execute(
             """INSERT OR IGNORE INTO community_flags
                (fingerprint, user_id, reason, timestamp)
@@ -508,11 +496,10 @@ def add_community_flag(fingerprint: str, user_id: str, reason: str = None) -> bo
             (fingerprint, user_id, reason, datetime.now(timezone.utc).isoformat()),
         )
         changed = conn.execute("SELECT changes()").fetchone()[0]
-        _sync_and_close(conn)
+        _commit_and_sync()
         return changed > 0
     except Exception as exc:
         logger.warning("Failed to store community flag: %s", exc)
-        conn.close()
         return False
 
 
@@ -520,8 +507,8 @@ def get_flag_count(fingerprint: str) -> int:
     """Count community flags for a piece of content."""
     if not fingerprint:
         return 0
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM community_flags WHERE fingerprint = ?",
             (fingerprint,),
@@ -529,16 +516,14 @@ def get_flag_count(fingerprint: str) -> int:
         return row["cnt"] if row else 0
     except Exception:
         return 0
-    finally:
-        conn.close()
 
 
 def has_user_flagged(fingerprint: str, user_id: str) -> bool:
     """Check if a specific user already flagged this content."""
     if not fingerprint or not user_id:
         return False
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT 1 FROM community_flags WHERE fingerprint = ? AND user_id = ?",
             (fingerprint, user_id),
@@ -546,8 +531,6 @@ def has_user_flagged(fingerprint: str, user_id: str) -> bool:
         return row is not None
     except Exception:
         return False
-    finally:
-        conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -558,17 +541,14 @@ def get_domain_stats(domain: str) -> dict | None:
     """Fetch historical stats for a domain."""
     if not domain:
         return None
-
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM domains WHERE domain = ?", (domain,)
         ).fetchone()
         return dict(row) if row else None
     except Exception as exc:
         logger.debug("Domain stats lookup failed: %s", exc)
-    finally:
-        conn.close()
     return None
 
 
@@ -576,9 +556,8 @@ def update_domain_stats(domain: str, trust_score: int, verdict: str):
     """Update a domain's historical trust profile after a scan."""
     if not domain:
         return
-
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         now = datetime.now(timezone.utc).isoformat()
         existing = conn.execute(
             "SELECT * FROM domains WHERE domain = ?", (domain,)
@@ -609,10 +588,40 @@ def update_domain_stats(domain: str, trust_score: int, verdict: str):
                 (domain, float(trust_score), 1 if trust_score < 40 else 0,
                  now, verdict, trust_score),
             )
-        _sync_and_close(conn)
+        _commit_and_sync()
     except Exception as exc:
         logger.debug("Domain stats update failed: %s", exc)
-        conn.close()
+
+
+def update_scan_claims(fingerprint: str, judgement_json: str):
+    """Update the claims/judgement field for an existing scan (used by background claim processing)."""
+    if not fingerprint or not judgement_json:
+        return
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE scans SET judgement = ? WHERE fingerprint = ? AND judgement IS NULL",
+            (judgement_json, fingerprint),
+        )
+        _commit_and_sync()
+        logger.info("Background claims stored for fingerprint %s", fingerprint[:16])
+    except Exception as exc:
+        logger.warning("Failed to update scan claims: %s", exc)
+
+
+def get_scan_claims(fingerprint: str) -> str | None:
+    """Retrieve the stored claims JSON for a fingerprint, or None if not yet available."""
+    if not fingerprint:
+        return None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT judgement FROM scans WHERE fingerprint = ? AND judgement IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+        return row["judgement"] if row else None
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
