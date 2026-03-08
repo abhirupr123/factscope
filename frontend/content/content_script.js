@@ -386,17 +386,17 @@
     if (notes.length > 0) {
       notesHTML = notes.map(buildNoteCardHTML).join('');
     } else {
-      notesHTML = '<p class="fs-no-notes">No community notes yet</p>';
+      notesHTML = '<p class="fs-no-notes">No crowd insights yet — be the first to weigh in</p>';
     }
 
     const countBadge = flagCount >= 3 ? ` <span class="fs-flag-count-badge">${flagCount}</span>` : '';
 
     return `<div class="fs-community-section">
       <div class="fs-community-header">
-        <span class="fs-community-title">Community Notes${countBadge}</span>
+        <span class="fs-community-title">\uD83D\uDDE3 Crowd Insights${countBadge}</span>
       </div>
       ${notesHTML}
-      <button class="fs-add-note-btn" data-fp="${fp}">Add a community note</button>
+      <button class="fs-add-note-btn" data-fp="${fp}">\u270F Flag &amp; share your insight</button>
       <div class="fs-flag-form" data-fp="${fp}" style="display:none">
         <select class="fs-flag-category">
           <option value="">What's wrong with this content?</option>
@@ -489,7 +489,7 @@
     addBtn.addEventListener('click', () => {
       const isVisible = form.style.display !== 'none';
       form.style.display = isVisible ? 'none' : 'block';
-      addBtn.textContent = isVisible ? 'Add a community note' : 'Cancel';
+      addBtn.textContent = isVisible ? '\u270F Flag & share your insight' : 'Cancel';
     });
 
     const textarea = form.querySelector('.fs-flag-justification');
@@ -543,7 +543,7 @@
         }
         if (resp && resp.success && resp.note) {
           form.style.display = 'none';
-          addBtn.textContent = 'Add a community note';
+          addBtn.textContent = '\u270F Flag & share your insight';
           const section = panel.querySelector('.fs-community-section');
           const noNotes = section.querySelector('.fs-no-notes');
           if (noNotes) noNotes.remove();
