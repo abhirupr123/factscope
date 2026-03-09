@@ -906,6 +906,7 @@ class ShareRequest(BaseModel):
     source_info: Optional[dict] = None
     scanned_url: str = ""
     scanned_title: str = ""
+    fingerprint: str = ""
 
 
 @app.post("/share")

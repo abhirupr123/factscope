@@ -588,9 +588,32 @@
   function wireShareButton(panel, sharePayload) {
     const btn = panel.querySelector('.fs-share-btn');
     if (!btn) return;
+
+    async function copyAndFlash(url) {
+      try {
+        await navigator.clipboard.writeText(url);
+        btn.textContent = '\u2714 Link copied!';
+        btn.classList.add('fs-share-copied');
+      } catch {
+        btn.textContent = '\u2714 Link ready';
+        btn.classList.add('fs-share-copied');
+      }
+      btn.disabled = false;
+      setTimeout(() => {
+        btn.textContent = '\uD83D\uDD17 Share result';
+        btn.classList.remove('fs-share-copied');
+      }, 3000);
+    }
+
     btn.addEventListener('click', () => {
       if (btn.disabled) return;
       btn.disabled = true;
+
+      if (btn.dataset.shareUrl) {
+        copyAndFlash(btn.dataset.shareUrl);
+        return;
+      }
+
       btn.textContent = '\u231B Generating link\u2026';
 
       if (!chrome.runtime?.id) {
@@ -598,26 +621,15 @@
         btn.disabled = false;
         return;
       }
-      chrome.runtime.sendMessage({ type: 'share-result', payload: sharePayload }, async (resp) => {
+      chrome.runtime.sendMessage({ type: 'share-result', payload: sharePayload }, (resp) => {
         if (chrome.runtime.lastError || !resp || resp.error) {
           btn.textContent = '\u2718 Failed';
           btn.disabled = false;
           setTimeout(() => { btn.textContent = '\uD83D\uDD17 Share result'; }, 1500);
           return;
         }
-        try {
-          await navigator.clipboard.writeText(resp.share_url);
-          btn.textContent = '\u2714 Link copied!';
-          btn.classList.add('fs-share-copied');
-        } catch {
-          btn.textContent = '\u2714 Link ready';
-          btn.classList.add('fs-share-copied');
-        }
-        btn.disabled = false;
-        setTimeout(() => {
-          btn.textContent = '\uD83D\uDD17 Share result';
-          btn.classList.remove('fs-share-copied');
-        }, 3000);
+        btn.dataset.shareUrl = resp.share_url;
+        copyAndFlash(resp.share_url);
       });
     });
   }
@@ -705,6 +717,7 @@
       source_info: sourceInfo ? { site_name: sourceInfo.site_name, author: sourceInfo.author, publish_date: sourceInfo.publish_date } : null,
       scanned_url: location.href,
       scanned_title: document.title || '',
+      fingerprint: result.fingerprint || '',
     });
 
     if (result.fingerprint) {
@@ -851,6 +864,7 @@
       domain: imgDomain,
       scanned_url: location.href,
       scanned_title: document.title || '',
+      fingerprint: result.fingerprint || '',
     });
 
     if (result.fingerprint) {

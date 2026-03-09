@@ -320,6 +320,7 @@ _SCHEMA_STATEMENTS = [
         source_info   TEXT,
         scanned_url   TEXT,
         scanned_title TEXT,
+        fingerprint   TEXT,
         created_at    TEXT NOT NULL
     )""",
 ]
@@ -329,6 +330,9 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE community_flags ADD COLUMN justification TEXT DEFAULT ''",
     "ALTER TABLE community_flags ADD COLUMN source_urls TEXT",
     "ALTER TABLE community_flags ADD COLUMN quality_score INTEGER DEFAULT 50",
+    "ALTER TABLE shared_results ADD COLUMN scanned_url TEXT DEFAULT ''",
+    "ALTER TABLE shared_results ADD COLUMN scanned_title TEXT DEFAULT ''",
+    "ALTER TABLE shared_results ADD COLUMN fingerprint TEXT",
 ]
 
 
@@ -1020,17 +1024,30 @@ def get_scan_claims(fingerprint: str) -> str | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def store_shared_result(data: dict) -> str:
-    """Store a result snapshot and return an 8-char short ID."""
+    """Store a result snapshot and return an 8-char short ID.
+
+    If a fingerprint is provided and a share link already exists for it,
+    returns the existing ID instead of creating a duplicate.
+    """
     import string
     import secrets as _secrets
-    short_id = ''.join(_secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
+
+    fp = data.get("fingerprint") or ""
     try:
         conn = _get_conn()
+        if fp:
+            row = conn.execute(
+                "SELECT id FROM shared_results WHERE fingerprint = ?", (fp,)
+            ).fetchone()
+            if row:
+                return row[0]
+
+        short_id = ''.join(_secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
         conn.execute(
             """INSERT INTO shared_results
                (id, result_type, score, verdict, explanation, evidence, domain, source_info,
-                scanned_url, scanned_title, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                scanned_url, scanned_title, fingerprint, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 short_id,
                 data.get("result_type", "page"),
@@ -1042,6 +1059,7 @@ def store_shared_result(data: dict) -> str:
                 json.dumps(data.get("source_info")) if data.get("source_info") else None,
                 data.get("scanned_url", ""),
                 data.get("scanned_title", ""),
+                fp or None,
                 datetime.utcnow().isoformat(),
             ),
         )
