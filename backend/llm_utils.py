@@ -387,10 +387,17 @@ def get_image_verification(image_data: bytes, media_type: str, context: str = ""
         return _parse_image_response(raw_text)
     except Exception as exc:
         logger.error("Image verification failed: %s", exc)
+        msg = str(exc)
+        if "blocked" in msg.lower() or "block_reason" in msg.lower():
+            user_msg = "The image could not be analyzed due to content safety filters. Try a different image."
+        elif "quota" in msg.lower() or "429" in msg:
+            user_msg = "Rate limit reached. Please wait a moment and try again."
+        else:
+            user_msg = "Image analysis could not be completed. Please try again."
         return {
             "authenticity_score": 50,
             "verdict": "uncertain",
-            "explanation": f"Image analysis could not be completed: {exc}",
+            "explanation": user_msg,
             "evidence": [],
         }
 

@@ -307,6 +307,19 @@ _SCHEMA_STATEMENTS = [
         INSERT INTO facts_fts(facts_fts, rowid, claim_text, counter_claim)
         VALUES ('delete', old.id, old.claim_text, old.counter_claim);
     END""",
+
+    # ── Shared results (shareable links) ───────────────────────────────
+    """CREATE TABLE IF NOT EXISTS shared_results (
+        id           TEXT PRIMARY KEY,
+        result_type  TEXT NOT NULL DEFAULT 'page',
+        score        INTEGER NOT NULL,
+        verdict      TEXT NOT NULL,
+        explanation  TEXT NOT NULL DEFAULT '',
+        evidence     TEXT,
+        domain       TEXT,
+        source_info  TEXT,
+        created_at   TEXT NOT NULL
+    )""",
 ]
 
 _MIGRATION_STATEMENTS = [
@@ -997,6 +1010,61 @@ def get_scan_claims(fingerprint: str) -> str | None:
         ).fetchone()
         return row["judgement"] if row else None
     except Exception:
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Shared results (shareable links)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def store_shared_result(data: dict) -> str:
+    """Store a result snapshot and return an 8-char short ID."""
+    import string
+    import secrets as _secrets
+    short_id = ''.join(_secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO shared_results
+               (id, result_type, score, verdict, explanation, evidence, domain, source_info, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                short_id,
+                data.get("result_type", "page"),
+                int(data.get("score", 50)),
+                data.get("verdict", "uncertain"),
+                data.get("explanation", ""),
+                json.dumps(data.get("evidence", [])),
+                data.get("domain", ""),
+                json.dumps(data.get("source_info")) if data.get("source_info") else None,
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        _commit_and_sync()
+        return short_id
+    except Exception as exc:
+        logger.error("Failed to store shared result: %s", exc)
+        raise
+
+
+def get_shared_result(share_id: str) -> dict | None:
+    """Retrieve a shared result by its short ID."""
+    if not share_id:
+        return None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM shared_results WHERE id = ?",
+            (share_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["evidence"] = json.loads(d["evidence"]) if d.get("evidence") else []
+        d["source_info"] = json.loads(d["source_info"]) if d.get("source_info") else None
+        return d
+    except Exception as exc:
+        logger.debug("Shared result lookup failed: %s", exc)
         return None
 
 

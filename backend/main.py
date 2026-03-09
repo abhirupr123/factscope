@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
@@ -11,7 +12,8 @@ from db import (store_image_scan, find_image_scan, add_community_flag,
                 update_scan_claims, get_scan_claims, url_hash,
                 get_community_notes, store_vote, get_vote_stats,
                 should_invalidate_cache, graduate_flags_to_fact,
-                search_knowledge_base, VALID_FLAG_CATEGORIES)
+                search_knowledge_base, VALID_FLAG_CATEGORIES,
+                store_shared_result, get_shared_result)
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
@@ -888,6 +890,163 @@ async def get_claims(fingerprint: str):
         except (json.JSONDecodeError, TypeError):
             pass
     return {"pending": True, "fact_checks": None}
+
+
+class ShareRequest(BaseModel):
+    result_type: str = "page"
+    score: int
+    verdict: str
+    explanation: str = ""
+    evidence: list[str] = []
+    domain: str = ""
+    source_info: Optional[dict] = None
+
+
+@app.post("/share")
+async def create_share(request: ShareRequest):
+    """Store a result snapshot and return a shareable URL."""
+    from config import ENVIRONMENT
+    data = request.model_dump()
+    share_id = store_shared_result(data)
+    base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
+    return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
+
+
+_SHARE_PAGE_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FactScope &mdash; {verdict_label} ({score}%)</title>
+<meta property="og:title" content="FactScope: {domain} &mdash; {score}% {score_label}">
+<meta property="og:description" content="{explanation_short}">
+<meta name="twitter:card" content="summary">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:"Inter","Segoe UI",system-ui,sans-serif;background:#f5f7fb;color:#0f172a;
+display:flex;justify-content:center;padding:24px 12px;min-height:100vh}}
+.card{{background:#fff;border-radius:16px;box-shadow:0 12px 38px rgba(15,23,42,.1);
+max-width:520px;width:100%;padding:24px;border:1px solid #e2e8f0}}
+.header{{display:flex;align-items:center;gap:10px;margin-bottom:18px}}
+.logo{{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#2563eb,#3b82f6);
+color:#fff;font-weight:700;display:grid;place-items:center;font-size:14px}}
+.brand{{font-weight:700;font-size:16px}}
+.sub{{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}}
+.verdict{{display:flex;align-items:center;gap:8px;margin-bottom:10px}}
+.verdict-icon{{font-size:22px}}
+.verdict-label{{font-weight:700;font-size:15px}}
+.bar-bg{{height:6px;border-radius:3px;background:#e2e8f0;margin-bottom:6px}}
+.bar-fill{{height:100%;border-radius:3px}}
+.score-text{{font-size:13px;color:#64748b;margin-bottom:14px}}
+.score-text strong{{font-size:15px}}
+.domain{{font-size:12px;color:#64748b;margin-bottom:14px;padding:6px 10px;
+background:#f8fafc;border-radius:6px;border:1px solid #e2e8f0}}
+.explanation{{font-size:14px;line-height:1.5;margin-bottom:14px}}
+.evidence-title{{font-size:12px;font-weight:700;color:#334155;margin-bottom:6px}}
+.evidence ul{{list-style:none;padding:0}}
+.evidence li{{font-size:13px;color:#475569;padding:4px 0;padding-left:16px;position:relative}}
+.evidence li::before{{content:"\\2022";position:absolute;left:0;color:#94a3b8}}
+.footer{{margin-top:18px;padding-top:12px;border-top:1px solid #e2e8f0;
+font-size:11px;color:#94a3b8;text-align:center}}
+.footer a{{color:#2563eb;text-decoration:none}}
+@media(prefers-color-scheme:dark){{
+body{{background:#0f172a;color:#e2e8f0}}
+.card{{background:#1e293b;border-color:#334155;box-shadow:0 12px 38px rgba(0,0,0,.3)}}
+.domain{{background:#0f172a;border-color:#334155;color:#94a3b8}}
+.bar-bg{{background:#334155}}
+.score-text{{color:#94a3b8}}
+.evidence-title{{color:#cbd5e1}}
+.evidence li{{color:#94a3b8}}
+.footer{{border-color:#334155}}
+}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="logo">FS</div>
+    <div><div class="brand">FactScope</div><div class="sub">{type_label}</div></div>
+  </div>
+  <div class="verdict">
+    <span class="verdict-icon">{verdict_icon}</span>
+    <span class="verdict-label" style="color:{color}">{verdict_label}</span>
+  </div>
+  <div class="bar-bg"><div class="bar-fill" style="width:{score}%;background:{color}"></div></div>
+  <div class="score-text"><strong style="color:{color}">{score}%</strong> {score_label}</div>
+  {domain_html}
+  <div class="explanation">{explanation}</div>
+  {evidence_html}
+  <div class="footer">Verified by <a href="https://factscope-api.onrender.com/health">FactScope</a> &mdash; AI-powered misinformation detection</div>
+</div>
+</body>
+</html>"""
+
+
+def _render_share_page(data: dict) -> str:
+    import html as _html
+
+    score = data.get("score", 50)
+    verdict = data.get("verdict", "uncertain")
+    result_type = data.get("result_type", "page")
+
+    is_image = result_type == "image"
+    score_label = "authenticity score" if is_image else "trust score"
+    type_label = "Image Verification" if is_image else "Content Analysis"
+
+    verdict_map = {
+        "authentic": ("Authentic", "\u2705"),
+        "likely_authentic": ("Likely Authentic", "\u2705"),
+        "uncertain": ("Uncertain", "\u2753"),
+        "suspicious": ("Suspicious", "\u26A0\uFE0F"),
+        "ai_generated": ("AI Generated", "\U0001F916"),
+        "likely_ai_generated": ("Likely AI-Generated", "\U0001F916"),
+        "possibly_manipulated": ("Possibly Manipulated", "\u26A0\uFE0F"),
+        "manipulated": ("Manipulated", "\u26A0\uFE0F"),
+        "phishing": ("Phishing Alert", "\U0001F6A8"),
+    }
+    verdict_label, verdict_icon = verdict_map.get(verdict, (verdict.replace("_", " ").title(), "\u2753"))
+    color = "#16a34a" if score >= 70 else "#d97706" if score >= 40 else "#dc2626"
+
+    domain = _html.escape(data.get("domain", "") or "")
+    domain_html = f'<div class="domain">{domain}</div>' if domain else ""
+
+    explanation = _html.escape(data.get("explanation", "") or "")
+    explanation_short = explanation[:160] + "\u2026" if len(explanation) > 160 else explanation
+
+    evidence = data.get("evidence", []) or []
+    evidence_items = "".join(f"<li>{_html.escape(str(e))}</li>" for e in evidence[:5])
+    evidence_html = (
+        f'<div class="evidence"><div class="evidence-title">Key findings</div><ul>{evidence_items}</ul></div>'
+        if evidence_items else ""
+    )
+
+    return _SHARE_PAGE_TEMPLATE.format(
+        score=score,
+        score_label=score_label,
+        type_label=type_label,
+        verdict_label=verdict_label,
+        verdict_icon=verdict_icon,
+        color=color,
+        domain=domain,
+        domain_html=domain_html,
+        explanation=explanation,
+        explanation_short=explanation_short,
+        evidence_html=evidence_html,
+    )
+
+
+@app.get("/s/{share_id}", response_class=HTMLResponse)
+async def view_shared_result(share_id: str):
+    """Serve a read-only HTML page for a shared result."""
+    data = get_shared_result(share_id)
+    if not data:
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+            "<h2>Result not found</h2><p>This shared link may have expired or does not exist.</p></body></html>",
+            status_code=404,
+        )
+    return HTMLResponse(_render_share_page(data))
 
 
 @app.get("/health")

@@ -45,9 +45,45 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
+/* ── Badge indicator ──────────────────────────────────────────────── */
+
+function updateBadge(tabId, score) {
+  const text = String(Math.round(score));
+  const color = score >= 70 ? '#16a34a' : score >= 40 ? '#d97706' : '#dc2626';
+  chrome.action.setBadgeText({ text, tabId });
+  chrome.action.setBadgeBackgroundColor({ color, tabId });
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'loading') {
+    chrome.action.setBadgeText({ text: '', tabId });
+  }
+});
+
+/* ── Scan history helpers ────────────────────────────────────────── */
+
+const MAX_HISTORY = 15;
+
+function saveHistoryEntry(entry) {
+  chrome.storage.local.get('factscope_history', (data) => {
+    const history = data.factscope_history || [];
+    history.unshift(entry);
+    if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
+    chrome.storage.local.set({ factscope_history: history });
+  });
+}
+
 /* ── Message routing ──────────────────────────────────────────────── */
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'update-badge') {
+    const tabId = sender.tab?.id;
+    if (tabId && typeof message.score === 'number') {
+      updateBadge(tabId, message.score);
+    }
+    return false;
+  }
+
   if (message.type === 'analyze') {
     (async () => {
       await _apiReady;
@@ -61,6 +97,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
+        if (data.verdict !== 'error') {
+          const url = payload.url || sender.tab?.url || '';
+          let domain = '';
+          try { domain = new URL(url).hostname; } catch {}
+          saveHistoryEntry({
+            url,
+            title: payload.title || sender.tab?.title || domain,
+            domain,
+            score: data.trust_score,
+            verdict: data.verdict,
+            type: 'page',
+            timestamp: Date.now(),
+          });
+        }
         sendResponse(data);
       } catch (err) {
         console.error('FactScope backend error:', err);
@@ -88,6 +138,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
+        if (data.verdict !== 'error') {
+          const pageUrl = payload.page_url || sender.tab?.url || '';
+          let domain = '';
+          try { domain = new URL(pageUrl).hostname; } catch {}
+          saveHistoryEntry({
+            url: pageUrl,
+            title: sender.tab?.title || domain,
+            domain,
+            score: data.authenticity_score,
+            verdict: data.verdict,
+            type: 'image',
+            timestamp: Date.now(),
+          });
+        }
         sendResponse(data);
       } catch (err) {
         console.error('FactScope image verify error:', err);
@@ -174,6 +238,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await r.json());
       } catch (err) {
         sendResponse({ notes: [], vote_stats: { likes: 0, dislikes: 0 }, flag_count: 0 });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'share-result') {
+    (async () => {
+      await _apiReady;
+      try {
+        const r = await fetch(`${API_BASE}/share`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(message.payload),
+        });
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        sendResponse(await r.json());
+      } catch (err) {
+        sendResponse({ error: err.message });
       }
     })();
     return true;

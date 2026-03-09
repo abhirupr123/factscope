@@ -33,6 +33,9 @@
   .factscope-popup .fs-footer { color: #475569; }
   .factscope-popup .fs-close { background: #334155; border-color: #475569; color: #e2e8f0; }
   .factscope-popup .fs-close:hover { background: #475569; }
+  .factscope-popup .fs-share-btn { background: #334155; border-color: #475569; color: #94a3b8; }
+  .factscope-popup .fs-share-btn:hover { background: #475569; color: #e2e8f0; }
+  .factscope-popup .fs-share-btn.fs-share-copied { background: #14532d; border-color: #22c55e; color: #4ade80; }
   .factscope-popup .fs-score-text { color: #94a3b8; }
   .factscope-popup .fs-scorebar { background: #334155; }
   .factscope-popup .fs-evidence-title { color: #cbd5e1; }
@@ -78,8 +81,39 @@
   font-weight: 600;
 }
 
-.factscope-popup .fs-close {
+.factscope-popup .fs-header-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.factscope-popup .fs-share-btn {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.factscope-popup .fs-share-btn:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.factscope-popup .fs-share-btn.fs-share-copied {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #16a34a;
+}
+
+.factscope-popup .fs-close {
   background: #f1f5f9;
   border: 1px solid #e2e8f0;
   color: #334155;

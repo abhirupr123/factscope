@@ -585,6 +585,43 @@
     });
   }
 
+  function wireShareButton(panel, sharePayload) {
+    const btn = panel.querySelector('.fs-share-btn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = '\u231B Generating link\u2026';
+
+      if (!chrome.runtime?.id) {
+        btn.textContent = 'Share unavailable';
+        btn.disabled = false;
+        return;
+      }
+      chrome.runtime.sendMessage({ type: 'share-result', payload: sharePayload }, async (resp) => {
+        if (chrome.runtime.lastError || !resp || resp.error) {
+          btn.textContent = '\u2718 Failed';
+          btn.disabled = false;
+          setTimeout(() => { btn.textContent = '\uD83D\uDD17 Share result'; }, 1500);
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(resp.share_url);
+          btn.textContent = '\u2714 Link copied!';
+          btn.classList.add('fs-share-copied');
+        } catch {
+          btn.textContent = '\u2714 Link ready';
+          btn.classList.add('fs-share-copied');
+        }
+        btn.disabled = false;
+        setTimeout(() => {
+          btn.textContent = '\uD83D\uDD17 Share result';
+          btn.classList.remove('fs-share-copied');
+        }, 3000);
+      });
+    });
+  }
+
   function showResultPanel(result) {
     const score = result.trust_score;
     const color = scoreColor(score);
@@ -624,13 +661,18 @@
       ? `<div class="fs-scans-count">Verified by ${result.community_scans} user(s)</div>`
       : '';
 
+    const pageDomain = (() => { try { return new URL(location.href).hostname; } catch { return ''; } })();
+
     const panel = createPanel(`
       <div class="fs-header">
         <div class="fs-logo">FS</div>
         <div class="fs-header-text">
           <div class="fs-brand">FactScope</div>
         </div>
-        <button class="fs-close" aria-label="Close">&times;</button>
+        <div class="fs-header-actions">
+          <button class="fs-share-btn">\uD83D\uDD17 Share result</button>
+          <button class="fs-close" aria-label="Close">&times;</button>
+        </div>
       </div>
       <div class="fs-verdict-row">
         <span class="fs-verdict-icon">${icon}</span>
@@ -652,6 +694,16 @@
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
+
+    wireShareButton(panel, {
+      result_type: 'page',
+      score,
+      verdict: result.verdict,
+      explanation: result.explanation || '',
+      evidence: (result.evidence || []).slice(0, 5),
+      domain: pageDomain,
+      source_info: sourceInfo ? { site_name: sourceInfo.site_name, author: sourceInfo.author, publish_date: sourceInfo.publish_date } : null,
+    });
 
     if (result.fingerprint) {
       wireVoteButtons(panel, result.fingerprint);
@@ -758,6 +810,8 @@
 
     const claimHTML = result.claim_analysis ? buildFactChecksHTML(result.claim_analysis) : '';
 
+    const imgDomain = (() => { try { return new URL(location.href).hostname; } catch { return ''; } })();
+
     const panel = createPanel(`
       <div class="fs-header">
         <div class="fs-logo">FS</div>
@@ -765,7 +819,10 @@
           <div class="fs-brand">FactScope</div>
           <div class="fs-subtitle">Image Verification</div>
         </div>
-        <button class="fs-close" aria-label="Close">&times;</button>
+        <div class="fs-header-actions">
+          <button class="fs-share-btn">\uD83D\uDD17 Share result</button>
+          <button class="fs-close" aria-label="Close">&times;</button>
+        </div>
       </div>
       <div class="fs-verdict-row">
         <span class="fs-verdict-icon">${icon}</span>
@@ -782,6 +839,15 @@
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
+
+    wireShareButton(panel, {
+      result_type: 'image',
+      score,
+      verdict: result.verdict,
+      explanation: result.explanation || '',
+      evidence: (result.evidence || []).slice(0, 5),
+      domain: imgDomain,
+    });
 
     if (result.fingerprint) {
       wireVoteButtons(panel, result.fingerprint);
@@ -831,6 +897,9 @@
 
     if (result && result.authenticity_score !== undefined) {
       showImageResultPanel(result);
+      if (chrome.runtime?.id) {
+        chrome.runtime.sendMessage({ type: 'update-badge', score: result.authenticity_score });
+      }
     } else {
       showImageResultPanel({
         authenticity_score: 0,
@@ -858,6 +927,9 @@
 
     if (result && result.trust_score !== undefined) {
       showResultPanel(result);
+      if (chrome.runtime?.id) {
+        chrome.runtime.sendMessage({ type: 'update-badge', score: result.trust_score });
+      }
     } else {
       showResultPanel({
         trust_score: 0,
