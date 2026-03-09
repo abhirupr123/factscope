@@ -312,49 +312,17 @@ def search_factcheck_api(claim: str) -> dict:
 # Lightweight single-claim verification (for image captions, short posts)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_OPINION_PATTERN = re.compile(
-    r"^(?:(?:you |we |i |my |this |that |lol|lmao|bruh|bro|wow|omg|damn|absolute)"
-    r"(?:.*(?:can.?t|won.?t|don.?t|shouldn.?t|wouldn.?t|isn.?t|aren.?t).*|"
-    r".*(?:shocker|legend|goat|fire|wild|crazy|insane|iconic|based|peak|dead|"
-    r"hilarious|savage|vibe|mood|ratio|slay|king|queen|mans|predict|believe"
-    r"|imagine|thought|think|feel|guess|hope|wish|love|hate).*))$",
-    re.IGNORECASE,
-)
-
-
-def _is_verifiable_claim(text: str) -> bool:
-    """Return True if text looks like a factual claim worth verifying."""
-    clean = text.strip()
-    words = clean.split()
-    if len(words) < 4:
-        return False
-    if _OPINION_PATTERN.match(clean):
-        return False
-    has_noun_like = any(w[0].isupper() for w in words[1:] if len(w) > 1)
-    has_number = bool(re.search(r"\d", clean))
-    has_verb = bool(re.search(
-        r"\b(?:said|says|told|claimed|confirmed|announced|reported|killed|"
-        r"attacked|visited|won|lost|signed|arrested|launched|banned|struck|hit)\b",
-        clean, re.IGNORECASE,
-    ))
-    return has_noun_like or has_number or has_verb
-
-
 def verify_image_claim(caption: str) -> list[dict]:
     """Verify a short image caption/claim directly without LLM extraction.
 
     Treats the caption as a single claim and checks it against Google Fact
     Check API + Google News RSS. No LLM tokens used.
-    Returns claim result with matching article titles/sources.
+    Caller is responsible for tone filtering (only pass factual captions).
     """
     if not caption or len(caption.strip()) < 10:
         return []
 
     claim = caption.strip()[:200]
-
-    if not _is_verifiable_claim(claim):
-        logger.info("Skipping non-verifiable caption: %s", claim[:60])
-        return []
     logger.info("Verifying image claim directly: %s", claim[:60])
 
     fc_result = search_factcheck_api(claim)

@@ -310,15 +310,17 @@ _SCHEMA_STATEMENTS = [
 
     # ── Shared results (shareable links) ───────────────────────────────
     """CREATE TABLE IF NOT EXISTS shared_results (
-        id           TEXT PRIMARY KEY,
-        result_type  TEXT NOT NULL DEFAULT 'page',
-        score        INTEGER NOT NULL,
-        verdict      TEXT NOT NULL,
-        explanation  TEXT NOT NULL DEFAULT '',
-        evidence     TEXT,
-        domain       TEXT,
-        source_info  TEXT,
-        created_at   TEXT NOT NULL
+        id            TEXT PRIMARY KEY,
+        result_type   TEXT NOT NULL DEFAULT 'page',
+        score         INTEGER NOT NULL,
+        verdict       TEXT NOT NULL,
+        explanation   TEXT NOT NULL DEFAULT '',
+        evidence      TEXT,
+        domain        TEXT,
+        source_info   TEXT,
+        scanned_url   TEXT,
+        scanned_title TEXT,
+        created_at    TEXT NOT NULL
     )""",
 ]
 
@@ -1026,8 +1028,9 @@ def store_shared_result(data: dict) -> str:
         conn = _get_conn()
         conn.execute(
             """INSERT INTO shared_results
-               (id, result_type, score, verdict, explanation, evidence, domain, source_info, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, result_type, score, verdict, explanation, evidence, domain, source_info,
+                scanned_url, scanned_title, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 short_id,
                 data.get("result_type", "page"),
@@ -1037,6 +1040,8 @@ def store_shared_result(data: dict) -> str:
                 json.dumps(data.get("evidence", [])),
                 data.get("domain", ""),
                 json.dumps(data.get("source_info")) if data.get("source_info") else None,
+                data.get("scanned_url", ""),
+                data.get("scanned_title", ""),
                 datetime.utcnow().isoformat(),
             ),
         )

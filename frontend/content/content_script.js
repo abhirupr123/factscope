@@ -703,6 +703,8 @@
       evidence: (result.evidence || []).slice(0, 5),
       domain: pageDomain,
       source_info: sourceInfo ? { site_name: sourceInfo.site_name, author: sourceInfo.author, publish_date: sourceInfo.publish_date } : null,
+      scanned_url: location.href,
+      scanned_title: document.title || '',
     });
 
     if (result.fingerprint) {
@@ -847,6 +849,8 @@
       explanation: result.explanation || '',
       evidence: (result.evidence || []).slice(0, 5),
       domain: imgDomain,
+      scanned_url: location.href,
+      scanned_title: document.title || '',
     });
 
     if (result.fingerprint) {

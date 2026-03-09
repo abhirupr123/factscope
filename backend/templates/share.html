@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FactScope — {verdict_label} ({score}%)</title>
+<meta property="og:title" content="FactScope: {domain} — {score}% {score_label}">
+<meta property="og:description" content="{explanation_short}">
+<meta name="twitter:card" content="summary">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+
+body {{
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: #0b1120;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 20%, rgba(37,99,235,0.18), transparent),
+    radial-gradient(ellipse 60% 40% at 80% 10%, rgba(16,185,129,0.12), transparent),
+    radial-gradient(ellipse 50% 50% at 50% 90%, rgba(139,92,246,0.08), transparent);
+  color: #e2e8f0;
+}}
+
+.card {{
+  width: 100%;
+  max-width: 480px;
+  background: rgba(255,255,255,0.05);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow:
+    0 24px 80px rgba(0,0,0,0.4),
+    0 0 0 1px rgba(255,255,255,0.04) inset;
+  animation: fadeUp 0.5s ease-out;
+}}
+
+@keyframes fadeUp {{
+  from {{ opacity:0; transform:translateY(16px) }}
+  to {{ opacity:1; transform:translateY(0) }}
+}}
+
+.header {{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}}
+
+.logo {{
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  font-weight: 800;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 16px rgba(37,99,235,0.3);
+}}
+
+.brand {{ font-weight: 700; font-size: 17px; color: #f1f5f9; }}
+.type-label {{
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}}
+
+.context {{
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+}}
+.context-label {{
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+  margin-bottom: 6px;
+}}
+.context-title {{
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}}
+.context-url {{
+  font-size: 11px;
+  color: #60a5fa;
+  text-decoration: none;
+  word-break: break-all;
+}}
+.context-url:hover {{ text-decoration: underline; }}
+
+.verdict-row {{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}}
+.verdict-icon {{ font-size: 26px; line-height: 1; }}
+.verdict-label {{ font-weight: 800; font-size: 18px; }}
+
+.score-bar {{
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  margin-bottom: 8px;
+  overflow: hidden;
+}}
+.score-fill {{
+  height: 100%;
+  border-radius: 4px;
+  transition: width 1s ease-out;
+}}
+
+.score-text {{
+  font-size: 14px;
+  color: #94a3b8;
+  margin-bottom: 20px;
+}}
+.score-text strong {{ font-size: 18px; }}
+
+.domain-badge {{
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin-bottom: 16px;
+}}
+
+.divider {{
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 16px 0;
+}}
+
+.explanation {{
+  font-size: 14px;
+  line-height: 1.6;
+  color: #cbd5e1;
+  margin-bottom: 16px;
+}}
+
+.evidence-title {{
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 8px;
+}}
+.evidence ul {{ list-style: none; padding: 0; }}
+.evidence li {{
+  font-size: 13px;
+  color: #94a3b8;
+  padding: 5px 0 5px 18px;
+  position: relative;
+  line-height: 1.4;
+}}
+.evidence li::before {{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #475569;
+}}
+
+.footer {{
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #475569;
+}}
+.footer-logo {{
+  width: 18px; height: 18px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  font-weight: 800;
+  font-size: 8px;
+  display: inline-grid;
+  place-items: center;
+}}
+.footer a {{ color: #60a5fa; text-decoration: none; }}
+.footer a:hover {{ text-decoration: underline; }}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="header">
+    <div class="logo">FS</div>
+    <div>
+      <div class="brand">FactScope</div>
+      <div class="type-label">{type_label}</div>
+    </div>
+  </div>
+
+  {context_html}
+
+  <div class="verdict-row">
+    <span class="verdict-icon">{verdict_icon}</span>
+    <span class="verdict-label" style="color:{color}">{verdict_label}</span>
+  </div>
+
+  <div class="score-bar">
+    <div class="score-fill" style="width:{score}%;background:{color}"></div>
+  </div>
+  <div class="score-text">
+    <strong style="color:{color}">{score}%</strong> {score_label}
+  </div>
+
+  {domain_html}
+  <div class="divider"></div>
+
+  <div class="explanation">{explanation}</div>
+
+  {evidence_html}
+
+  <div class="footer">
+    <span class="footer-logo">FS</span>
+    Verified by FactScope &mdash; AI-powered misinformation detection
+  </div>
+</div>
+
+</body>
+</html>

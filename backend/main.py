@@ -24,6 +24,7 @@ import json
 import re
 import uvicorn
 import logging
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -346,13 +347,16 @@ async def verify_image(request: ImageVerifyRequest):
     elif request.page_text:
         caption = request.page_text[:500]
 
-    if caption and len(caption.strip()) >= 10:
+    caption_tone = result.get("caption_tone", "informal")
+    if caption and len(caption.strip()) >= 10 and caption_tone == "factual":
         try:
             fc = _verify_image_claim(caption)
             if fc:
                 claim_results = [FactCheckResult(**c) for c in fc]
         except Exception as exc:
             logger.warning("Image claim verification failed: %s", exc)
+    elif caption and caption_tone == "informal":
+        logger.info("Skipping claim verification — caption tone is informal")
 
     final_score = result["authenticity_score"]
     final_verdict = result["verdict"]
@@ -900,6 +904,8 @@ class ShareRequest(BaseModel):
     evidence: list[str] = []
     domain: str = ""
     source_info: Optional[dict] = None
+    scanned_url: str = ""
+    scanned_title: str = ""
 
 
 @app.post("/share")
@@ -912,75 +918,7 @@ async def create_share(request: ShareRequest):
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
 
 
-_SHARE_PAGE_TEMPLATE = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FactScope &mdash; {verdict_label} ({score}%)</title>
-<meta property="og:title" content="FactScope: {domain} &mdash; {score}% {score_label}">
-<meta property="og:description" content="{explanation_short}">
-<meta name="twitter:card" content="summary">
-<style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:"Inter","Segoe UI",system-ui,sans-serif;background:#f5f7fb;color:#0f172a;
-display:flex;justify-content:center;padding:24px 12px;min-height:100vh}}
-.card{{background:#fff;border-radius:16px;box-shadow:0 12px 38px rgba(15,23,42,.1);
-max-width:520px;width:100%;padding:24px;border:1px solid #e2e8f0}}
-.header{{display:flex;align-items:center;gap:10px;margin-bottom:18px}}
-.logo{{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#2563eb,#3b82f6);
-color:#fff;font-weight:700;display:grid;place-items:center;font-size:14px}}
-.brand{{font-weight:700;font-size:16px}}
-.sub{{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}}
-.verdict{{display:flex;align-items:center;gap:8px;margin-bottom:10px}}
-.verdict-icon{{font-size:22px}}
-.verdict-label{{font-weight:700;font-size:15px}}
-.bar-bg{{height:6px;border-radius:3px;background:#e2e8f0;margin-bottom:6px}}
-.bar-fill{{height:100%;border-radius:3px}}
-.score-text{{font-size:13px;color:#64748b;margin-bottom:14px}}
-.score-text strong{{font-size:15px}}
-.domain{{font-size:12px;color:#64748b;margin-bottom:14px;padding:6px 10px;
-background:#f8fafc;border-radius:6px;border:1px solid #e2e8f0}}
-.explanation{{font-size:14px;line-height:1.5;margin-bottom:14px}}
-.evidence-title{{font-size:12px;font-weight:700;color:#334155;margin-bottom:6px}}
-.evidence ul{{list-style:none;padding:0}}
-.evidence li{{font-size:13px;color:#475569;padding:4px 0;padding-left:16px;position:relative}}
-.evidence li::before{{content:"\\2022";position:absolute;left:0;color:#94a3b8}}
-.footer{{margin-top:18px;padding-top:12px;border-top:1px solid #e2e8f0;
-font-size:11px;color:#94a3b8;text-align:center}}
-.footer a{{color:#2563eb;text-decoration:none}}
-@media(prefers-color-scheme:dark){{
-body{{background:#0f172a;color:#e2e8f0}}
-.card{{background:#1e293b;border-color:#334155;box-shadow:0 12px 38px rgba(0,0,0,.3)}}
-.domain{{background:#0f172a;border-color:#334155;color:#94a3b8}}
-.bar-bg{{background:#334155}}
-.score-text{{color:#94a3b8}}
-.evidence-title{{color:#cbd5e1}}
-.evidence li{{color:#94a3b8}}
-.footer{{border-color:#334155}}
-}}
-</style>
-</head>
-<body>
-<div class="card">
-  <div class="header">
-    <div class="logo">FS</div>
-    <div><div class="brand">FactScope</div><div class="sub">{type_label}</div></div>
-  </div>
-  <div class="verdict">
-    <span class="verdict-icon">{verdict_icon}</span>
-    <span class="verdict-label" style="color:{color}">{verdict_label}</span>
-  </div>
-  <div class="bar-bg"><div class="bar-fill" style="width:{score}%;background:{color}"></div></div>
-  <div class="score-text"><strong style="color:{color}">{score}%</strong> {score_label}</div>
-  {domain_html}
-  <div class="explanation">{explanation}</div>
-  {evidence_html}
-  <div class="footer">Verified by <a href="https://factscope-api.onrender.com/health">FactScope</a> &mdash; AI-powered misinformation detection</div>
-</div>
-</body>
-</html>"""
+_SHARE_TEMPLATE = (Path(__file__).parent / "templates" / "share.html").read_text(encoding="utf-8")
 
 
 def _render_share_page(data: dict) -> str:
@@ -1009,7 +947,19 @@ def _render_share_page(data: dict) -> str:
     color = "#16a34a" if score >= 70 else "#d97706" if score >= 40 else "#dc2626"
 
     domain = _html.escape(data.get("domain", "") or "")
-    domain_html = f'<div class="domain">{domain}</div>' if domain else ""
+    domain_html = f'<div class="domain-badge">{domain}</div>' if domain else ""
+
+    scanned_url = data.get("scanned_url", "") or ""
+    scanned_title = _html.escape(data.get("scanned_title", "") or "")
+    context_html = ""
+    if scanned_title or scanned_url:
+        ctx_label = "Image scanned on" if is_image else "Page scanned"
+        title_line = f'<div class="context-title">{scanned_title}</div>' if scanned_title else ""
+        url_line = (
+            f'<a class="context-url" href="{_html.escape(scanned_url)}" target="_blank" rel="noopener">{_html.escape(scanned_url[:80])}</a>'
+            if scanned_url else ""
+        )
+        context_html = f'<div class="context"><div class="context-label">{ctx_label}</div>{title_line}{url_line}</div>'
 
     explanation = _html.escape(data.get("explanation", "") or "")
     explanation_short = explanation[:160] + "\u2026" if len(explanation) > 160 else explanation
@@ -1021,7 +971,7 @@ def _render_share_page(data: dict) -> str:
         if evidence_items else ""
     )
 
-    return _SHARE_PAGE_TEMPLATE.format(
+    return _SHARE_TEMPLATE.format(
         score=score,
         score_label=score_label,
         type_label=type_label,
@@ -1030,6 +980,7 @@ def _render_share_page(data: dict) -> str:
         color=color,
         domain=domain,
         domain_html=domain_html,
+        context_html=context_html,
         explanation=explanation,
         explanation_short=explanation_short,
         evidence_html=evidence_html,

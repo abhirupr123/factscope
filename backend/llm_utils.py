@@ -49,7 +49,8 @@ Respond with ONLY valid JSON. No markdown, no backticks.
   "authenticity_score": <integer 0-100>,
   "verdict": "<authentic|ai_generated|manipulated|out_of_context|uncertain>",
   "explanation": "<2-3 sentences about what you observe in the image.>",
-  "evidence": ["<sign 1>", "<sign 2>", "<sign 3>"]
+  "evidence": ["<sign 1>", "<sign 2>", "<sign 3>"],
+  "caption_tone": "<factual|informal>"
 }}
 
 RULES:
@@ -67,6 +68,10 @@ any AI tool text, logos, or watermarks (e.g. "Gemini", sparkle icon, "DALL-E", "
 If found, the image is AI-generated regardless of how realistic it looks.
 6. Check for manipulation: splicing edges, cloned regions, inconsistent lighting/noise/shadows.
 7. Check scene consistency: clothing, setting, architecture, technology vs claimed time period.
+8. caption_tone — look at the surrounding context/post text. If it reads like casual commentary, \
+humor, personal opinion, slang, memes, or reaction text in ANY language, return "informal". \
+If it makes a specific factual claim about a real event, person, or place, return "factual". \
+If no caption is present, return "informal".
 
 Scoring: 80-100 no signs of AI/manipulation, 50-79 uncertain or too low quality to tell, \
 20-49 likely AI or manipulated, 0-19 clearly fake.
@@ -442,11 +447,16 @@ def _validate_image_result(result: dict) -> dict:
     if verdict not in valid_verdicts:
         verdict = "uncertain"
 
+    caption_tone = result.get("caption_tone", "informal")
+    if caption_tone not in ("factual", "informal"):
+        caption_tone = "informal"
+
     return {
         "authenticity_score": score,
         "verdict": verdict,
         "explanation": str(result.get("explanation", "No explanation available.")),
         "evidence": [str(e) for e in result.get("evidence", []) if e][:3],
+        "caption_tone": caption_tone,
     }
 
 
