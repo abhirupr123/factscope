@@ -588,49 +588,76 @@
   function wireShareButton(panel, sharePayload) {
     const btn = panel.querySelector('.fs-share-btn');
     if (!btn) return;
+    const actionsWrap = btn.closest('.fs-header-actions');
 
-    async function copyAndFlash(url) {
-      try {
-        await navigator.clipboard.writeText(url);
-        btn.textContent = '\u2714 Link copied!';
-        btn.classList.add('fs-share-copied');
-      } catch {
-        btn.textContent = '\u2714 Link ready';
-        btn.classList.add('fs-share-copied');
-      }
-      btn.disabled = false;
-      setTimeout(() => {
-        btn.textContent = '\uD83D\uDD17 Share result';
-        btn.classList.remove('fs-share-copied');
-      }, 3000);
+    function buildShareText(url) {
+      const v = sharePayload.verdict || 'uncertain';
+      const s = sharePayload.score || 0;
+      const d = sharePayload.domain || '';
+      const label = d ? `FactScope verified ${d}` : 'FactScope result';
+      return `${label}: ${v.replace(/_/g, ' ')} \u2014 ${s}%\n${url}`;
     }
 
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      btn.disabled = true;
-
-      if (btn.dataset.shareUrl) {
-        copyAndFlash(btn.dataset.shareUrl);
-        return;
+    function showShareRow(url) {
+      let row = panel.querySelector('.fs-share-row');
+      if (row) { row.style.display = 'flex'; return; }
+      row = document.createElement('div');
+      row.className = 'fs-share-row';
+      const text = encodeURIComponent(buildShareText(url));
+      const encodedUrl = encodeURIComponent(url);
+      row.innerHTML =
+        `<a class="fs-share-icon fs-share-twitter" href="https://twitter.com/intent/tweet?text=${text}" target="_blank" rel="noopener" title="Share on Twitter">𝕏</a>` +
+        `<a class="fs-share-icon fs-share-whatsapp" href="https://api.whatsapp.com/send?text=${text}" target="_blank" rel="noopener" title="Share on WhatsApp">WA</a>` +
+        `<a class="fs-share-icon fs-share-telegram" href="https://t.me/share/url?url=${encodedUrl}&text=${encodeURIComponent(buildShareText(''))}" target="_blank" rel="noopener" title="Share on Telegram">TG</a>` +
+        `<button class="fs-share-icon fs-share-copy" title="Copy link">\uD83D\uDD17</button>`;
+      row.querySelector('.fs-share-copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(url); } catch {}
+        const copyBtn = row.querySelector('.fs-share-copy');
+        copyBtn.textContent = '\u2714';
+        setTimeout(() => { copyBtn.textContent = '\uD83D\uDD17'; }, 2000);
+      });
+      if (actionsWrap) {
+        actionsWrap.after(row);
+      } else {
+        btn.after(row);
       }
+    }
 
-      btn.textContent = '\u231B Generating link\u2026';
-
+    function generateAndShow() {
+      btn.disabled = true;
+      btn.textContent = '\u231B Generating\u2026';
       if (!chrome.runtime?.id) {
         btn.textContent = 'Share unavailable';
         btn.disabled = false;
         return;
       }
-      chrome.runtime.sendMessage({ type: 'share-result', payload: sharePayload }, (resp) => {
+      chrome.runtime.sendMessage({ type: 'share-result', payload: sharePayload }, async (resp) => {
         if (chrome.runtime.lastError || !resp || resp.error) {
           btn.textContent = '\u2718 Failed';
           btn.disabled = false;
-          setTimeout(() => { btn.textContent = '\uD83D\uDD17 Share result'; }, 1500);
+          setTimeout(() => { btn.textContent = '\uD83D\uDD17 Share'; }, 1500);
           return;
         }
         btn.dataset.shareUrl = resp.share_url;
-        copyAndFlash(resp.share_url);
+        btn.textContent = '\uD83D\uDD17 Share';
+        btn.disabled = false;
+        showShareRow(resp.share_url);
+        try { await navigator.clipboard.writeText(resp.share_url); } catch {}
       });
+    }
+
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const existing = panel.querySelector('.fs-share-row');
+      if (existing && existing.style.display !== 'none') {
+        existing.style.display = 'none';
+        return;
+      }
+      if (btn.dataset.shareUrl) {
+        showShareRow(btn.dataset.shareUrl);
+        return;
+      }
+      generateAndShow();
     });
   }
 
@@ -682,7 +709,7 @@
           <div class="fs-brand">FactScope</div>
         </div>
         <div class="fs-header-actions">
-          <button class="fs-share-btn">\uD83D\uDD17 Share result</button>
+          <button class="fs-share-btn">\uD83D\uDD17 Share</button>
           <button class="fs-close" aria-label="Close">&times;</button>
         </div>
       </div>
@@ -777,6 +804,115 @@
     return ctx;
   }
 
+  function extractPostPermalink(imageUrl) {
+    const hostname = location.hostname;
+
+    // Twitter/X: find the tweet article containing this image, get permalink from <time>'s parent <a>
+    if (hostname.includes('x.com') || hostname.includes('twitter.com')) {
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.src === imageUrl || img.currentSrc === imageUrl) {
+          const article = img.closest('article[data-testid="tweet"]');
+          if (!article) break;
+          const timeLink = article.querySelector('time')?.closest('a');
+          if (timeLink?.href) return timeLink.href;
+          break;
+        }
+      }
+    }
+
+    // Reddit: find post container, look for link containing /comments/
+    if (hostname.includes('reddit.com')) {
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.src === imageUrl || img.currentSrc === imageUrl) {
+          const post = img.closest('[data-testid="post-container"], shreddit-post, .Post');
+          if (!post) break;
+          const link = post.querySelector('a[href*="/comments/"]');
+          if (link?.href) return link.href;
+          break;
+        }
+      }
+    }
+
+    // Facebook: look for /posts/ or /photo/ or /permalink/ links near the image
+    if (hostname.includes('facebook.com') || hostname.includes('fb.com')) {
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.src === imageUrl || img.currentSrc === imageUrl) {
+          let el = img;
+          for (let i = 0; i < 12 && el; i++) {
+            el = el.parentElement;
+            if (!el) break;
+            const link = el.querySelector('a[href*="/posts/"], a[href*="/photo/"], a[href*="/permalink/"]');
+            if (link?.href) return link.href;
+          }
+          break;
+        }
+      }
+    }
+
+    // Instagram: look for /p/ or /reel/ links
+    if (hostname.includes('instagram.com')) {
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.src === imageUrl || img.currentSrc === imageUrl) {
+          let el = img;
+          for (let i = 0; i < 10 && el; i++) {
+            el = el.parentElement;
+            if (!el) break;
+            const link = el.querySelector('a[href*="/p/"], a[href*="/reel/"]');
+            if (link?.href) return link.href;
+          }
+          break;
+        }
+      }
+    }
+
+    // LinkedIn: look for /feed/update/ links
+    if (hostname.includes('linkedin.com')) {
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.src === imageUrl || img.currentSrc === imageUrl) {
+          let el = img;
+          for (let i = 0; i < 10 && el; i++) {
+            el = el.parentElement;
+            if (!el) break;
+            const link = el.querySelector('a[href*="/feed/update/"]');
+            if (link?.href) return link.href;
+          }
+          break;
+        }
+      }
+    }
+
+    // General fallback: walk up from the image, find nearest <a> with a deep path
+    try {
+      const imgs = document.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.src === imageUrl || img.currentSrc === imageUrl) {
+          let el = img;
+          for (let i = 0; i < 8 && el; i++) {
+            el = el.parentElement;
+            if (!el) break;
+            const anchors = el.querySelectorAll('a[href]');
+            for (const a of anchors) {
+              try {
+                const u = new URL(a.href);
+                if (u.origin === location.origin && u.pathname.length > 1 && u.pathname !== location.pathname) {
+                  return a.href;
+                }
+              } catch {}
+            }
+          }
+          break;
+        }
+      }
+    } catch {}
+
+    return location.href;
+  }
+
   /* ── Image verification UI ─────────────────────────────────────── */
 
   const IMG_VERDICT_LABELS = {
@@ -813,7 +949,7 @@
     `);
   }
 
-  function showImageResultPanel(result) {
+  function showImageResultPanel(result, resolvedPageUrl) {
     const score = result.authenticity_score;
     const color = imgScoreColor(score);
     const label = IMG_VERDICT_LABELS[result.verdict] || result.verdict;
@@ -835,7 +971,7 @@
           <div class="fs-subtitle">Image Verification</div>
         </div>
         <div class="fs-header-actions">
-          <button class="fs-share-btn">\uD83D\uDD17 Share result</button>
+          <button class="fs-share-btn">\uD83D\uDD17 Share</button>
           <button class="fs-close" aria-label="Close">&times;</button>
         </div>
       </div>
@@ -862,7 +998,7 @@
       explanation: result.explanation || '',
       evidence: (result.evidence || []).slice(0, 5),
       domain: imgDomain,
-      scanned_url: location.href,
+      scanned_url: resolvedPageUrl || location.href,
       scanned_title: document.title || '',
       fingerprint: result.fingerprint || '',
     });
@@ -878,13 +1014,15 @@
   async function verifyImage(imageUrl, pageUrl) {
     showImageScanningIndicator();
 
+    const resolvedUrl = extractPostPermalink(imageUrl) || pageUrl;
+
     const socialContext = extractSocialContext(imageUrl);
     const pageText = socialContext.post_text
       || (socialContext.platform ? null : extractArticleBody().substring(0, 1000));
 
     const payload = {
       image_url: imageUrl,
-      page_url: pageUrl,
+      page_url: resolvedUrl,
       page_text: pageText || null,
       social_context: socialContext.platform ? socialContext : null,
     };
@@ -914,7 +1052,7 @@
     });
 
     if (result && result.authenticity_score !== undefined) {
-      showImageResultPanel(result);
+      showImageResultPanel(result, resolvedUrl);
       if (chrome.runtime?.id) {
         chrome.runtime.sendMessage({ type: 'update-badge', score: result.authenticity_score });
       }
@@ -924,7 +1062,7 @@
         verdict: 'error',
         explanation: 'Could not verify this image. Make sure the FactScope backend is running.',
         evidence: [],
-      });
+      }, resolvedUrl);
     }
   }
 

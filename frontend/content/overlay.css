@@ -36,6 +36,8 @@
   .factscope-popup .fs-share-btn { background: #334155; border-color: #475569; color: #94a3b8; }
   .factscope-popup .fs-share-btn:hover { background: #475569; color: #e2e8f0; }
   .factscope-popup .fs-share-btn.fs-share-copied { background: #14532d; border-color: #22c55e; color: #4ade80; }
+  .factscope-popup .fs-share-row { border-top-color: #334155; }
+  .factscope-popup .fs-share-copy { background: #334155; color: #94a3b8; }
   .factscope-popup .fs-score-text { color: #94a3b8; }
   .factscope-popup .fs-scorebar { background: #334155; }
   .factscope-popup .fs-evidence-title { color: #cbd5e1; }
@@ -112,6 +114,33 @@
   border-color: #86efac;
   color: #16a34a;
 }
+
+.factscope-popup .fs-share-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px 10px;
+  border-top: 1px solid #e2e8f0;
+}
+.factscope-popup .fs-share-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s, opacity 0.15s;
+}
+.factscope-popup .fs-share-icon:hover { transform: scale(1.1); }
+.factscope-popup .fs-share-twitter { background: #1d9bf0; color: #fff; }
+.factscope-popup .fs-share-whatsapp { background: #25d366; color: #fff; }
+.factscope-popup .fs-share-telegram { background: #229ed9; color: #fff; }
+.factscope-popup .fs-share-copy { background: #f1f5f9; color: #475569; font-size: 13px; }
 
 .factscope-popup .fs-close {
   background: #f1f5f9;

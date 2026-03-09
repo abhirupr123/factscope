@@ -49,9 +49,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 function updateBadge(tabId, score) {
   const text = String(Math.round(score));
-  const color = score >= 70 ? '#16a34a' : score >= 40 ? '#d97706' : '#dc2626';
+  const color = score >= 70 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
   chrome.action.setBadgeText({ text, tabId });
   chrome.action.setBadgeBackgroundColor({ color, tabId });
+  chrome.action.setBadgeTextColor({ color: '#ffffff', tabId });
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
