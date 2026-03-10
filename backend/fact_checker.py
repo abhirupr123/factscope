@@ -34,6 +34,34 @@ def _normalize_url(url: str) -> str:
     except Exception:
         return url.lower().split("?")[0].split("#")[0].rstrip("/")
 
+
+def _extract_domain(url: str) -> str:
+    """Extract the base domain from a URL for source matching."""
+    if not url:
+        return ""
+    try:
+        host = urlparse(url).netloc.lower()
+        host = host.split(":")[0]
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+
+def _source_matches_domain(source_name: str, domain: str) -> bool:
+    """Check if a news source name matches the scanned article's domain."""
+    if not source_name or not domain:
+        return False
+    sn = source_name.lower().strip()
+    base = domain.split(".")[0]
+    return (
+        domain in sn
+        or sn in domain
+        or base in sn.replace(" ", "")
+        or sn.replace(" ", "") in domain
+    )
+
 FACTCHECK_API_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en&gl=US&ceid=US:en"
 
@@ -173,26 +201,26 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
 
     For each claim, count how many articles have meaningful keyword overlap
     with the claim text. Returns {claim_index: {source_count, corroboration, related_articles}}.
-    Filters out articles whose URL matches source_url (self-dedup).
+    Filters out articles from the same domain as source_url (self-dedup).
     """
-    norm_source = _normalize_url(source_url)
+    source_domain = _extract_domain(source_url)
 
     article_texts = []
     article_sources = []
     article_urls = []
     for a in articles:
         a_url = a.get("url") or ""
-        if norm_source and _normalize_url(a_url) == norm_source:
-            continue
-        combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
-        article_texts.append(combined)
-        article_urls.append(a_url)
         source = (a.get("source") or {}).get("name") or ""
         if not source:
             try:
                 source = urlparse(a_url).netloc
             except Exception:
                 pass
+        if source_domain and _source_matches_domain(source, source_domain):
+            continue
+        combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
+        article_texts.append(combined)
+        article_urls.append(a_url)
         article_sources.append(source)
 
     results = {}
@@ -355,18 +383,18 @@ def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
     search_query = _extract_keywords(claim, max_words=10)
     articles = _search_news(search_query)
 
-    norm_source = _normalize_url(source_url)
+    source_domain = _extract_domain(source_url)
     matching_articles = []
     relevance_scores = []
     claim_keywords = set(_extract_keywords(claim, max_words=10).split())
     for a in articles:
         a_url = a.get("url") or ""
-        if norm_source and _normalize_url(a_url) == norm_source:
+        source = (a.get("source") or {}).get("name") or ""
+        if source_domain and _source_matches_domain(source, source_domain):
             continue
         combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
         overlap = sum(1 for kw in claim_keywords if kw in combined)
         if overlap >= min(2, len(claim_keywords)):
-            source = (a.get("source") or {}).get("name") or ""
             title = a.get("title") or ""
             if title:
                 relevance = overlap / len(claim_keywords) if claim_keywords else 0

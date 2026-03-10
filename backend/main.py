@@ -925,17 +925,23 @@ class ShareRequest(BaseModel):
     og_image: str = ""
 
 
+def _pregenerate_card(share_id: str, data: dict):
+    """Background task: generate card PNG and store in DB."""
+    try:
+        card_bytes = _generate_card_image(data)
+        update_shared_card(share_id, card_bytes)
+        logger.info("Card pre-generated for %s (%d bytes)", share_id, len(card_bytes))
+    except Exception as exc:
+        logger.warning("Card pre-generation failed for %s: %s", share_id, exc)
+
+
 @app.post("/share")
 async def create_share(request: ShareRequest):
     """Store a result snapshot and return a shareable URL."""
     from config import ENVIRONMENT
     data = request.model_dump()
     share_id = store_shared_result(data)
-    try:
-        card_bytes = _generate_card_image(data)
-        update_shared_card(share_id, card_bytes)
-    except Exception as exc:
-        logger.warning("Card pre-generation failed for %s: %s", share_id, exc)
+    _bg_pool.submit(_pregenerate_card, share_id, data)
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
 
@@ -994,16 +1000,34 @@ def _generate_card_image(data: dict) -> bytes:
     img = Image.new("RGB", (W, H), bg_color)
     draw = ImageDraw.Draw(img)
 
-    try:
-        font_brand = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
-        font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 96)
-        font_verdict = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
-        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 17)
-    except (IOError, OSError):
-        font_brand = ImageFont.load_default()
-        font_score = font_verdict = font_title = font_body = font_sm = font_brand
+    def _find_font(name):
+        paths = [
+            f"/usr/share/fonts/truetype/dejavu/{name}",
+            f"/usr/share/fonts/{name}",
+            f"/usr/share/fonts/truetype/{name}",
+            f"/usr/local/share/fonts/{name}",
+        ]
+        for p in paths:
+            try:
+                ImageFont.truetype(p, 10)
+                return p
+            except (IOError, OSError):
+                continue
+        return None
+
+    bold_path = _find_font("DejaVuSans-Bold.ttf")
+    regular_path = _find_font("DejaVuSans.ttf")
+
+    if bold_path and regular_path:
+        font_brand = ImageFont.truetype(bold_path, 32)
+        font_score = ImageFont.truetype(bold_path, 96)
+        font_verdict = ImageFont.truetype(bold_path, 28)
+        font_title = ImageFont.truetype(bold_path, 26)
+        font_body = ImageFont.truetype(regular_path, 20)
+        font_sm = ImageFont.truetype(regular_path, 17)
+    else:
+        df = ImageFont.load_default()
+        font_brand = font_score = font_verdict = font_title = font_body = font_sm = df
 
     draw.rounded_rectangle([30, 30, W - 30, H - 30], radius=20, fill=card_bg)
 
