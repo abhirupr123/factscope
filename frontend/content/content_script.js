@@ -694,7 +694,6 @@
     }
 
     const notableSignals = (result.structural_signals || [])
-      .filter((s) => Math.abs(s.delta) >= 5)
       .map((s) => {
         const sIcon = s.delta > 0 ? '\u2714' : '\u26A0';
         return `<li>${sIcon} ${s.detail}</li>`;

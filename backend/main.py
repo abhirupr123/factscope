@@ -381,6 +381,8 @@ async def verify_image(request: ImageVerifyRequest):
         source_names = []
 
         for cr in claim_results:
+            if cr.status == "opinion":
+                continue
             corr = cr.corroboration or "not_corroborated"
             sc = cr.source_count or 0
 
@@ -400,7 +402,9 @@ async def verify_image(request: ImageVerifyRequest):
 
         image_is_fake = final_verdict in ("ai_generated", "manipulated")
 
-        if not image_is_fake:
+        relevant_corr = best_corr in ("lightly_reported", "multiple_sources", "widely_reported")
+
+        if not image_is_fake and relevant_corr:
             corr_boost = min(25, best_sc * 5)
             final_score = min(100, final_score + corr_boost)
 
@@ -410,7 +414,7 @@ async def verify_image(request: ImageVerifyRequest):
         if has_dispute:
             final_score = max(0, final_score - 25)
 
-        if best_sc >= 2 and source_names:
+        if best_sc >= 2 and source_names and relevant_corr:
             names = ", ".join(source_names[:4])
             if image_is_fake:
                 final_explanation += (
@@ -984,64 +988,79 @@ def _generate_card_image(data: dict) -> bytes:
     card_bg = (30, 41, 59)
     text_white = (255, 255, 255)
     text_muted = (148, 163, 184)
+    text_light = (203, 213, 225)
     brand_accent = (99, 102, 241)
 
     img = Image.new("RGB", (W, H), bg_color)
     draw = ImageDraw.Draw(img)
 
     try:
-        font_lg = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52)
-        font_md = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
-        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 22)
-        font_xs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
-        font_brand = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-        font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+        font_brand = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
+        font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 96)
+        font_verdict = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
+        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 17)
     except (IOError, OSError):
-        font_lg = ImageFont.load_default()
-        font_md = font_sm = font_xs = font_brand = font_score = font_lg
+        font_brand = ImageFont.load_default()
+        font_score = font_verdict = font_title = font_body = font_sm = font_brand
 
-    draw.rounded_rectangle([40, 40, W - 40, H - 40], radius=24, fill=card_bg)
+    draw.rounded_rectangle([30, 30, W - 30, H - 30], radius=20, fill=card_bg)
 
-    draw.text((80, 65), "FactScope", fill=brand_accent, font=font_brand)
-    type_label = "Image Verification" if is_image else "Page Analysis"
-    draw.text((80, 110), type_label, fill=text_muted, font=font_xs)
+    draw.rectangle([30, 30, W - 30, 38], fill=accent_rgb)
 
-    cx, cy, r = 980, 200, 90
-    draw.ellipse([cx - r - 4, cy - r - 4, cx + r + 4, cy + r + 4], fill=accent_rgb)
-    draw.ellipse([cx - r + 4, cy - r + 4, cx + r - 4, cy + r - 4], fill=card_bg)
+    draw.text((60, 52), "FACTSCOPE", fill=brand_accent, font=font_brand)
+    type_label = "IMAGE VERIFICATION" if is_image else "CONTENT ANALYSIS"
+    draw.text((300, 58), type_label, fill=text_muted, font=font_sm)
 
-    score_text = str(score)
+    draw.line([(60, 95), (W - 60, 95)], fill=(51, 65, 85), width=1)
+
+    score_text = f"{score}%"
     bbox = draw.textbbox((0, 0), score_text, font=font_score)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text((cx - tw // 2, cy - th // 2 - 8), score_text, fill=accent_rgb, font=font_score)
-    pct_text = "% trust" if not is_image else "% auth."
-    bbox2 = draw.textbbox((0, 0), pct_text, font=font_xs)
-    tw2 = bbox2[2] - bbox2[0]
-    draw.text((cx - tw2 // 2, cy + th // 2 + 2), pct_text, fill=text_muted, font=font_xs)
+    stw = bbox[2] - bbox[0]
+    score_x = W - 60 - stw
+    draw.text((score_x, 115), score_text, fill=accent_rgb, font=font_score)
 
-    pill_w = len(label) * 16 + 40
-    pill_x = 80
-    pill_y = 170
-    draw.rounded_rectangle([pill_x, pill_y, pill_x + pill_w, pill_y + 44], radius=22, fill=accent_rgb)
-    draw.text((pill_x + 20, pill_y + 8), label, fill=text_white, font=font_md)
+    pct_label = "trust score" if not is_image else "authenticity"
+    bbox_p = draw.textbbox((0, 0), pct_label, font=font_sm)
+    plw = bbox_p[2] - bbox_p[0]
+    draw.text((W - 60 - plw, 225), pct_label, fill=text_muted, font=font_sm)
 
+    bbox_v = draw.textbbox((0, 0), label, font=font_verdict)
+    vw = bbox_v[2] - bbox_v[0]
+    pill_pad = 24
+    pill_h = 42
+    pill_x, pill_y = 60, 125
+    draw.rounded_rectangle(
+        [pill_x, pill_y, pill_x + vw + pill_pad * 2, pill_y + pill_h],
+        radius=pill_h // 2, fill=accent_rgb
+    )
+    draw.text((pill_x + pill_pad, pill_y + 7), label, fill=text_white, font=font_verdict)
+
+    content_y = 190
     if title:
-        max_chars = 55
+        max_chars = 60
         display_title = title[:max_chars] + "..." if len(title) > max_chars else title
-        draw.text((80, 240), display_title, fill=text_white, font=font_md)
+        draw.text((60, content_y), display_title, fill=text_white, font=font_title)
+        content_y += 38
 
     if domain:
-        draw.text((80, 280), domain, fill=text_muted, font=font_sm)
+        draw.text((60, content_y), domain, fill=text_muted, font=font_body)
+        content_y += 34
+
+    content_y += 12
+    draw.line([(60, content_y), (score_x - 40, content_y)], fill=(51, 65, 85), width=1)
+    content_y += 18
 
     if explanation:
-        max_chars = 120
+        max_chars = 200
         short = explanation[:max_chars] + "..." if len(explanation) > max_chars else explanation
         lines = []
         words = short.split()
         line = ""
         for w in words:
             test = f"{line} {w}".strip()
-            if len(test) > 65:
+            if len(test) > 58:
                 lines.append(line)
                 line = w
             else:
@@ -1049,14 +1068,13 @@ def _generate_card_image(data: dict) -> bytes:
         if line:
             lines.append(line)
 
-        y_pos = 330
-        for ln in lines[:3]:
-            draw.text((80, y_pos), ln, fill=text_muted, font=font_sm)
-            y_pos += 32
+        for ln in lines[:5]:
+            draw.text((60, content_y), ln, fill=text_light, font=font_body)
+            content_y += 28
 
-    draw.line([(80, H - 100), (W - 80, H - 100)], fill=(51, 65, 85), width=1)
-    draw.text((80, H - 80), "factscope-api.onrender.com", fill=text_muted, font=font_xs)
-    draw.text((W - 340, H - 80), "Verified by FactScope AI", fill=brand_accent, font=font_xs)
+    draw.line([(60, H - 70), (W - 60, H - 70)], fill=(51, 65, 85), width=1)
+    draw.text((60, H - 55), "Verified by FactScope AI", fill=brand_accent, font=font_sm)
+    draw.text((W - 290, H - 55), "factscope-api.onrender.com", fill=text_muted, font=font_sm)
 
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
