@@ -322,6 +322,7 @@ _SCHEMA_STATEMENTS = [
         scanned_title TEXT,
         fingerprint   TEXT,
         og_image      TEXT,
+        card_png      BLOB,
         created_at    TEXT NOT NULL
     )""",
 ]
@@ -335,6 +336,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE shared_results ADD COLUMN scanned_title TEXT DEFAULT ''",
     "ALTER TABLE shared_results ADD COLUMN fingerprint TEXT",
     "ALTER TABLE shared_results ADD COLUMN og_image TEXT",
+    "ALTER TABLE shared_results ADD COLUMN card_png BLOB",
 ]
 
 
@@ -1071,6 +1073,34 @@ def store_shared_result(data: dict) -> str:
     except Exception as exc:
         logger.error("Failed to store shared result: %s", exc)
         raise
+
+
+def update_shared_card(share_id: str, card_png: bytes) -> None:
+    """Store pre-generated card PNG for a shared result."""
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE shared_results SET card_png = ? WHERE id = ?",
+            (card_png, share_id),
+        )
+        _commit_and_sync()
+    except Exception as exc:
+        logger.warning("Failed to update shared card: %s", exc)
+
+
+def get_shared_card(share_id: str) -> bytes | None:
+    """Retrieve pre-generated card PNG bytes."""
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT card_png FROM shared_results WHERE id = ?",
+            (share_id,),
+        ).fetchone()
+        if row and row[0]:
+            return bytes(row[0])
+    except Exception as exc:
+        logger.warning("Failed to get shared card: %s", exc)
+    return None
 
 
 def get_shared_result(share_id: str) -> dict | None:

@@ -18,9 +18,21 @@ from urllib.parse import urlencode, quote_plus
 import requests
 import feedparser
 
+from urllib.parse import urlparse
 from config import GOOGLE_FACTCHECK_API_KEY
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_url(url: str) -> str:
+    """Strip query params and fragment for URL comparison."""
+    if not url:
+        return ""
+    try:
+        p = urlparse(url)
+        return f"{p.scheme}://{p.netloc}{p.path}".rstrip("/").lower()
+    except Exception:
+        return url.lower().split("?")[0].split("#")[0].rstrip("/")
 
 FACTCHECK_API_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en&gl=US&ceid=US:en"
@@ -83,9 +95,11 @@ def is_available() -> bool:
 # News corroboration (Google News RSS)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _classify_corroboration(count: int) -> str:
+def _classify_corroboration(count: int, avg_relevance: float = 1.0) -> str:
     if count == 0:
         return "not_corroborated"
+    if avg_relevance < 0.4:
+        return "related_topic"
     if count <= 5:
         return "lightly_reported"
     if count <= 20:
@@ -153,23 +167,30 @@ def _search_news(query: str) -> list[dict]:
     return []
 
 
-def _match_claims_to_articles(claims: list[str], articles: list[dict]) -> dict[int, dict]:
-    """Match each claim to articles by keyword overlap.
+def _match_claims_to_articles(claims: list[str], articles: list[dict],
+                              source_url: str = "") -> dict[int, dict]:
+    """Match each claim to articles by keyword overlap with relevance scoring.
 
     For each claim, count how many articles have meaningful keyword overlap
     with the claim text. Returns {claim_index: {source_count, corroboration, related_articles}}.
+    Filters out articles whose URL matches source_url (self-dedup).
     """
+    norm_source = _normalize_url(source_url)
+
     article_texts = []
     article_sources = []
+    article_urls = []
     for a in articles:
+        a_url = a.get("url") or ""
+        if norm_source and _normalize_url(a_url) == norm_source:
+            continue
         combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
         article_texts.append(combined)
+        article_urls.append(a_url)
         source = (a.get("source") or {}).get("name") or ""
         if not source:
-            raw_url = a.get("url") or ""
             try:
-                from urllib.parse import urlparse
-                source = urlparse(raw_url).netloc
+                source = urlparse(a_url).netloc
             except Exception:
                 pass
         article_sources.append(source)
@@ -183,22 +204,26 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict]) -> dict[i
 
         matching_sources = set()
         matched_articles = []
+        relevance_scores = []
         for j, atext in enumerate(article_texts):
             overlap = sum(1 for kw in claim_keywords if kw in atext)
             if overlap >= min(3, len(claim_keywords)):
                 src = article_sources[j] or f"source_{j}"
                 if src not in matching_sources:
                     matching_sources.add(src)
+                    relevance = overlap / len(claim_keywords) if claim_keywords else 0
+                    relevance_scores.append(relevance)
                     matched_articles.append({
                         "title": articles[j].get("title") or "",
                         "source": src,
-                        "url": articles[j].get("url") or "",
+                        "url": article_urls[j],
                     })
 
         source_count = len(matching_sources)
+        avg_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0
         results[i] = {
             "source_count": source_count,
-            "corroboration": _classify_corroboration(source_count),
+            "corroboration": _classify_corroboration(source_count, avg_relevance),
             "related_articles": matched_articles[:5],
         }
 
@@ -312,7 +337,7 @@ def search_factcheck_api(claim: str) -> dict:
 # Lightweight single-claim verification (for image captions, short posts)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def verify_image_claim(caption: str) -> list[dict]:
+def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
     """Verify a short image caption/claim directly without LLM extraction.
 
     Treats the caption as a single claim and checks it against Google Fact
@@ -330,27 +355,37 @@ def verify_image_claim(caption: str) -> list[dict]:
     search_query = _extract_keywords(claim, max_words=10)
     articles = _search_news(search_query)
 
+    norm_source = _normalize_url(source_url)
     matching_articles = []
+    relevance_scores = []
     claim_keywords = set(_extract_keywords(claim, max_words=10).split())
     for a in articles:
+        a_url = a.get("url") or ""
+        if norm_source and _normalize_url(a_url) == norm_source:
+            continue
         combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
         overlap = sum(1 for kw in claim_keywords if kw in combined)
         if overlap >= min(2, len(claim_keywords)):
             source = (a.get("source") or {}).get("name") or ""
             title = a.get("title") or ""
-            url = a.get("url") or ""
             if title:
-                matching_articles.append({"title": title, "source": source, "url": url})
+                relevance = overlap / len(claim_keywords) if claim_keywords else 0
+                relevance_scores.append(relevance)
+                matching_articles.append({"title": title, "source": source, "url": a_url})
 
     seen_sources = set()
     unique_articles = []
-    for ma in matching_articles:
+    unique_relevances = []
+    for idx, ma in enumerate(matching_articles):
         if ma["source"] not in seen_sources:
             seen_sources.add(ma["source"])
             unique_articles.append(ma)
+            if idx < len(relevance_scores):
+                unique_relevances.append(relevance_scores[idx])
 
     source_count = len(unique_articles)
-    corr = _classify_corroboration(source_count)
+    avg_relevance = sum(unique_relevances) / len(unique_relevances) if unique_relevances else 0
+    corr = _classify_corroboration(source_count, avg_relevance)
 
     result = {
         "claim": claim,
@@ -363,8 +398,8 @@ def verify_image_claim(caption: str) -> list[dict]:
         "related_articles": unique_articles[:5],
     }
 
-    logger.info("Image claim result: corr=%s sources=%d fc=%s",
-                corr, source_count, result["status"])
+    logger.info("Image claim result: corr=%s sources=%d avg_rel=%.2f fc=%s",
+                corr, source_count, avg_relevance, result["status"])
     return [result]
 
 
@@ -384,11 +419,12 @@ _EMPTY_RESULT = {
 _NEWS_DEFAULT = {"source_count": 0, "corroboration": "not_corroborated", "related_articles": []}
 
 
-def verify_claims(text: str, title: str = "") -> list[dict]:
+def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict]:
     """Full pipeline: extract claims, then verify via Fact Check + Google News.
 
     Uses a single Google News RSS search for corroboration instead of one
     API call per claim. Google Fact Check API calls run fully in parallel.
+    Filters out articles matching source_url to avoid self-citation.
 
     Returns a list of dicts, each with:
         claim, status, source, source_url, rating, source_count, corroboration
@@ -439,7 +475,7 @@ def verify_claims(text: str, title: str = "") -> list[dict]:
                         seen_urls.add(url)
                         all_articles.append(article)
             if all_articles:
-                news_results = _match_claims_to_articles(claims, all_articles)
+                news_results = _match_claims_to_articles(claims, all_articles, source_url=source_url)
         except Exception as exc:
             logger.warning("News corroboration pipeline failed: %s", exc)
 

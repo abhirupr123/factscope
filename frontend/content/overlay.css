@@ -482,6 +482,27 @@
   background: #fef3c7;
 }
 
+.factscope-popup .fs-claim-related-topic .fs-claim-icon {
+  color: #6366f1;
+  background: #eef2ff;
+}
+
+.factscope-popup .fs-claim-related-topic .fs-claim-badge {
+  color: #4338ca;
+  background: #e0e7ff;
+}
+
+.factscope-popup .fs-claim-opinion .fs-claim-icon {
+  color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.factscope-popup .fs-claim-opinion .fs-claim-badge {
+  color: #64748b;
+  background: #f1f5f9;
+  font-style: italic;
+}
+
 .factscope-popup .fs-corr-count {
   font-size: 10px;
   color: #64748b;
@@ -545,6 +566,10 @@
   .factscope-popup .fs-claim-lightly-reported .fs-claim-badge { color: #94a3b8; background: #334155; }
   .factscope-popup .fs-claim-not-corroborated .fs-claim-icon { background: #451a03; }
   .factscope-popup .fs-claim-not-corroborated .fs-claim-badge { color: #fcd34d; background: #451a03; }
+  .factscope-popup .fs-claim-related-topic .fs-claim-icon { color: #818cf8; background: #312e81; }
+  .factscope-popup .fs-claim-related-topic .fs-claim-badge { color: #a5b4fc; background: #312e81; }
+  .factscope-popup .fs-claim-opinion .fs-claim-icon { color: #64748b; background: #334155; }
+  .factscope-popup .fs-claim-opinion .fs-claim-badge { color: #94a3b8; background: #334155; font-style: italic; }
   .factscope-popup .fs-corr-count { color: #94a3b8; }
   .factscope-popup .fs-article-link { color: #60a5fa; }
   .factscope-popup .fs-article-source { color: #64748b; }

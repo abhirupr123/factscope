@@ -268,6 +268,7 @@
     widely_reported: '\u2714',
     multiple_sources: '\u2714',
     lightly_reported: '\u2139',
+    related_topic: '\uD83D\uDD0D',
     not_corroborated: '\u26A0',
   };
 
@@ -275,6 +276,7 @@
     widely_reported: 'Widely reported',
     multiple_sources: 'Multiple sources',
     lightly_reported: 'Lightly reported',
+    related_topic: 'Related topic covered',
     not_corroborated: 'Not corroborated',
   };
 
@@ -282,13 +284,19 @@
     if (!factChecks || factChecks.length === 0) return '';
 
     const items = factChecks.map((fc) => {
-      const hasFactCheck = fc.status && fc.status !== 'no_fact_check_found';
+      const isOpinion = fc.status === 'opinion';
+      const hasFactCheck = !isOpinion && fc.status && fc.status !== 'no_fact_check_found';
       const corr = fc.corroboration || 'not_corroborated';
       const sourceCount = fc.source_count || 0;
 
       let primaryClass, primaryIcon, primaryLabel, secondaryHTML;
 
-      if (hasFactCheck) {
+      if (isOpinion) {
+        primaryClass = 'fs-claim-opinion';
+        primaryIcon = '\uD83D\uDCAC';
+        primaryLabel = 'Opinion / Not a factual claim';
+        secondaryHTML = '';
+      } else if (hasFactCheck) {
         primaryClass = `fs-claim-${fc.status.replace(/_/g, '-')}`;
         primaryIcon = FC_STATUS_ICONS[fc.status] || '\u2022';
         primaryLabel = FC_STATUS_LABELS[fc.status] || fc.status;

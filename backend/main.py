@@ -13,7 +13,8 @@ from db import (store_image_scan, find_image_scan, add_community_flag,
                 get_community_notes, store_vote, get_vote_stats,
                 should_invalidate_cache, graduate_flags_to_fact,
                 search_knowledge_base, VALID_FLAG_CATEGORIES,
-                store_shared_result, get_shared_result)
+                store_shared_result, get_shared_result,
+                update_shared_card, get_shared_card)
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
@@ -350,11 +351,21 @@ async def verify_image(request: ImageVerifyRequest):
     caption_tone = result.get("caption_tone", "informal")
     if caption and len(caption.strip()) >= 10 and caption_tone == "factual":
         try:
-            fc = _verify_image_claim(caption)
+            fc = _verify_image_claim(caption, source_url=request.page_url or "")
             if fc:
                 claim_results = [FactCheckResult(**c) for c in fc]
         except Exception as exc:
             logger.warning("Image claim verification failed: %s", exc)
+    elif caption and len(caption.strip()) >= 10 and caption_tone == "opinion_or_rhetorical":
+        try:
+            fc = _verify_image_claim(caption, source_url=request.page_url or "")
+            if fc:
+                for c in fc:
+                    c["status"] = "opinion"
+                claim_results = [FactCheckResult(**c) for c in fc]
+        except Exception as exc:
+            logger.warning("Image claim verification failed: %s", exc)
+        logger.info("Caption is opinion/rhetorical — claims tagged as opinion")
     elif caption and caption_tone == "informal":
         logger.info("Skipping claim verification — caption tone is informal")
 
@@ -704,7 +715,7 @@ async def analyze_page(request: AnalyzeRequest):
     llm_future = _bg_pool.submit(get_structured_analysis, combined)
     fc_future = None
     if factcheck_available() and request.text:
-        fc_future = _bg_pool.submit(_verify_claims, request.text, request.title or "")
+        fc_future = _bg_pool.submit(_verify_claims, request.text, request.title or "", request.url or "")
 
     llm_result = llm_future.result()
 
@@ -916,6 +927,11 @@ async def create_share(request: ShareRequest):
     from config import ENVIRONMENT
     data = request.model_dump()
     share_id = store_shared_result(data)
+    try:
+        card_bytes = _generate_card_image(data)
+        update_shared_card(share_id, card_bytes)
+    except Exception as exc:
+        logger.warning("Card pre-generation failed for %s: %s", share_id, exc)
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
 
@@ -1205,11 +1221,19 @@ async def view_shared_result(share_id: str):
 
 @app.get("/s/{share_id}/card.png")
 async def share_card_image(share_id: str):
-    """Generate a branded 1200x630 OG image card for social previews."""
+    """Serve pre-generated OG image card, falling back to on-the-fly generation."""
+    cached = get_shared_card(share_id)
+    if cached:
+        return Response(content=cached, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
     data = get_shared_result(share_id)
     if not data:
         return Response(status_code=404)
     png_bytes = _generate_card_image(data)
+    try:
+        update_shared_card(share_id, png_bytes)
+    except Exception:
+        pass
     return Response(content=png_bytes, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
 

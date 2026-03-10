@@ -20,7 +20,7 @@ Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
 {{
   "trust_score": <integer 0-100>,
   "verdict": "<authentic|misleading|ai_generated|spam|phishing|suspicious>",
-  "explanation": "<MAX 2 short sentences. Be direct and insightful.>",
+  "explanation": "<3-5 sentences. Cover what the content is, why you scored it this way, and any notable trust or risk signals.>",
   "evidence": ["<short point 1>", "<short point 2>"]
 }}
 
@@ -30,7 +30,7 @@ CRITICAL RULES:
 - Focus on SOURCE CREDIBILITY, WRITING STYLE, STRUCTURE, and METADATA. Fact verification of specific claims is handled separately by FactScope's fact-check engine.
 - Judge by: Is this from a known publication? Is the writing professional? Are there spam/phishing patterns? Does it look AI-generated stylistically? Is the metadata consistent?
 - Do NOT attempt to verify whether specific current-event claims are true or false from your training data alone — that is unreliable. Instead assess whether the source and presentation are trustworthy.
-- Keep explanation under 40 words and each evidence item under 15 words. Max 3 evidence items.
+- Keep explanation between 40-80 words and each evidence item under 15 words. Max 3 evidence items.
 - For well-known reputable sites, be brief and confident.
 - Focus evidence on things the user might NOT already know.
 - Be most detailed when content is genuinely suspicious, misleading, or AI-generated."""
@@ -48,9 +48,9 @@ Respond with ONLY valid JSON. No markdown, no backticks.
 {{
   "authenticity_score": <integer 0-100>,
   "verdict": "<authentic|ai_generated|manipulated|out_of_context|uncertain>",
-  "explanation": "<2-3 sentences about what you observe in the image.>",
+  "explanation": "<3-5 sentences about what you observe in the image, why you scored it this way, and any notable signals.>",
   "evidence": ["<sign 1>", "<sign 2>", "<sign 3>"],
-  "caption_tone": "<factual|informal>"
+  "caption_tone": "<factual|opinion_or_rhetorical|informal>"
 }}
 
 RULES:
@@ -68,10 +68,13 @@ any AI tool text, logos, or watermarks (e.g. "Gemini", sparkle icon, "DALL-E", "
 If found, the image is AI-generated regardless of how realistic it looks.
 6. Check for manipulation: splicing edges, cloned regions, inconsistent lighting/noise/shadows.
 7. Check scene consistency: clothing, setting, architecture, technology vs claimed time period.
-8. caption_tone — look at the surrounding context/post text. If it reads like casual commentary, \
-humor, personal opinion, slang, memes, or reaction text in ANY language, return "informal". \
-If it makes a specific factual claim about a real event, person, or place, return "factual". \
-If no caption is present, return "informal".
+8. caption_tone — look at the surrounding context/post text and classify it:
+   - "factual" = makes a specific verifiable claim about a real event, person, or place \
+(e.g. "Police found bodies at the ranch", "PM visited Bangalore in 1981").
+   - "opinion_or_rhetorical" = rhetorical questions, predictions, opinions, speculation, \
+commentary that cannot be fact-checked (e.g. "How long till...", "I think X will...", \
+"What a time to be alive", "Can you believe this?").
+   - "informal" = memes, slang, humor, reaction text, emojis-only, or no caption at all.
 
 Scoring: 80-100 no signs of AI/manipulation, 50-79 uncertain or too low quality to tell, \
 20-49 likely AI or manipulated, 0-19 clearly fake.
