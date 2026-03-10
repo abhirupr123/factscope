@@ -119,28 +119,26 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 16px 10px;
+  padding: 6px 16px 8px;
   border-top: 1px solid #e2e8f0;
 }
 .factscope-popup .fs-share-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   text-decoration: none;
   cursor: pointer;
   border: none;
-  transition: transform 0.1s, opacity 0.15s;
+  transition: transform 0.1s;
 }
 .factscope-popup .fs-share-icon:hover { transform: scale(1.1); }
-.factscope-popup .fs-share-twitter { background: #1d9bf0; color: #fff; }
 .factscope-popup .fs-share-whatsapp { background: #25d366; color: #fff; }
-.factscope-popup .fs-share-telegram { background: #229ed9; color: #fff; }
-.factscope-popup .fs-share-copy { background: #f1f5f9; color: #475569; font-size: 13px; }
+.factscope-popup .fs-share-copy { background: #f1f5f9; color: #475569; }
 
 .factscope-popup .fs-close {
   background: #f1f5f9;

@@ -321,6 +321,7 @@ _SCHEMA_STATEMENTS = [
         scanned_url   TEXT,
         scanned_title TEXT,
         fingerprint   TEXT,
+        og_image      TEXT,
         created_at    TEXT NOT NULL
     )""",
 ]
@@ -333,6 +334,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE shared_results ADD COLUMN scanned_url TEXT DEFAULT ''",
     "ALTER TABLE shared_results ADD COLUMN scanned_title TEXT DEFAULT ''",
     "ALTER TABLE shared_results ADD COLUMN fingerprint TEXT",
+    "ALTER TABLE shared_results ADD COLUMN og_image TEXT",
 ]
 
 
@@ -1046,8 +1048,8 @@ def store_shared_result(data: dict) -> str:
         conn.execute(
             """INSERT INTO shared_results
                (id, result_type, score, verdict, explanation, evidence, domain, source_info,
-                scanned_url, scanned_title, fingerprint, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                scanned_url, scanned_title, fingerprint, og_image, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 short_id,
                 data.get("result_type", "page"),
@@ -1060,6 +1062,7 @@ def store_shared_result(data: dict) -> str:
                 data.get("scanned_url", ""),
                 data.get("scanned_title", ""),
                 fp or None,
+                data.get("og_image", ""),
                 datetime.utcnow().isoformat(),
             ),
         )

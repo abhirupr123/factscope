@@ -8,33 +8,50 @@
 <meta property="og:description" content="{explanation_short}">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="FactScope">
-<meta name="twitter:card" content="summary">
+{og_image_meta}
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="FactScope: {verdict_label} — {score}% {score_label}">
 <meta name="twitter:description" content="{explanation_short}">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 
 :root {{
+  --bg: #f8fafc;
+  --bg-alt: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #f1f5f9;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+  --accent: #3b82f6;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04);
+  --shadow-lg: 0 4px 24px rgba(0,0,0,0.08), 0 12px 48px rgba(0,0,0,0.04);
+}}
+
+[data-theme="dark"] {{
   --bg: #0a0f1e;
-  --surface: rgba(255,255,255,0.04);
-  --surface-hover: rgba(255,255,255,0.07);
-  --border: rgba(255,255,255,0.08);
-  --text: #e2e8f0;
+  --bg-alt: #111827;
+  --surface: #1e293b;
+  --surface-hover: #334155;
+  --border: #334155;
+  --text: #f1f5f9;
+  --text-secondary: #cbd5e1;
   --text-muted: #94a3b8;
   --text-dim: #64748b;
-  --accent: #3b82f6;
-  --accent-glow: rgba(59,130,246,0.25);
+  --accent: #60a5fa;
+  --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
+  --shadow-lg: 0 4px 24px rgba(0,0,0,0.3), 0 12px 48px rgba(0,0,0,0.15);
 }}
 
 body {{
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   min-height: 100vh;
   background: var(--bg);
-  background-image:
-    radial-gradient(ellipse 80% 50% at 20% 0%, rgba(37,99,235,0.12), transparent),
-    radial-gradient(ellipse 60% 40% at 80% 10%, rgba(16,185,129,0.08), transparent);
   color: var(--text);
   line-height: 1.6;
+  transition: background 0.3s, color 0.3s;
 }}
 
 /* ── Navbar ─────────────────────────────────────────── */
@@ -43,32 +60,53 @@ body {{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  max-width: 780px;
-  margin: 0 auto;
-  padding: 20px 24px;
+  padding: 16px 40px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  transition: background 0.3s, border-color 0.3s;
 }}
-.nav-brand {{
+.nav-left {{
   display: flex;
   align-items: center;
   gap: 10px;
-  text-decoration: none;
-  color: var(--text);
 }}
 .nav-logo {{
-  width: 36px; height: 36px;
-  border-radius: 10px;
+  width: 34px; height: 34px;
+  border-radius: 9px;
   background: linear-gradient(135deg, #2563eb, #7c3aed);
   color: #fff;
   font-weight: 800;
-  font-size: 13px;
+  font-size: 12px;
   display: grid;
   place-items: center;
-  box-shadow: 0 4px 16px rgba(37,99,235,0.3);
+  flex-shrink: 0;
 }}
 .nav-name {{
   font-weight: 700;
-  font-size: 16px;
+  font-size: 15px;
+  color: var(--text);
 }}
+.nav-right {{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}}
+.theme-toggle {{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  transition: background 0.2s, border-color 0.2s;
+}}
+.theme-toggle:hover {{ background: var(--surface-hover); }}
 .nav-cta {{
   background: var(--accent);
   color: #fff;
@@ -77,135 +115,193 @@ body {{
   padding: 8px 16px;
   border-radius: 8px;
   text-decoration: none;
-  transition: background 0.2s;
+  transition: opacity 0.2s;
 }}
-.nav-cta:hover {{ background: #2563eb; }}
+.nav-cta:hover {{ opacity: 0.9; }}
 
-/* ── Main container ─────────────────────────────────── */
+/* ── Main grid ──────────────────────────────────────── */
 
-.container {{
-  max-width: 780px;
+.main {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  padding: 48px 40px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 0 24px 60px;
+  align-items: start;
 }}
 
-/* ── Hero ────────────────────────────────────────────── */
+/* ── Left column: Content Preview ───────────────────── */
 
-.hero {{
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 40px 0 36px;
-}}
-
-.gauge-wrap {{
-  position: relative;
-  width: 180px;
-  height: 100px;
-  margin-bottom: 20px;
-}}
-.gauge-svg {{
-  width: 180px;
-  height: 100px;
-}}
-.gauge-bg {{
-  fill: none;
-  stroke: rgba(255,255,255,0.06);
-  stroke-width: 14;
-}}
-.gauge-fill {{
-  fill: none;
-  stroke-width: 14;
-  stroke-linecap: round;
-  transition: stroke-dashoffset 1.2s ease-out;
-}}
-.gauge-score {{
-  position: absolute;
-  bottom: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 36px;
-  font-weight: 800;
-  line-height: 1;
-}}
-.gauge-label {{
-  font-size: 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-top: 2px;
-}}
-
-.verdict-badge {{
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 22px;
-  font-weight: 800;
-  margin-bottom: 8px;
-}}
-.verdict-icon {{ font-size: 28px; line-height: 1; }}
-
-.domain-tag {{
-  display: inline-block;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
+.preview {{
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 4px 14px;
-  margin-top: 8px;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  transition: background 0.3s, border-color 0.3s;
 }}
-
-/* ── Context card ───────────────────────────────────── */
-
-.context-card {{
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 16px 20px;
-  margin-bottom: 28px;
+.preview-image {{
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  display: block;
+  background: var(--surface-hover);
 }}
-.context-label {{
+.preview-body {{
+  padding: 24px 28px;
+}}
+.preview-label {{
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-dim);
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }}
-.context-title {{
-  font-size: 15px;
-  font-weight: 600;
+.preview-title {{
+  font-size: 22px;
+  font-weight: 700;
   color: var(--text);
-  line-height: 1.4;
-  margin-bottom: 4px;
+  line-height: 1.35;
+  margin-bottom: 12px;
 }}
-.context-url {{
+.preview-source {{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}}
+.preview-favicon {{
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+}}
+.preview-domain {{
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}}
+.preview-url {{
   font-size: 12px;
   color: var(--accent);
   text-decoration: none;
   word-break: break-all;
+  display: block;
+  margin-top: 4px;
 }}
-.context-url:hover {{ text-decoration: underline; }}
+.preview-url:hover {{ text-decoration: underline; }}
 
-/* ── Analysis section ───────────────────────────────── */
-
-.analysis {{
+.preview-placeholder {{
+  padding: 48px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}}
+.preview-placeholder .placeholder-icon {{
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: var(--surface-hover);
   display: grid;
-  gap: 24px;
-  margin-bottom: 36px;
+  place-items: center;
+}}
+.preview-placeholder .placeholder-icon img {{
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
 }}
 
-.section-card {{
+/* ── Right column: Verification Result ──────────────── */
+
+.result {{
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}}
+
+/* Score ring */
+.score-section {{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 32px 0 8px;
+}}
+.ring-wrap {{
+  position: relative;
+  width: 180px;
+  height: 180px;
+  margin-bottom: 16px;
+}}
+.ring-svg {{
+  width: 180px;
+  height: 180px;
+  transform: rotate(-90deg);
+}}
+.ring-bg {{
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 12;
+  transition: stroke 0.3s;
+}}
+.ring-fill {{
+  fill: none;
+  stroke-width: 12;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1.4s cubic-bezier(0.4, 0, 0.2, 1);
+}}
+.ring-score {{
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1;
+}}
+.ring-label {{
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: -2px;
+}}
+
+.verdict-pill {{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 6px 18px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  margin-top: 8px;
+  transition: background 0.3s, border-color 0.3s;
+}}
+.verdict-pill .v-icon {{ font-size: 18px; }}
+
+.verified-label {{
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 8px;
+}}
+
+/* Analysis card */
+.analysis-card {{
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 20px 24px;
+  padding: 24px 28px;
+  box-shadow: var(--shadow);
+  transition: background 0.3s, border-color 0.3s;
 }}
-.section-heading {{
+.analysis-heading {{
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -216,113 +312,112 @@ body {{
   align-items: center;
   gap: 6px;
 }}
-.section-heading svg {{
-  width: 14px;
-  height: 14px;
-  opacity: 0.6;
-}}
-
-.explanation-text {{
+.analysis-text {{
   font-size: 15px;
   line-height: 1.7;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }}
 
 .evidence-list {{
   list-style: none;
   padding: 0;
+  margin: 0;
 }}
 .evidence-list li {{
   font-size: 14px;
   color: var(--text-muted);
-  padding: 8px 0 8px 24px;
+  padding: 10px 0 10px 22px;
   position: relative;
   line-height: 1.5;
   border-bottom: 1px solid var(--border);
+  transition: border-color 0.3s;
 }}
 .evidence-list li:last-child {{ border-bottom: none; }}
 .evidence-list li::before {{
   content: "";
   position: absolute;
-  left: 4px;
-  top: 15px;
+  left: 2px;
+  top: 17px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--text-dim);
+  transition: background 0.3s;
 }}
 
-/* ── Share bar ──────────────────────────────────────── */
+/* ── Share bar (full-width, below grid) ─────────────── */
 
+.share-section {{
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 40px 32px;
+}}
 .share-bar {{
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 48px;
+  padding: 20px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  transition: background 0.3s, border-color 0.3s;
 }}
-.share-bar-label {{
+.share-label {{
   font-size: 12px;
   font-weight: 600;
   color: var(--text-dim);
-  margin-right: 4px;
+  margin-right: 8px;
 }}
 .share-btn {{
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 8px 16px;
-  border-radius: 8px;
+  padding: 9px 18px;
+  border-radius: 10px;
   text-decoration: none;
-  transition: background 0.15s, transform 0.1s;
+  transition: transform 0.1s, opacity 0.15s;
   cursor: pointer;
   border: none;
 }}
 .share-btn:hover {{ transform: translateY(-1px); }}
-.share-btn:active {{ transform: translateY(0); }}
-
-.share-btn.twitter {{
-  background: #1d9bf0;
-  color: #fff;
-}}
-.share-btn.twitter:hover {{ background: #1a8cd8; }}
-
-.share-btn.whatsapp {{
-  background: #25d366;
-  color: #fff;
-}}
-.share-btn.whatsapp:hover {{ background: #20bd5a; }}
-
-.share-btn.telegram {{
-  background: #229ed9;
-  color: #fff;
-}}
-.share-btn.telegram:hover {{ background: #1e8ec3; }}
-
+.share-btn.twitter {{ background: #0f1419; color: #fff; }}
+.share-btn.whatsapp {{ background: #25d366; color: #fff; }}
+.share-btn.telegram {{ background: #229ed9; color: #fff; }}
 .share-btn.copy {{
   background: var(--surface-hover);
   color: var(--text-muted);
   border: 1px solid var(--border);
 }}
-.share-btn.copy:hover {{ background: rgba(255,255,255,0.1); color: var(--text); }}
+.share-btn.copy:hover {{ color: var(--text); }}
 
-/* ── CTA section ────────────────────────────────────── */
+[data-theme="dark"] .share-btn.twitter {{ background: #e7e9ea; color: #0f1419; }}
+
+/* ── CTA ────────────────────────────────────────────── */
 
 .cta-section {{
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 40px 48px;
+}}
+.cta-inner {{
   text-align: center;
   padding: 40px 24px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 16px;
-  margin-bottom: 48px;
+  box-shadow: var(--shadow);
+  transition: background 0.3s, border-color 0.3s;
 }}
 .cta-heading {{
   font-size: 20px;
   font-weight: 700;
-  margin-bottom: 8px;
+  color: var(--text);
+  margin-bottom: 6px;
 }}
 .cta-sub {{
   font-size: 14px;
@@ -340,117 +435,141 @@ body {{
   padding: 12px 28px;
   border-radius: 10px;
   text-decoration: none;
-  box-shadow: 0 4px 20px rgba(37,99,235,0.35);
+  box-shadow: 0 4px 20px rgba(37,99,235,0.3);
   transition: transform 0.15s, box-shadow 0.15s;
 }}
 .cta-button:hover {{
   transform: translateY(-2px);
-  box-shadow: 0 8px 30px rgba(37,99,235,0.45);
+  box-shadow: 0 8px 30px rgba(37,99,235,0.4);
 }}
 
 /* ── Footer ─────────────────────────────────────────── */
 
 .page-footer {{
   text-align: center;
-  padding: 24px;
+  padding: 24px 40px;
   font-size: 12px;
   color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  transition: border-color 0.3s;
 }}
-.page-footer a {{ color: var(--accent); text-decoration: none; }}
-.page-footer a:hover {{ text-decoration: underline; }}
 
 /* ── Responsive ─────────────────────────────────────── */
 
-@media (max-width: 520px) {{
-  .hero {{ padding: 28px 0 24px; }}
-  .gauge-wrap {{ width: 150px; height: 84px; }}
-  .gauge-svg {{ width: 150px; height: 84px; }}
-  .gauge-score {{ font-size: 28px; }}
-  .verdict-badge {{ font-size: 18px; }}
-  .section-card {{ padding: 16px; }}
-  .share-bar {{ gap: 8px; }}
-  .share-btn {{ padding: 7px 12px; font-size: 11px; }}
+@media (max-width: 900px) {{
+  .main {{
+    grid-template-columns: 1fr;
+    gap: 28px;
+    padding: 28px 20px;
+  }}
+  .navbar {{ padding: 14px 20px; }}
+  .share-section, .cta-section {{ padding-left: 20px; padding-right: 20px; }}
+  .preview-title {{ font-size: 18px; }}
+  .ring-wrap {{ width: 150px; height: 150px; }}
+  .ring-svg {{ width: 150px; height: 150px; }}
+  .ring-score {{ font-size: 36px; }}
 }}
 
 /* ── Animations ─────────────────────────────────────── */
 
 @keyframes fadeUp {{
-  from {{ opacity: 0; transform: translateY(20px); }}
+  from {{ opacity: 0; transform: translateY(16px); }}
   to {{ opacity: 1; transform: translateY(0); }}
 }}
-.hero {{ animation: fadeUp 0.5s ease-out; }}
-.context-card {{ animation: fadeUp 0.5s ease-out 0.1s both; }}
-.analysis {{ animation: fadeUp 0.5s ease-out 0.2s both; }}
-.share-bar {{ animation: fadeUp 0.5s ease-out 0.3s both; }}
-.cta-section {{ animation: fadeUp 0.5s ease-out 0.4s both; }}
+.preview {{ animation: fadeUp 0.4s ease-out; }}
+.result {{ animation: fadeUp 0.4s ease-out 0.1s both; }}
+.share-bar {{ animation: fadeUp 0.4s ease-out 0.2s both; }}
+.cta-inner {{ animation: fadeUp 0.4s ease-out 0.3s both; }}
 </style>
 </head>
 <body>
 
 <nav class="navbar">
-  <a class="nav-brand" href="#">
+  <div class="nav-left">
     <div class="nav-logo">FS</div>
     <span class="nav-name">FactScope</span>
-  </a>
-  <a class="nav-cta" href="#install" id="install-link">Install Extension</a>
+  </div>
+  <div class="nav-right">
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode">&#9790;</button>
+    <a class="nav-cta" href="#install">Install Extension</a>
+  </div>
 </nav>
 
-<div class="container">
+<div class="main">
 
-  <!-- Hero -->
-  <section class="hero">
-    <div class="gauge-wrap">
-      <svg class="gauge-svg" viewBox="0 0 180 100">
-        <path class="gauge-bg" d="M20,90 A70,70 0 0,1 160,90" />
-        <path class="gauge-fill" d="M20,90 A70,70 0 0,1 160,90"
-              stroke="{color}"
-              stroke-dasharray="{arc_length}"
-              stroke-dashoffset="{dash_offset}" />
-      </svg>
-      <div class="gauge-score" style="color:{color}">{score}%</div>
+  <!-- Left: Content Preview -->
+  {preview_html}
+
+  <!-- Right: Verification Result -->
+  <div class="result">
+    <div class="score-section">
+      <div class="ring-wrap">
+        <svg class="ring-svg" viewBox="0 0 180 180">
+          <circle class="ring-bg" cx="90" cy="90" r="78" />
+          <circle class="ring-fill" cx="90" cy="90" r="78"
+                  stroke="{color}"
+                  stroke-dasharray="{circumference}"
+                  stroke-dashoffset="{dash_offset}" />
+        </svg>
+        <div class="ring-score" style="color:{color}">{score}%</div>
+      </div>
+      <div class="ring-label">{score_label}</div>
+      <div class="verdict-pill">
+        <span class="v-icon">{verdict_icon}</span>
+        <span style="color:{color}">{verdict_label}</span>
+      </div>
+      <div class="verified-label">Verified by AI analysis</div>
     </div>
-    <div class="gauge-label">{score_label}</div>
-    <div class="verdict-badge">
-      <span class="verdict-icon">{verdict_icon}</span>
-      <span style="color:{color}">{verdict_label}</span>
-    </div>
-    {domain_html}
-  </section>
 
-  <!-- Context -->
-  {context_html}
-
-  <!-- Analysis -->
-  <div class="analysis">
-    <div class="section-card">
-      <div class="section-heading">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+    <div class="analysis-card">
+      <div class="analysis-heading">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
         Analysis
       </div>
-      <div class="explanation-text">{explanation}</div>
+      <div class="analysis-text">{explanation}</div>
     </div>
 
     {evidence_html}
   </div>
 
-  <!-- Share bar -->
-  {share_buttons_html}
+</div>
 
-  <!-- CTA -->
-  <div class="cta-section">
+<!-- Share bar -->
+{share_buttons_html}
+
+<!-- CTA -->
+<div class="cta-section">
+  <div class="cta-inner">
     <div class="cta-heading">Verify any page yourself</div>
     <div class="cta-sub">FactScope uses AI to detect misinformation, AI-generated content, and phishing in real time.</div>
-    <a class="cta-button" href="#install" id="cta-install">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-      Install FactScope — It's free
+    <a class="cta-button" href="#install">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      Install FactScope
     </a>
   </div>
-
 </div>
 
 <footer class="page-footer">
   FactScope &mdash; AI-powered misinformation detection
 </footer>
+
+<script>
+(function(){{
+  const btn = document.getElementById('themeToggle');
+  const html = document.documentElement;
+  function setTheme(dark) {{
+    html.dataset.theme = dark ? 'dark' : '';
+    btn.textContent = dark ? '\u2600' : '\u263E';
+    try {{ localStorage.setItem('fs_theme', dark ? 'dark' : 'light'); }} catch {{}}
+  }}
+  btn.addEventListener('click', function() {{
+    setTheme(html.dataset.theme !== 'dark');
+  }});
+  try {{
+    if (localStorage.getItem('fs_theme') === 'dark') setTheme(true);
+  }} catch {{}}
+}})();
+</script>
 
 </body>
 </html>
