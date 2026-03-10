@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
@@ -923,6 +923,130 @@ async def create_share(request: ShareRequest):
 _SHARE_TEMPLATE = (Path(__file__).parent / "templates" / "share.html").read_text(encoding="utf-8")
 
 
+def _generate_card_image(data: dict) -> bytes:
+    """Render a branded 1200x630 PNG card for social media previews."""
+    from PIL import Image, ImageDraw, ImageFont
+    from io import BytesIO
+
+    W, H = 1200, 630
+    score = int(data.get("score", 50))
+    verdict = data.get("verdict", "uncertain")
+    result_type = data.get("result_type", "page")
+    explanation = data.get("explanation", "")
+    domain = data.get("domain", "")
+    title = data.get("scanned_title", "") or domain or ""
+
+    is_image = result_type == "image"
+
+    VERDICT_MAP = {
+        "authentic": ("Authentic", "#22c55e"),
+        "mostly_authentic": ("Mostly Authentic", "#22c55e"),
+        "likely_authentic": ("Likely Authentic", "#22c55e"),
+        "suspicious": ("Suspicious", "#f59e0b"),
+        "uncertain": ("Uncertain", "#f59e0b"),
+        "possibly_manipulated": ("Possibly Manipulated", "#f59e0b"),
+        "ai_generated": ("AI-Generated", "#ef4444"),
+        "likely_ai_generated": ("Likely AI-Generated", "#ef4444"),
+        "misleading": ("Misleading", "#ef4444"),
+        "fake": ("Fake", "#ef4444"),
+        "phishing": ("Phishing Alert", "#ef4444"),
+    }
+    label, accent = VERDICT_MAP.get(verdict, ("Uncertain", "#f59e0b"))
+    if is_image:
+        label_map = {
+            "authentic": "Likely Authentic", "mostly_authentic": "Likely Authentic",
+            "likely_authentic": "Likely Authentic", "suspicious": "Uncertain",
+            "uncertain": "Uncertain", "possibly_manipulated": "Possibly Manipulated",
+            "ai_generated": "Likely AI-Generated", "likely_ai_generated": "Likely AI-Generated",
+            "misleading": "Possibly Manipulated", "fake": "Possibly Manipulated",
+        }
+        label = label_map.get(verdict, label)
+
+    accent_rgb = tuple(int(accent.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+
+    bg_color = (15, 23, 42)
+    card_bg = (30, 41, 59)
+    text_white = (255, 255, 255)
+    text_muted = (148, 163, 184)
+    brand_accent = (99, 102, 241)
+
+    img = Image.new("RGB", (W, H), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font_lg = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52)
+        font_md = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 22)
+        font_xs = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        font_brand = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+        font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+    except (IOError, OSError):
+        font_lg = ImageFont.load_default()
+        font_md = font_sm = font_xs = font_brand = font_score = font_lg
+
+    draw.rounded_rectangle([40, 40, W - 40, H - 40], radius=24, fill=card_bg)
+
+    draw.text((80, 65), "FactScope", fill=brand_accent, font=font_brand)
+    type_label = "Image Verification" if is_image else "Page Analysis"
+    draw.text((80, 110), type_label, fill=text_muted, font=font_xs)
+
+    cx, cy, r = 980, 200, 90
+    draw.ellipse([cx - r - 4, cy - r - 4, cx + r + 4, cy + r + 4], fill=accent_rgb)
+    draw.ellipse([cx - r + 4, cy - r + 4, cx + r - 4, cy + r - 4], fill=card_bg)
+
+    score_text = str(score)
+    bbox = draw.textbbox((0, 0), score_text, font=font_score)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text((cx - tw // 2, cy - th // 2 - 8), score_text, fill=accent_rgb, font=font_score)
+    pct_text = "% trust" if not is_image else "% auth."
+    bbox2 = draw.textbbox((0, 0), pct_text, font=font_xs)
+    tw2 = bbox2[2] - bbox2[0]
+    draw.text((cx - tw2 // 2, cy + th // 2 + 2), pct_text, fill=text_muted, font=font_xs)
+
+    pill_w = len(label) * 16 + 40
+    pill_x = 80
+    pill_y = 170
+    draw.rounded_rectangle([pill_x, pill_y, pill_x + pill_w, pill_y + 44], radius=22, fill=accent_rgb)
+    draw.text((pill_x + 20, pill_y + 8), label, fill=text_white, font=font_md)
+
+    if title:
+        max_chars = 55
+        display_title = title[:max_chars] + "..." if len(title) > max_chars else title
+        draw.text((80, 240), display_title, fill=text_white, font=font_md)
+
+    if domain:
+        draw.text((80, 280), domain, fill=text_muted, font=font_sm)
+
+    if explanation:
+        max_chars = 120
+        short = explanation[:max_chars] + "..." if len(explanation) > max_chars else explanation
+        lines = []
+        words = short.split()
+        line = ""
+        for w in words:
+            test = f"{line} {w}".strip()
+            if len(test) > 65:
+                lines.append(line)
+                line = w
+            else:
+                line = test
+        if line:
+            lines.append(line)
+
+        y_pos = 330
+        for ln in lines[:3]:
+            draw.text((80, y_pos), ln, fill=text_muted, font=font_sm)
+            y_pos += 32
+
+    draw.line([(80, H - 100), (W - 80, H - 100)], fill=(51, 65, 85), width=1)
+    draw.text((80, H - 80), "factscope-api.onrender.com", fill=text_muted, font=font_xs)
+    draw.text((W - 340, H - 80), "Verified by FactScope AI", fill=brand_accent, font=font_xs)
+
+    buf = BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def _render_share_page(data: dict, share_url: str = "") -> str:
     import html as _html
     import math
@@ -959,8 +1083,19 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     scanned_title = _html.escape(data.get("scanned_title", "") or "")
     og_image = _html.escape(data.get("og_image", "") or "")
 
-    # OG image meta tag for social previews
-    og_image_meta = f'<meta property="og:image" content="{og_image}">' if og_image else ""
+    # OG image: always use generated card for rich social previews
+    card_url = f"{share_url}/card.png" if share_url else ""
+    if card_url:
+        og_image_meta = (
+            f'<meta property="og:image" content="{card_url}">'
+            f'\n<meta property="og:image:width" content="1200">'
+            f'\n<meta property="og:image:height" content="630">'
+            f'\n<meta name="twitter:image" content="{card_url}">'
+        )
+    elif og_image:
+        og_image_meta = f'<meta property="og:image" content="{og_image}">'
+    else:
+        og_image_meta = ""
 
     # Build the left-column preview HTML
     preview_label = "Image scanned on" if is_image else "Page scanned"
@@ -1011,10 +1146,10 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         if evidence_items else ""
     )
 
-    # Platform share buttons
-    share_text = f"FactScope verified: {verdict_label} \u2014 {score}% {score_label}"
-    if domain:
-        share_text = f"FactScope verified {domain}: {verdict_label} \u2014 {score}% {score_label}"
+    # Platform share buttons — conversational tone
+    emoji = "\u2705" if score >= 70 else "\u26A0\uFE0F" if score >= 40 else "\U0001F6A8"
+    source_bit = f" from {domain}" if domain else ""
+    share_text = f"{emoji} I just ran this{source_bit} through FactScope \u2014 scored {score}% ({verdict_label}). See the full breakdown:"
     encoded_text = quote(share_text)
     encoded_url = quote(share_url)
     full_msg = quote(f"{share_text}\n{share_url}")
@@ -1066,6 +1201,17 @@ async def view_shared_result(share_id: str):
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     share_url = f"{base}/s/{share_id}"
     return HTMLResponse(_render_share_page(data, share_url=share_url))
+
+
+@app.get("/s/{share_id}/card.png")
+async def share_card_image(share_id: str):
+    """Generate a branded 1200x630 OG image card for social previews."""
+    data = get_shared_result(share_id)
+    if not data:
+        return Response(status_code=404)
+    png_bytes = _generate_card_image(data)
+    return Response(content=png_bytes, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/health")

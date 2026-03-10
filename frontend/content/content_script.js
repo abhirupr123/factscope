@@ -592,11 +592,12 @@
     const actionsWrap = btn.closest('.fs-header-actions');
 
     function buildShareText(url) {
-      const v = sharePayload.verdict || 'uncertain';
+      const v = (sharePayload.verdict || 'uncertain').replace(/_/g, ' ');
       const s = sharePayload.score || 0;
       const d = sharePayload.domain || '';
-      const label = d ? `FactScope verified ${d}` : 'FactScope result';
-      return `${label}: ${v.replace(/_/g, ' ')} \u2014 ${s}%\n${url}`;
+      const emoji = s >= 70 ? '\u2705' : s >= 40 ? '\u26A0\uFE0F' : '\uD83D\uDEA8';
+      const source = d ? ` from ${d}` : '';
+      return `${emoji} I just ran this${source} through FactScope \u2014 scored ${s}% (${v}). See the full breakdown:\n${url}`;
     }
 
     function showShareRow(url) {
