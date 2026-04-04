@@ -1010,14 +1010,18 @@ def _generate_card_image(data: dict) -> bytes:
 
     draw.rectangle([0, 0, W, 8], fill=BRAND)
 
-    logo_path = Path(__file__).parent / "static" / "logo512.png"
-    try:
-        logo = Image.open(logo_path).resize((40, 40), Image.LANCZOS)
-        img.paste(logo, (50, 25), logo if logo.mode == "RGBA" else None)
-        text_x = 100
-    except Exception:
-        text_x = 50
+    logo_size = 42
+    lx, ly = 50, 24
+    lr = logo_size // 2
+    lcx, lcy = lx + lr, ly + lr
+    draw.ellipse([lcx - lr, lcy - lr, lcx + lr, lcy + lr], fill=BRAND)
+    draw.ellipse([lcx - lr + 4, lcy - lr + 4, lcx + lr - 4, lcy + lr - 4], fill=(99, 102, 241))
+    draw.ellipse([lcx - lr + 8, lcy - lr + 8, lcx + lr - 8, lcy + lr - 8], fill=BRAND)
+    ck_points = [(lcx - 8, lcy + 1), (lcx - 1, lcy + 8), (lcx + 10, lcy - 6)]
+    draw.line([ck_points[0], ck_points[1]], fill=WHITE, width=4)
+    draw.line([ck_points[1], ck_points[2]], fill=WHITE, width=4)
 
+    text_x = lx + logo_size + 12
     draw.text((text_x, 30), "FactScope", fill=BRAND, font=font(38, True))
     kind = "Image Verification" if is_image else "Content Analysis"
     draw.text((text_x + 260, 42), kind, fill=GRAY, font=font(20))

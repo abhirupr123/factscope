@@ -151,11 +151,25 @@ def _extract_keywords(text: str, max_words: int = 8) -> str:
     return " ".join(words[:max_words])
 
 
+def _parse_summary_articles(summary_html: str) -> list[dict]:
+    """Extract individual article titles and URLs from Google News RSS summary HTML."""
+    results = []
+    if not summary_html:
+        return results
+    a_pattern = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>\s*(?:&nbsp;)*\s*(?:<font[^>]*>([^<]*)</font>)?', re.IGNORECASE)
+    for match in a_pattern.finditer(summary_html):
+        url, title, source = match.group(1), match.group(2).strip(), (match.group(3) or "").strip()
+        if title and url:
+            results.append({"title": title, "url": url, "source": {"name": source}})
+    return results
+
+
 def _search_news(query: str) -> list[dict]:
     """Search Google News RSS for recent articles matching query.
 
     Returns a list of dicts with 'title', 'source', 'url' keys
     to match the interface expected by _match_claims_to_articles.
+    Parses individual articles from RSS summary HTML for accurate titles.
     """
     if not query:
         return []
@@ -171,18 +185,35 @@ def _search_news(query: str) -> list[dict]:
 
         feed = feedparser.parse(resp.content)
         articles = []
+        seen_titles = set()
         for entry in feed.entries[:20]:
-            title = entry.get("title", "")
-            source_name = entry.get("source", {}).get("title", "") if hasattr(entry.get("source", {}), "get") else ""
-            if not source_name and " - " in title:
-                source_name = title.rsplit(" - ", 1)[-1].strip()
-                title = title.rsplit(" - ", 1)[0].strip()
-            articles.append({
-                "title": title,
-                "description": entry.get("summary", ""),
-                "url": entry.get("link", ""),
-                "source": {"name": source_name},
-            })
+            summary = entry.get("summary", "")
+            sub_articles = _parse_summary_articles(summary)
+            if sub_articles:
+                for sa in sub_articles:
+                    t = sa["title"]
+                    if t not in seen_titles:
+                        seen_titles.add(t)
+                        articles.append({
+                            "title": t,
+                            "description": "",
+                            "url": sa["url"],
+                            "source": sa["source"],
+                        })
+            else:
+                title = entry.get("title", "")
+                source_name = entry.get("source", {}).get("title", "") if hasattr(entry.get("source", {}), "get") else ""
+                if not source_name and " - " in title:
+                    source_name = title.rsplit(" - ", 1)[-1].strip()
+                    title = title.rsplit(" - ", 1)[0].strip()
+                if title and title not in seen_titles:
+                    seen_titles.add(title)
+                    articles.append({
+                        "title": title,
+                        "description": summary,
+                        "url": entry.get("link", ""),
+                        "source": {"name": source_name},
+                    })
 
         logger.info("Google News RSS: %d articles for query '%s'", len(articles), query[:50])
         return articles
