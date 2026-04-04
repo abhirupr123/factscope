@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
@@ -13,8 +13,7 @@ from db import (store_image_scan, find_image_scan, add_community_flag,
                 get_community_notes, store_vote, get_vote_stats,
                 should_invalidate_cache, graduate_flags_to_fact,
                 search_knowledge_base, VALID_FLAG_CATEGORIES,
-                store_shared_result, get_shared_result,
-                update_shared_card, get_shared_card)
+                store_shared_result, get_shared_result)
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
@@ -925,166 +924,17 @@ class ShareRequest(BaseModel):
     og_image: str = ""
 
 
-def _pregenerate_card(share_id: str, data: dict):
-    """Background task: generate card PNG and store in DB."""
-    try:
-        card_bytes = _generate_card_image(data)
-        update_shared_card(share_id, card_bytes)
-        logger.info("Card pre-generated for %s (%d bytes)", share_id, len(card_bytes))
-    except Exception as exc:
-        logger.warning("Card pre-generation failed for %s: %s", share_id, exc)
-
-
 @app.post("/share")
 async def create_share(request: ShareRequest):
     """Store a result snapshot and return a shareable URL."""
     from config import ENVIRONMENT
     data = request.model_dump()
     share_id = store_shared_result(data)
-    _bg_pool.submit(_pregenerate_card, share_id, data)
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
 
 
 _SHARE_TEMPLATE = (Path(__file__).parent / "templates" / "share.html").read_text(encoding="utf-8")
-
-
-def _generate_card_image(data: dict) -> bytes:
-    """Render a clean, readable 1200x630 PNG card for WhatsApp/social previews."""
-    from PIL import Image, ImageDraw, ImageFont
-    from io import BytesIO
-
-    W, H = 1200, 630
-    score = int(data.get("score", 50))
-    verdict = data.get("verdict", "uncertain")
-    result_type = data.get("result_type", "page")
-    explanation = data.get("explanation", "")
-    domain = data.get("domain", "")
-    title = data.get("scanned_title", "") or domain or ""
-    is_image = result_type == "image"
-
-    VERDICT_MAP = {
-        "authentic": "Authentic", "mostly_authentic": "Mostly Authentic",
-        "likely_authentic": "Likely Authentic", "suspicious": "Suspicious",
-        "uncertain": "Uncertain", "possibly_manipulated": "Possibly Manipulated",
-        "ai_generated": "AI-Generated", "likely_ai_generated": "Likely AI-Generated",
-        "misleading": "Misleading", "fake": "Fake", "phishing": "Phishing Alert",
-    }
-    label = VERDICT_MAP.get(verdict, verdict.replace("_", " ").title())
-    accent_hex = "#22c55e" if score >= 70 else "#f59e0b" if score >= 40 else "#ef4444"
-    accent = tuple(int(accent_hex.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
-
-    WHITE = (255, 255, 255)
-    BLACK = (30, 30, 30)
-    GRAY = (100, 100, 100)
-    LIGHT_GRAY = (230, 230, 230)
-    BRAND = (79, 70, 229)
-
-    img = Image.new("RGB", (W, H), WHITE)
-    draw = ImageDraw.Draw(img)
-
-    font_search = [
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", True),
-        ("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", True),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", False),
-        ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", False),
-    ]
-    bold_path = regular_path = None
-    for fp, is_bold in font_search:
-        try:
-            ImageFont.truetype(fp, 12)
-            if is_bold and not bold_path:
-                bold_path = fp
-            elif not is_bold and not regular_path:
-                regular_path = fp
-        except (IOError, OSError):
-            continue
-    if not regular_path:
-        regular_path = bold_path
-
-    def font(size, bold=False):
-        path = bold_path if bold and bold_path else regular_path
-        if path:
-            return ImageFont.truetype(path, size)
-        return ImageFont.load_default()
-
-    draw.rectangle([0, 0, W, 8], fill=BRAND)
-
-    logo_size = 42
-    lx, ly = 50, 24
-    lr = logo_size // 2
-    lcx, lcy = lx + lr, ly + lr
-    draw.ellipse([lcx - lr, lcy - lr, lcx + lr, lcy + lr], fill=BRAND)
-    draw.ellipse([lcx - lr + 4, lcy - lr + 4, lcx + lr - 4, lcy + lr - 4], fill=(99, 102, 241))
-    draw.ellipse([lcx - lr + 8, lcy - lr + 8, lcx + lr - 8, lcy + lr - 8], fill=BRAND)
-    ck_points = [(lcx - 8, lcy + 1), (lcx - 1, lcy + 8), (lcx + 10, lcy - 6)]
-    draw.line([ck_points[0], ck_points[1]], fill=WHITE, width=4)
-    draw.line([ck_points[1], ck_points[2]], fill=WHITE, width=4)
-
-    text_x = lx + logo_size + 12
-    draw.text((text_x, 30), "FactScope", fill=BRAND, font=font(38, True))
-    kind = "Image Verification" if is_image else "Content Analysis"
-    draw.text((text_x + 260, 42), kind, fill=GRAY, font=font(20))
-
-    draw.line([(50, 80), (W - 50, 80)], fill=LIGHT_GRAY, width=2)
-
-    score_str = f"{score}%"
-    sf = font(110, True)
-    sb = draw.textbbox((0, 0), score_str, font=sf)
-    sw = sb[2] - sb[0]
-    draw.text((W - 60 - sw, 100), score_str, fill=accent, font=sf)
-
-    metric = "trust score" if not is_image else "authenticity"
-    mf = font(18)
-    mb = draw.textbbox((0, 0), metric, font=mf)
-    mw = mb[2] - mb[0]
-    draw.text((W - 60 - mw, 225), metric, fill=GRAY, font=mf)
-
-    vf = font(26, True)
-    vb = draw.textbbox((0, 0), label, font=vf)
-    vw, vh = vb[2] - vb[0], vb[3] - vb[1]
-    px, py = 50, 105
-    draw.rounded_rectangle([px, py, px + vw + 36, py + vh + 18], radius=8, fill=accent)
-    draw.text((px + 18, py + 9), label, fill=WHITE, font=vf)
-
-    cy = 165
-    if title:
-        short_title = title[:70] + "..." if len(title) > 70 else title
-        draw.text((50, cy), short_title, fill=BLACK, font=font(24, True))
-        cy += 36
-
-    if domain:
-        draw.text((50, cy), domain, fill=GRAY, font=font(18))
-        cy += 30
-
-    cy += 10
-    draw.line([(50, cy), (W - sw - 100, cy)], fill=LIGHT_GRAY, width=1)
-    cy += 14
-
-    if explanation:
-        ef = font(18)
-        short = explanation[:250] + "..." if len(explanation) > 250 else explanation
-        words = short.split()
-        lines, line = [], ""
-        for w in words:
-            test = f"{line} {w}".strip()
-            if len(test) > 70:
-                lines.append(line)
-                line = w
-            else:
-                line = test
-        if line:
-            lines.append(line)
-        for ln in lines[:6]:
-            draw.text((50, cy), ln, fill=GRAY, font=ef)
-            cy += 26
-
-    draw.line([(50, H - 60), (W - 50, H - 60)], fill=LIGHT_GRAY, width=1)
-    draw.text((50, H - 45), "Verified by FactScope AI", fill=BRAND, font=font(16, True))
-
-    buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
 
 
 def _render_share_page(data: dict, share_url: str = "") -> str:
@@ -1123,17 +973,12 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     scanned_title = _html.escape(data.get("scanned_title", "") or "")
     og_image = _html.escape(data.get("og_image", "") or "")
 
-    # OG image: always use generated card for rich social previews
-    card_url = f"{share_url}/card.png" if share_url else ""
-    if card_url:
+    # OG image: use article's own image for rich social previews
+    if og_image:
         og_image_meta = (
-            f'<meta property="og:image" content="{card_url}">'
-            f'\n<meta property="og:image:width" content="1200">'
-            f'\n<meta property="og:image:height" content="630">'
-            f'\n<meta name="twitter:image" content="{card_url}">'
+            f'<meta property="og:image" content="{og_image}">'
+            f'\n<meta name="twitter:image" content="{og_image}">'
         )
-    elif og_image:
-        og_image_meta = f'<meta property="og:image" content="{og_image}">'
     else:
         og_image_meta = ""
 
@@ -1243,23 +1088,6 @@ async def view_shared_result(share_id: str):
     return HTMLResponse(_render_share_page(data, share_url=share_url))
 
 
-@app.get("/s/{share_id}/card.png")
-async def share_card_image(share_id: str):
-    """Serve pre-generated OG image card, falling back to on-the-fly generation."""
-    cached = get_shared_card(share_id)
-    if cached:
-        return Response(content=cached, media_type="image/png",
-                        headers={"Cache-Control": "public, max-age=86400"})
-    data = get_shared_result(share_id)
-    if not data:
-        return Response(status_code=404)
-    png_bytes = _generate_card_image(data)
-    try:
-        update_shared_card(share_id, png_bytes)
-    except Exception:
-        pass
-    return Response(content=png_bytes, media_type="image/png",
-                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/health")
