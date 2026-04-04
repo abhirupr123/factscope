@@ -159,8 +159,13 @@ def _parse_summary_articles(summary_html: str) -> list[dict]:
     a_pattern = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>\s*(?:&nbsp;)*\s*(?:<font[^>]*>([^<]*)</font>)?', re.IGNORECASE)
     for match in a_pattern.finditer(summary_html):
         url, title, source = match.group(1), match.group(2).strip(), (match.group(3) or "").strip()
-        if title and url:
-            results.append({"title": title, "url": url, "source": {"name": source}})
+        if not title or not url:
+            continue
+        # Strip embedded source suffixes like "Title | India News" or "Title - Source"
+        for sep in (" | ", " - "):
+            if sep in title:
+                title = title.rsplit(sep, 1)[0].strip()
+        results.append({"title": title, "url": url, "source": {"name": source}})
     return results
 
 
@@ -236,9 +241,7 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
     """
     source_domain = _extract_domain(source_url)
 
-    article_texts = []
-    article_sources = []
-    article_urls = []
+    filtered = []
     for a in articles:
         a_url = a.get("url") or ""
         source = (a.get("source") or {}).get("name") or ""
@@ -250,9 +253,8 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
         if source_domain and _source_matches_domain(source, source_domain):
             continue
         combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
-        article_texts.append(combined)
-        article_urls.append(a_url)
-        article_sources.append(source)
+        filtered.append({"title": a.get("title") or "", "combined": combined,
+                         "url": a_url, "source": source})
 
     results = {}
     for i, claim in enumerate(claims):
@@ -264,18 +266,18 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
         matching_sources = set()
         matched_articles = []
         relevance_scores = []
-        for j, atext in enumerate(article_texts):
-            overlap = sum(1 for kw in claim_keywords if kw in atext)
+        for fa in filtered:
+            overlap = sum(1 for kw in claim_keywords if kw in fa["combined"])
             if overlap >= min(3, len(claim_keywords)):
-                src = article_sources[j] or f"source_{j}"
+                src = fa["source"] or "unknown"
                 if src not in matching_sources:
                     matching_sources.add(src)
                     relevance = overlap / len(claim_keywords) if claim_keywords else 0
                     relevance_scores.append(relevance)
                     matched_articles.append({
-                        "title": articles[j].get("title") or "",
+                        "title": fa["title"],
                         "source": src,
-                        "url": article_urls[j],
+                        "url": fa["url"],
                     })
 
         source_count = len(matching_sources)
