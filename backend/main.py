@@ -950,7 +950,7 @@ _SHARE_TEMPLATE = (Path(__file__).parent / "templates" / "share.html").read_text
 
 
 def _generate_card_image(data: dict) -> bytes:
-    """Render a branded 1200x630 PNG card for social media previews."""
+    """Render a clean, readable 1200x630 PNG card for WhatsApp/social previews."""
     from PIL import Image, ImageDraw, ImageFont
     from io import BytesIO
 
@@ -961,144 +961,114 @@ def _generate_card_image(data: dict) -> bytes:
     explanation = data.get("explanation", "")
     domain = data.get("domain", "")
     title = data.get("scanned_title", "") or domain or ""
-
     is_image = result_type == "image"
 
     VERDICT_MAP = {
-        "authentic": ("Authentic", "#22c55e"),
-        "mostly_authentic": ("Mostly Authentic", "#22c55e"),
-        "likely_authentic": ("Likely Authentic", "#22c55e"),
-        "suspicious": ("Suspicious", "#f59e0b"),
-        "uncertain": ("Uncertain", "#f59e0b"),
-        "possibly_manipulated": ("Possibly Manipulated", "#f59e0b"),
-        "ai_generated": ("AI-Generated", "#ef4444"),
-        "likely_ai_generated": ("Likely AI-Generated", "#ef4444"),
-        "misleading": ("Misleading", "#ef4444"),
-        "fake": ("Fake", "#ef4444"),
-        "phishing": ("Phishing Alert", "#ef4444"),
+        "authentic": "Authentic", "mostly_authentic": "Mostly Authentic",
+        "likely_authentic": "Likely Authentic", "suspicious": "Suspicious",
+        "uncertain": "Uncertain", "possibly_manipulated": "Possibly Manipulated",
+        "ai_generated": "AI-Generated", "likely_ai_generated": "Likely AI-Generated",
+        "misleading": "Misleading", "fake": "Fake", "phishing": "Phishing Alert",
     }
-    label, accent = VERDICT_MAP.get(verdict, ("Uncertain", "#f59e0b"))
-    if is_image:
-        label_map = {
-            "authentic": "Likely Authentic", "mostly_authentic": "Likely Authentic",
-            "likely_authentic": "Likely Authentic", "suspicious": "Uncertain",
-            "uncertain": "Uncertain", "possibly_manipulated": "Possibly Manipulated",
-            "ai_generated": "Likely AI-Generated", "likely_ai_generated": "Likely AI-Generated",
-            "misleading": "Possibly Manipulated", "fake": "Possibly Manipulated",
-        }
-        label = label_map.get(verdict, label)
+    label = VERDICT_MAP.get(verdict, verdict.replace("_", " ").title())
+    accent_hex = "#22c55e" if score >= 70 else "#f59e0b" if score >= 40 else "#ef4444"
+    accent = tuple(int(accent_hex.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
 
-    accent_rgb = tuple(int(accent.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+    WHITE = (255, 255, 255)
+    BLACK = (30, 30, 30)
+    GRAY = (100, 100, 100)
+    LIGHT_GRAY = (230, 230, 230)
+    BRAND = (79, 70, 229)
 
-    bg_color = (15, 23, 42)
-    card_bg = (30, 41, 59)
-    text_white = (255, 255, 255)
-    text_muted = (148, 163, 184)
-    text_light = (203, 213, 225)
-    brand_accent = (99, 102, 241)
-
-    img = Image.new("RGB", (W, H), bg_color)
+    img = Image.new("RGB", (W, H), WHITE)
     draw = ImageDraw.Draw(img)
 
-    def _find_font(name):
-        paths = [
-            f"/usr/share/fonts/truetype/dejavu/{name}",
-            f"/usr/share/fonts/{name}",
-            f"/usr/share/fonts/truetype/{name}",
-            f"/usr/local/share/fonts/{name}",
-        ]
-        for p in paths:
-            try:
-                ImageFont.truetype(p, 10)
-                return p
-            except (IOError, OSError):
-                continue
-        return None
+    font_search = [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", True),
+        ("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", True),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", False),
+        ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", False),
+    ]
+    bold_path = regular_path = None
+    for fp, is_bold in font_search:
+        try:
+            ImageFont.truetype(fp, 12)
+            if is_bold and not bold_path:
+                bold_path = fp
+            elif not is_bold and not regular_path:
+                regular_path = fp
+        except (IOError, OSError):
+            continue
+    if not regular_path:
+        regular_path = bold_path
 
-    bold_path = _find_font("DejaVuSans-Bold.ttf")
-    regular_path = _find_font("DejaVuSans.ttf")
+    def font(size, bold=False):
+        path = bold_path if bold and bold_path else regular_path
+        if path:
+            return ImageFont.truetype(path, size)
+        return ImageFont.load_default()
 
-    if bold_path and regular_path:
-        font_brand = ImageFont.truetype(bold_path, 32)
-        font_score = ImageFont.truetype(bold_path, 96)
-        font_verdict = ImageFont.truetype(bold_path, 28)
-        font_title = ImageFont.truetype(bold_path, 26)
-        font_body = ImageFont.truetype(regular_path, 20)
-        font_sm = ImageFont.truetype(regular_path, 17)
-    else:
-        df = ImageFont.load_default()
-        font_brand = font_score = font_verdict = font_title = font_body = font_sm = df
+    draw.rectangle([0, 0, W, 8], fill=BRAND)
 
-    draw.rounded_rectangle([30, 30, W - 30, H - 30], radius=20, fill=card_bg)
+    draw.text((50, 30), "FactScope", fill=BRAND, font=font(38, True))
+    kind = "Image Verification" if is_image else "Content Analysis"
+    draw.text((310, 42), kind, fill=GRAY, font=font(20))
 
-    draw.rectangle([30, 30, W - 30, 38], fill=accent_rgb)
+    draw.line([(50, 80), (W - 50, 80)], fill=LIGHT_GRAY, width=2)
 
-    draw.text((60, 52), "FACTSCOPE", fill=brand_accent, font=font_brand)
-    type_label = "IMAGE VERIFICATION" if is_image else "CONTENT ANALYSIS"
-    draw.text((300, 58), type_label, fill=text_muted, font=font_sm)
+    score_str = f"{score}%"
+    sf = font(110, True)
+    sb = draw.textbbox((0, 0), score_str, font=sf)
+    sw = sb[2] - sb[0]
+    draw.text((W - 60 - sw, 100), score_str, fill=accent, font=sf)
 
-    draw.line([(60, 95), (W - 60, 95)], fill=(51, 65, 85), width=1)
+    metric = "trust score" if not is_image else "authenticity"
+    mf = font(18)
+    mb = draw.textbbox((0, 0), metric, font=mf)
+    mw = mb[2] - mb[0]
+    draw.text((W - 60 - mw, 225), metric, fill=GRAY, font=mf)
 
-    score_text = f"{score}%"
-    bbox = draw.textbbox((0, 0), score_text, font=font_score)
-    stw = bbox[2] - bbox[0]
-    score_x = W - 60 - stw
-    draw.text((score_x, 115), score_text, fill=accent_rgb, font=font_score)
+    vf = font(26, True)
+    vb = draw.textbbox((0, 0), label, font=vf)
+    vw, vh = vb[2] - vb[0], vb[3] - vb[1]
+    px, py = 50, 105
+    draw.rounded_rectangle([px, py, px + vw + 36, py + vh + 18], radius=8, fill=accent)
+    draw.text((px + 18, py + 9), label, fill=WHITE, font=vf)
 
-    pct_label = "trust score" if not is_image else "authenticity"
-    bbox_p = draw.textbbox((0, 0), pct_label, font=font_sm)
-    plw = bbox_p[2] - bbox_p[0]
-    draw.text((W - 60 - plw, 225), pct_label, fill=text_muted, font=font_sm)
-
-    bbox_v = draw.textbbox((0, 0), label, font=font_verdict)
-    vw = bbox_v[2] - bbox_v[0]
-    pill_pad = 24
-    pill_h = 42
-    pill_x, pill_y = 60, 125
-    draw.rounded_rectangle(
-        [pill_x, pill_y, pill_x + vw + pill_pad * 2, pill_y + pill_h],
-        radius=pill_h // 2, fill=accent_rgb
-    )
-    draw.text((pill_x + pill_pad, pill_y + 7), label, fill=text_white, font=font_verdict)
-
-    content_y = 190
+    cy = 165
     if title:
-        max_chars = 60
-        display_title = title[:max_chars] + "..." if len(title) > max_chars else title
-        draw.text((60, content_y), display_title, fill=text_white, font=font_title)
-        content_y += 38
+        short_title = title[:70] + "..." if len(title) > 70 else title
+        draw.text((50, cy), short_title, fill=BLACK, font=font(24, True))
+        cy += 36
 
     if domain:
-        draw.text((60, content_y), domain, fill=text_muted, font=font_body)
-        content_y += 34
+        draw.text((50, cy), domain, fill=GRAY, font=font(18))
+        cy += 30
 
-    content_y += 12
-    draw.line([(60, content_y), (score_x - 40, content_y)], fill=(51, 65, 85), width=1)
-    content_y += 18
+    cy += 10
+    draw.line([(50, cy), (W - sw - 100, cy)], fill=LIGHT_GRAY, width=1)
+    cy += 14
 
     if explanation:
-        max_chars = 200
-        short = explanation[:max_chars] + "..." if len(explanation) > max_chars else explanation
-        lines = []
+        ef = font(18)
+        short = explanation[:250] + "..." if len(explanation) > 250 else explanation
         words = short.split()
-        line = ""
+        lines, line = [], ""
         for w in words:
             test = f"{line} {w}".strip()
-            if len(test) > 58:
+            if len(test) > 70:
                 lines.append(line)
                 line = w
             else:
                 line = test
         if line:
             lines.append(line)
+        for ln in lines[:6]:
+            draw.text((50, cy), ln, fill=GRAY, font=ef)
+            cy += 26
 
-        for ln in lines[:5]:
-            draw.text((60, content_y), ln, fill=text_light, font=font_body)
-            content_y += 28
-
-    draw.line([(60, H - 70), (W - 60, H - 70)], fill=(51, 65, 85), width=1)
-    draw.text((60, H - 55), "Verified by FactScope AI", fill=brand_accent, font=font_sm)
-    draw.text((W - 290, H - 55), "factscope-api.onrender.com", fill=text_muted, font=font_sm)
+    draw.line([(50, H - 60), (W - 50, H - 60)], fill=LIGHT_GRAY, width=1)
+    draw.text((50, H - 45), "Verified by FactScope AI", fill=BRAND, font=font(16, True))
 
     buf = BytesIO()
     img.save(buf, format="PNG", optimize=True)
