@@ -77,21 +77,21 @@ def compute_structural_score(
         base_domain = ".".join(domain.split(".")[-2:])
 
         if base_domain in REPUTABLE_DOMAINS:
-            signals.append({"name": "reputable_source", "delta": 18, "detail": f"{base_domain} is a known reputable source"})
+            signals.append({"name": "reputable_source", "delta": 18, "detail": f"Published on {base_domain}, a trusted news source"})
 
         if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS):
-            signals.append({"name": "suspicious_tld", "delta": -20, "detail": "Domain uses a suspicious top-level domain"})
+            signals.append({"name": "suspicious_tld", "delta": -20, "detail": "Website address looks suspicious"})
 
         if any(s in domain for s in URL_SHORTENERS):
-            signals.append({"name": "url_shortener", "delta": -10, "detail": "URL shortener detected"})
+            signals.append({"name": "url_shortener", "delta": -10, "detail": "Link is shortened — original source hidden"})
 
         if len(url) > 200:
-            signals.append({"name": "very_long_url", "delta": -5, "detail": "Unusually long URL"})
+            signals.append({"name": "very_long_url", "delta": -5, "detail": "Unusually long web address"})
 
         if parsed.scheme == "https":
-            signals.append({"name": "https", "delta": 3, "detail": "HTTPS connection"})
+            signals.append({"name": "https", "delta": 3, "detail": "Secure connection to this site"})
         else:
-            signals.append({"name": "no_https", "delta": -8, "detail": "No HTTPS — connection not secure"})
+            signals.append({"name": "no_https", "delta": -8, "detail": "This site does not use a secure connection"})
 
     # ── Content signals ───────────────────────────────────────────────
     if text:
@@ -99,36 +99,36 @@ def compute_structural_score(
 
         cb_hits = [p for p in CLICKBAIT_PHRASES if p in lower]
         if cb_hits:
-            signals.append({"name": "clickbait", "delta": -8 * min(len(cb_hits), 3), "detail": f"Clickbait language: {cb_hits[0]}"})
+            signals.append({"name": "clickbait", "delta": -8 * min(len(cb_hits), 3), "detail": f"Uses attention-grabbing language: \"{cb_hits[0]}\""})
 
         spam_hits = [p for p in SPAM_PHRASES if p in lower]
         if spam_hits:
-            signals.append({"name": "spam_patterns", "delta": -12 * min(len(spam_hits), 3), "detail": f"Spam pattern: {spam_hits[0]}"})
+            signals.append({"name": "spam_patterns", "delta": -12 * min(len(spam_hits), 3), "detail": f"Looks like spam: \"{spam_hits[0]}\""})
 
         phish_hits = [p for p in PHISHING_PHRASES if p in lower]
         if phish_hits:
-            signals.append({"name": "phishing_patterns", "delta": -15 * min(len(phish_hits), 2), "detail": f"Phishing pattern: {phish_hits[0]}"})
+            signals.append({"name": "phishing_patterns", "delta": -15 * min(len(phish_hits), 2), "detail": f"May be trying to steal info: \"{phish_hits[0]}\""})
 
         alpha = [c for c in text if c.isalpha()]
         if alpha and len(alpha) > 50:
             caps_ratio = sum(1 for c in alpha if c.isupper()) / len(alpha)
             if caps_ratio > 0.35:
-                signals.append({"name": "excessive_caps", "delta": -8, "detail": f"Excessive capitalization ({caps_ratio:.0%})"})
+                signals.append({"name": "excessive_caps", "delta": -8, "detail": "Too much SHOUTING — lots of capital letters"})
 
     if title:
         tl = title.lower()
         if any(p in tl for p in CLICKBAIT_PHRASES):
-            signals.append({"name": "clickbait_title", "delta": -12, "detail": "Title contains clickbait language"})
+            signals.append({"name": "clickbait_title", "delta": -12, "detail": "Headline uses clickbait tactics"})
         if title == title.upper() and len(title) > 10:
-            signals.append({"name": "allcaps_title", "delta": -8, "detail": "Title is ALL CAPS"})
+            signals.append({"name": "allcaps_title", "delta": -8, "detail": "Headline is written in ALL CAPS"})
 
     # ── Metadata signals ──────────────────────────────────────────────
     if metadata.get("author"):
-        signals.append({"name": "has_author", "delta": 5, "detail": f"Author attributed: {metadata['author']}"})
+        signals.append({"name": "has_author", "delta": 5, "detail": f"Written by {metadata['author']}"})
     if metadata.get("publish_date"):
-        signals.append({"name": "has_date", "delta": 4, "detail": "Publish date present"})
+        signals.append({"name": "has_date", "delta": 4, "detail": "Has a published date"})
     if metadata.get("site_name"):
-        signals.append({"name": "has_site_name", "delta": 3, "detail": f"Site: {metadata['site_name']}"})
+        signals.append({"name": "has_site_name", "delta": 3, "detail": f"From {metadata['site_name']}"})
 
     # Only penalize missing attribution on article-like pages (not databases, forums, etc.)
     page_type = metadata.get("og_type", "") or metadata.get("json_ld_type", "") or ""
@@ -143,7 +143,7 @@ def compute_structural_score(
         and len(text) > 500
         and is_article_like
     ):
-        signals.append({"name": "no_attribution", "delta": -6, "detail": "Article-style content with no author or date attribution"})
+        signals.append({"name": "no_attribution", "delta": -6, "detail": "No author or date listed for this article"})
 
     # ── Compute final score ───────────────────────────────────────────
     base = 60

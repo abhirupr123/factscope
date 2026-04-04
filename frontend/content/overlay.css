@@ -61,11 +61,6 @@
 .factscope-popup .fs-logo {
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #fff;
-  font-weight: 800;
-  font-size: 13px;
   display: grid;
   place-items: center;
   flex-shrink: 0;

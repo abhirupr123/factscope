@@ -240,7 +240,7 @@
   function showScanningIndicator() {
     createPanel(`
       <div class="fs-header">
-        <div class="fs-logo">FS</div>
+        <div class="fs-logo"><svg viewBox="0 0 100 100" width="28" height="28"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="fs-header-text">
           <div class="fs-brand">FactScope</div>
           <div class="fs-subtitle">Analyzing page&hellip;</div>
@@ -712,7 +712,7 @@
 
     const panel = createPanel(`
       <div class="fs-header">
-        <div class="fs-logo">FS</div>
+        <div class="fs-logo"><svg viewBox="0 0 100 100" width="28" height="28"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="fs-header-text">
           <div class="fs-brand">FactScope</div>
         </div>
@@ -947,7 +947,7 @@
   function showImageScanningIndicator() {
     createPanel(`
       <div class="fs-header">
-        <div class="fs-logo">FS</div>
+        <div class="fs-logo"><svg viewBox="0 0 100 100" width="28" height="28"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="fs-header-text">
           <div class="fs-brand">FactScope</div>
           <div class="fs-subtitle">Verifying image&hellip;</div>
@@ -974,7 +974,7 @@
 
     const panel = createPanel(`
       <div class="fs-header">
-        <div class="fs-logo">FS</div>
+        <div class="fs-logo"><svg viewBox="0 0 100 100" width="28" height="28"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="fs-header-text">
           <div class="fs-brand">FactScope</div>
           <div class="fs-subtitle">Image Verification</div>

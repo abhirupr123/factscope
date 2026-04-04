@@ -27,9 +27,10 @@ Respond with ONLY valid JSON. No markdown, no backticks, no extra text.
 Scoring: 80-100 authentic, 60-79 minor concerns, 40-59 mixed, 20-39 red flags, 0-19 clearly fake/spam.
 
 CRITICAL RULES:
-- Focus on SOURCE CREDIBILITY, WRITING STYLE, STRUCTURE, and METADATA. Fact verification of specific claims is handled separately by FactScope's fact-check engine.
-- Judge by: Is this from a known publication? Is the writing professional? Are there spam/phishing patterns? Does it look AI-generated stylistically? Is the metadata consistent?
+- Focus on SOURCE CREDIBILITY, WRITING STYLE, and STRUCTURE. Fact verification of specific claims is handled separately by FactScope's fact-check engine.
+- Judge by: Is this from a known publication? Is the writing professional? Are there spam/phishing patterns? Does it look AI-generated stylistically?
 - Do NOT attempt to verify whether specific current-event claims are true or false from your training data alone — that is unreliable. Instead assess whether the source and presentation are trustworthy.
+- LANGUAGE: Write for a general audience. NEVER use technical jargon like "metadata", "HTTPS", "URL structure", "page structure", "DOM", "schema", "og:type". Instead say things like "published date", "author name", "article format", "trusted source".
 - Keep explanation between 40-80 words and each evidence item under 15 words. Max 3 evidence items.
 - For well-known reputable sites, be brief and confident.
 - Focus evidence on things the user might NOT already know.

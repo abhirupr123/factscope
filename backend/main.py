@@ -1010,9 +1010,17 @@ def _generate_card_image(data: dict) -> bytes:
 
     draw.rectangle([0, 0, W, 8], fill=BRAND)
 
-    draw.text((50, 30), "FactScope", fill=BRAND, font=font(38, True))
+    logo_path = Path(__file__).parent / "static" / "logo512.png"
+    try:
+        logo = Image.open(logo_path).resize((40, 40), Image.LANCZOS)
+        img.paste(logo, (50, 25), logo if logo.mode == "RGBA" else None)
+        text_x = 100
+    except Exception:
+        text_x = 50
+
+    draw.text((text_x, 30), "FactScope", fill=BRAND, font=font(38, True))
     kind = "Image Verification" if is_image else "Content Analysis"
-    draw.text((310, 42), kind, fill=GRAY, font=font(20))
+    draw.text((text_x + 260, 42), kind, fill=GRAY, font=font(20))
 
     draw.line([(50, 80), (W - 50, 80)], fill=LIGHT_GRAY, width=2)
 

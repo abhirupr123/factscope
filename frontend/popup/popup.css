@@ -51,14 +51,9 @@ p {
 .logo-dot {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, var(--accent), #3b82f6);
-  color: #fff;
-  font-weight: 700;
   display: grid;
   place-items: center;
-  letter-spacing: 0.5px;
-  box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.12);
+  flex-shrink: 0;
 }
 
 .eyebrow {
