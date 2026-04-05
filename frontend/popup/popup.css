@@ -204,3 +204,122 @@ button:active {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── Usage bar & tier ──────────────────────────────────────────── */
+
+.usage-bar {
+  margin-bottom: 12px;
+}
+
+.usage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.tier-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.tier-badge.standard {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.tier-badge.premium {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.usage-text {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.progress-track {
+  height: 5px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent-2);
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.progress-fill.warning {
+  background: #f59e0b;
+}
+
+.progress-fill.danger {
+  background: #ef4444;
+}
+
+/* ── Upgrade / license key ─────────────────────────────────────── */
+
+.upgrade-section {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.upgrade-section summary {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.upgrade-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.upgrade-form input {
+  flex: 1;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  font-family: inherit;
+  background: var(--bg);
+}
+
+.upgrade-form input:focus {
+  border-color: var(--accent);
+}
+
+.upgrade-form button {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.redeem-msg {
+  font-size: 12px;
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.redeem-msg.success {
+  color: var(--accent-2);
+}
+
+.redeem-msg.error {
+  color: #ef4444;
+}

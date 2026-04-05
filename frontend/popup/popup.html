@@ -20,6 +20,16 @@
         and AI&#8209;generated content.
       </p>
 
+      <div id="usage-bar" class="usage-bar" style="display:none">
+        <div class="usage-row">
+          <span id="usage-tier" class="tier-badge">free</span>
+          <span id="usage-text" class="usage-text">–/– scans</span>
+        </div>
+        <div class="progress-track">
+          <div id="usage-fill" class="progress-fill"></div>
+        </div>
+      </div>
+
       <button id="scan-tab">Scan current tab</button>
 
       <div id="last-result" class="hint">
@@ -33,6 +43,15 @@
         </div>
         <div id="history-list"></div>
       </div>
+
+      <details id="upgrade-section" class="upgrade-section">
+        <summary>Have a license key?</summary>
+        <div class="upgrade-form">
+          <input id="license-key" type="text" placeholder="Enter license key" spellcheck="false" />
+          <button id="redeem-btn">Activate</button>
+        </div>
+        <p id="redeem-msg" class="redeem-msg"></p>
+      </details>
     </div>
     <script src="popup.js"></script>
   </body>

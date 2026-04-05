@@ -96,6 +96,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        if (r.status === 429) {
+          const rl = await r.json();
+          sendResponse({
+            trust_score: 0,
+            verdict: 'rate_limited',
+            explanation: `Daily scan limit reached (${rl.used}/${rl.limit}). Resets at midnight UTC.`,
+            evidence: [],
+            rate_limit: rl,
+          });
+          return;
+        }
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
         if (data.verdict !== 'error') {
@@ -137,6 +148,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
+        if (r.status === 429) {
+          const rl = await r.json();
+          sendResponse({
+            authenticity_score: 0,
+            verdict: 'rate_limited',
+            explanation: `Daily scan limit reached (${rl.used}/${rl.limit}). Resets at midnight UTC.`,
+            evidence: [],
+            rate_limit: rl,
+          });
+          return;
+        }
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
         if (data.verdict !== 'error') {
@@ -239,6 +261,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await r.json());
       } catch (err) {
         sendResponse({ notes: [], vote_stats: { likes: 0, dislikes: 0 }, flag_count: 0 });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'get-usage') {
+    (async () => {
+      await _apiReady;
+      const userId = await getUserId();
+      try {
+        const r = await fetch(`${API_BASE}/user/usage?user_id=${encodeURIComponent(userId)}`);
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        sendResponse(await r.json());
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'redeem-key') {
+    (async () => {
+      await _apiReady;
+      const userId = await getUserId();
+      try {
+        const r = await fetch(`${API_BASE}/redeem-key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, key: message.key }),
+        });
+        const data = await r.json();
+        sendResponse(data);
+      } catch (err) {
+        sendResponse({ error: err.message });
       }
     })();
     return true;

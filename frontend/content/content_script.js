@@ -671,6 +671,29 @@
   }
 
   function showResultPanel(result) {
+    if (result.verdict === 'rate_limited') {
+      const rl = result.rate_limit || {};
+      const panel = createPanel(`
+        <div class="fs-header">
+          <div class="fs-logo"><svg viewBox="0 0 100 100" width="28" height="28"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <div class="fs-header-text"><div class="fs-brand">FactScope</div></div>
+          <div class="fs-header-actions"><button class="fs-close" aria-label="Close">&times;</button></div>
+        </div>
+        <div class="fs-body" style="text-align:center;padding:20px 0;">
+          <div style="font-size:32px;margin-bottom:10px;">\u23F3</div>
+          <div style="font-size:16px;font-weight:700;color:#ef4444;margin-bottom:8px;">Daily Scan Limit Reached</div>
+          <div style="font-size:13px;color:#64748b;line-height:1.5;">
+            You\u2019ve used <strong>${rl.used || '?'}/${rl.limit || '?'}</strong> scans today on the <strong>${rl.tier || 'free'}</strong> plan.<br/>
+            Your limit resets at <strong>midnight UTC</strong>.
+          </div>
+          <div style="margin-top:14px;font-size:12px;color:#94a3b8;">Upgrade via the extension popup for more scans.</div>
+        </div>
+        <div class="fs-footer">Scanned by FactScope</div>
+      `);
+      panel.querySelector('.fs-close').addEventListener('click', removePanel);
+      return;
+    }
+
     const score = result.trust_score;
     const color = scoreColor(score);
     const label = verdictLabel(result.verdict);
@@ -959,6 +982,11 @@
   }
 
   function showImageResultPanel(result, resolvedPageUrl) {
+    if (result.verdict === 'rate_limited') {
+      showResultPanel(result);
+      return;
+    }
+
     const score = result.authenticity_score;
     const color = imgScoreColor(score);
     const label = IMG_VERDICT_LABELS[result.verdict] || result.verdict;

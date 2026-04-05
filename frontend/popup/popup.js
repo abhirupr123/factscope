@@ -71,6 +71,33 @@ chrome.storage.local.get('factscope_history', (data) => {
   renderHistory(data.factscope_history);
 });
 
+/* ── Usage bar ──────────────────────────────────────────────────── */
+
+const usageBar = document.getElementById('usage-bar');
+const usageTier = document.getElementById('usage-tier');
+const usageText = document.getElementById('usage-text');
+const usageFill = document.getElementById('usage-fill');
+
+function updateUsageUI(info) {
+  if (!info || info.error) return;
+  usageBar.style.display = 'block';
+
+  usageTier.textContent = info.tier;
+  usageTier.className = 'tier-badge ' + info.tier;
+
+  const used = info.used || 0;
+  const limit = info.limit || 10;
+  const remaining = info.remaining ?? (limit - used);
+  usageText.textContent = `${used}/${limit} scans today`;
+
+  const pct = Math.min(100, (used / limit) * 100);
+  usageFill.style.width = pct + '%';
+  usageFill.className = 'progress-fill' +
+    (pct >= 90 ? ' danger' : pct >= 70 ? ' warning' : '');
+}
+
+chrome.runtime.sendMessage({ type: 'get-usage' }, updateUsageUI);
+
 clearBtn.addEventListener('click', () => {
   chrome.storage.local.remove('factscope_history', () => {
     renderHistory([]);
@@ -96,4 +123,35 @@ scanButton.addEventListener('click', async () => {
     console.error('FactScope scan trigger failed:', err);
     resultEl.textContent = 'Could not trigger the scan. Check permissions and reload the page.';
   }
+});
+
+/* ── License key redemption ─────────────────────────────────────── */
+
+const redeemBtn = document.getElementById('redeem-btn');
+const licenseInput = document.getElementById('license-key');
+const redeemMsg = document.getElementById('redeem-msg');
+
+redeemBtn.addEventListener('click', () => {
+  const key = licenseInput.value.trim();
+  if (!key) return;
+
+  redeemBtn.disabled = true;
+  redeemBtn.textContent = '...';
+  redeemMsg.textContent = '';
+  redeemMsg.className = 'redeem-msg';
+
+  chrome.runtime.sendMessage({ type: 'redeem-key', key }, (resp) => {
+    redeemBtn.disabled = false;
+    redeemBtn.textContent = 'Activate';
+
+    if (resp?.success) {
+      redeemMsg.textContent = `Upgraded to ${resp.tier}!`;
+      redeemMsg.className = 'redeem-msg success';
+      licenseInput.value = '';
+      chrome.runtime.sendMessage({ type: 'get-usage' }, updateUsageUI);
+    } else {
+      redeemMsg.textContent = resp?.message || 'Invalid or used key.';
+      redeemMsg.className = 'redeem-msg error';
+    }
+  });
 });
