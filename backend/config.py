@@ -51,6 +51,12 @@ GOOGLE_FACTCHECK_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY")
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
+# ── Rate limiting / tiers ─────────────────────────────────────────────────────
+SCAN_LIMITS = {"free": 10, "standard": 50, "premium": 200}
+ADMIN_USER_IDS = set(
+    uid.strip() for uid in os.getenv("ADMIN_USER_IDS", "").split(",") if uid.strip()
+)
+
 # ── Deployment ───────────────────────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8000"))
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")

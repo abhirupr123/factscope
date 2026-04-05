@@ -308,6 +308,29 @@ _SCHEMA_STATEMENTS = [
         VALUES ('delete', old.id, old.claim_text, old.counter_claim);
     END""",
 
+    # ── User scan tracking (rate limiting) ─────────────────────────────
+    """CREATE TABLE IF NOT EXISTS user_scans (
+        user_id    TEXT NOT NULL,
+        scan_date  TEXT NOT NULL,
+        scan_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, scan_date)
+    )""",
+
+    # ── User tiers ──────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS user_tiers (
+        user_id     TEXT PRIMARY KEY,
+        tier        TEXT NOT NULL DEFAULT 'free',
+        license_key TEXT
+    )""",
+
+    # ── License keys ────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS license_keys (
+        key        TEXT PRIMARY KEY,
+        tier       TEXT NOT NULL DEFAULT 'standard',
+        active     INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    )""",
+
     # ── Shared results (shareable links) ───────────────────────────────
     """CREATE TABLE IF NOT EXISTS shared_results (
         id            TEXT PRIMARY KEY,
@@ -1121,6 +1144,89 @@ def get_shared_result(share_id: str) -> dict | None:
         return d
     except Exception as exc:
         logger.debug("Shared result lookup failed: %s", exc)
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rate limiting / tiers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def get_user_tier(user_id: str) -> str:
+    if not user_id:
+        return "free"
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT tier FROM user_tiers WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return row["tier"] if row else "free"
+    except Exception:
+        return "free"
+
+
+def get_daily_scan_count(user_id: str, scan_date: str) -> int:
+    if not user_id:
+        return 0
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT scan_count FROM user_scans WHERE user_id = ? AND scan_date = ?",
+            (user_id, scan_date),
+        ).fetchone()
+        return row["scan_count"] if row else 0
+    except Exception:
+        return 0
+
+
+def increment_daily_scan(user_id: str, scan_date: str) -> int:
+    if not user_id:
+        return 0
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO user_scans (user_id, scan_date, scan_count)
+               VALUES (?, ?, 1)
+               ON CONFLICT(user_id, scan_date)
+               DO UPDATE SET scan_count = scan_count + 1""",
+            (user_id, scan_date),
+        )
+        _commit_and_sync()
+        row = conn.execute(
+            "SELECT scan_count FROM user_scans WHERE user_id = ? AND scan_date = ?",
+            (user_id, scan_date),
+        ).fetchone()
+        return row["scan_count"] if row else 1
+    except Exception as exc:
+        logger.warning("Failed to increment scan count: %s", exc)
+        return 0
+
+
+def redeem_license_key(user_id: str, key: str) -> str | None:
+    if not user_id or not key:
+        return None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT tier, active FROM license_keys WHERE key = ?", (key,)
+        ).fetchone()
+        if not row or not row["active"]:
+            return None
+        tier = row["tier"]
+        conn.execute(
+            "UPDATE license_keys SET active = 0 WHERE key = ?", (key,)
+        )
+        conn.execute(
+            """INSERT INTO user_tiers (user_id, tier, license_key)
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id)
+               DO UPDATE SET tier = ?, license_key = ?""",
+            (user_id, tier, key, tier, key),
+        )
+        _commit_and_sync()
+        return tier
+    except Exception as exc:
+        logger.warning("License key redemption failed: %s", exc)
         return None
 
 

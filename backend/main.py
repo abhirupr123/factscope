@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
@@ -13,17 +13,20 @@ from db import (store_image_scan, find_image_scan, add_community_flag,
                 get_community_notes, store_vote, get_vote_stats,
                 should_invalidate_cache, graduate_flags_to_fact,
                 search_knowledge_base, VALID_FLAG_CATEGORIES,
-                store_shared_result, get_shared_result)
+                store_shared_result, get_shared_result,
+                get_user_tier, get_daily_scan_count,
+                increment_daily_scan, redeem_license_key)
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
-from config import TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL
+from config import TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL, SCAN_LIMITS, ADMIN_USER_IDS
 import json
 import re
 import uvicorn
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +46,40 @@ LLM_WEIGHT = 0.65
 STRUCTURAL_WEIGHT = 0.35
 
 _bg_pool = ThreadPoolExecutor(max_workers=3)
+
+
+def _check_rate_limit(user_id: str | None) -> dict | None:
+    """Return None if under limit, or an error dict if over."""
+    uid = user_id or "anonymous"
+    if uid in ADMIN_USER_IDS:
+        return None
+    tier = get_user_tier(uid)
+    limit = SCAN_LIMITS.get(tier, SCAN_LIMITS["free"])
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    count = get_daily_scan_count(uid, today)
+    if count >= limit:
+        tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+        return {
+            "error": "rate_limited",
+            "tier": tier,
+            "used": count,
+            "limit": limit,
+            "resets_at": tomorrow,
+        }
+    return None
+
+
+def _increment_and_get_remaining(user_id: str | None) -> int:
+    uid = user_id or "anonymous"
+    if uid in ADMIN_USER_IDS:
+        return 999
+    tier = get_user_tier(uid)
+    limit = SCAN_LIMITS.get(tier, SCAN_LIMITS["free"])
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    new_count = increment_daily_scan(uid, today)
+    return max(0, limit - new_count)
 
 
 class VideoInfo(BaseModel):
@@ -140,6 +177,7 @@ class AnalyzeResponse(BaseModel):
     kb_matches: Optional[list[dict]] = None
     fingerprint: Optional[str] = None
     claims_pending: Optional[bool] = None
+    scans_remaining: Optional[int] = None
 
 
 class FlagRequest(BaseModel):
@@ -188,6 +226,7 @@ class ImageVerifyResponse(BaseModel):
     community_flags: Optional[int] = None
     community_notes: Optional[list[CommunityNote]] = None
     vote_stats: Optional[VoteStats] = None
+    scans_remaining: Optional[int] = None
 
 
 MAX_IMAGE_BYTES = 1_500_000  # ~1.5 MB limit to keep tokens low
@@ -262,9 +301,14 @@ def _fetch_and_resize_image(url: str) -> tuple[bytes, str] | tuple[None, None]:
         return None, None
 
 
-@app.post("/analyze/verify-image", response_model=ImageVerifyResponse)
+@app.post("/analyze/verify-image")
 async def verify_image(request: ImageVerifyRequest):
     """Verify an image for AI generation, manipulation, or misuse."""
+
+    # ── Rate limit check ──────────────────────────────────────────────
+    rl = _check_rate_limit(request.user_id)
+    if rl:
+        return JSONResponse(status_code=429, content=rl)
 
     img_fp = f"img:{url_hash(request.image_url)}"
 
@@ -285,6 +329,7 @@ async def verify_image(request: ImageVerifyRequest):
             community_flags=img_flags if img_flags >= 3 else None,
             community_notes=img_notes,
             vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
+            scans_remaining=_increment_and_get_remaining(request.user_id),
         )
 
     image_data, media_type = _fetch_and_resize_image(request.image_url)
@@ -470,6 +515,7 @@ async def verify_image(request: ImageVerifyRequest):
         community_flags=img_flags if img_flags >= 3 else None,
         community_notes=img_notes,
         vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
+        scans_remaining=_increment_and_get_remaining(request.user_id),
     )
 
 
@@ -563,9 +609,14 @@ async def fetch_community_notes(fingerprint: str):
     }
 
 
-@app.post("/analyze", response_model=AnalyzeResponse)
+@app.post("/analyze")
 async def analyze_page(request: AnalyzeRequest):
     """Unified endpoint for the browser extension."""
+
+    # ── Rate limit check ──────────────────────────────────────────────
+    rl = _check_rate_limit(request.user_id)
+    if rl:
+        return JSONResponse(status_code=429, content=rl)
 
     # ── Fingerprint check (instant cache) ─────────────────────────────
     fp_input = ""
@@ -619,6 +670,7 @@ async def analyze_page(request: AnalyzeRequest):
                 community_notes=notes,
                 vote_stats=VoteStats(**v_stats) if (v_stats["likes"] + v_stats["dislikes"]) > 0 else None,
                 fingerprint=fingerprint,
+                scans_remaining=_increment_and_get_remaining(request.user_id),
             )
         elif cached:
             logger.info("Cache invalidated by votes for %s, re-analyzing", fingerprint[:16])
@@ -893,6 +945,7 @@ async def analyze_page(request: AnalyzeRequest):
         kb_matches=kb_response,
         fingerprint=fingerprint,
         claims_pending=claims_pending if claims_pending else None,
+        scans_remaining=_increment_and_get_remaining(request.user_id),
     )
 
 
@@ -1184,6 +1237,56 @@ async def get_model_info():
         "multimodal_model": {"id": MULTIMODAL_MODEL_ID, "max_tokens": max(DEFAULT_MAX_TOKENS, 800)},
         "scoring": {"llm_weight": LLM_WEIGHT, "structural_weight": STRUCTURAL_WEIGHT},
         "temperature": DEFAULT_TEMPERATURE,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rate-limit / Usage endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/user/usage")
+async def user_usage(user_id: str = ""):
+    uid = user_id or "anonymous"
+    tier = get_user_tier(uid)
+    limit = SCAN_LIMITS.get(tier, SCAN_LIMITS["free"])
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    used = get_daily_scan_count(uid, today)
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+    is_admin = uid in ADMIN_USER_IDS
+    return {
+        "tier": tier,
+        "limit": limit,
+        "used": used,
+        "remaining": max(0, limit - used) if not is_admin else 999,
+        "resets_at": tomorrow,
+        "admin": is_admin,
+    }
+
+
+class RedeemRequest(BaseModel):
+    user_id: str
+    key: str
+
+
+@app.post("/redeem-key")
+async def redeem_key(req: RedeemRequest):
+    new_tier = redeem_license_key(req.user_id, req.key)
+    if not new_tier:
+        return JSONResponse(status_code=400, content={
+            "error": "invalid_key",
+            "message": "This license key is invalid or has already been used.",
+        })
+    limit = SCAN_LIMITS.get(new_tier, SCAN_LIMITS["free"])
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    used = get_daily_scan_count(req.user_id, today)
+    return {
+        "success": True,
+        "tier": new_tier,
+        "limit": limit,
+        "remaining": max(0, limit - used),
     }
 
 
