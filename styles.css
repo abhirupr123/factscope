@@ -557,12 +557,66 @@ h1 {
   .step-arrow { transform: rotate(90deg); }
   .free-highlights { grid-template-columns: 1fr; }
   .nav-links { display: none; }
+  .section { padding: 60px 0; }
+  .footer-inner { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .footer-links { margin-left: 0; }
 }
 
 @media (max-width: 600px) {
-  .grid-3 { grid-template-columns: 1fr; }
+  body { font-size: 16px; }
+  .container-wide { padding: 0 16px; }
+
+  .nav-inner { height: 56px; gap: 10px; }
+  .brand { font-size: 20px; gap: 8px; }
+  .brand-logo { width: 26px; height: 26px; }
+  .btn-sm { padding: 8px 14px; font-size: 14px; }
+
+  .hero { padding: 32px 0 28px; }
   .hero-panel { display: none; }
-  h1 { font-size: 32px; }
+
+  h1 { font-size: 28px; margin-bottom: 14px; }
+  .kicker { font-size: 13px; padding: 6px 12px; margin-bottom: 16px; }
+  .subhead { font-size: 16px; margin-bottom: 24px; }
+  .meta-row { font-size: 13px; gap: 12px; }
+
+  .cta-row { flex-direction: column; gap: 10px; }
+  .btn-lg { padding: 14px 24px; font-size: 16px; width: 100%; }
+  .btn-ghost { width: 100%; font-size: 15px; }
+
+  .section { padding: 40px 0; }
+  .section-header { margin-bottom: 28px; }
+  .section-header h2 { font-size: 24px; }
+  .section-sub { font-size: 16px; }
+
+  .grid-3 { grid-template-columns: 1fr; gap: 14px; }
+  .feature-card { padding: 22px 18px; }
+  .feature-icon { font-size: 28px; margin-bottom: 10px; }
+  .feature-card h3 { font-size: 18px; }
+  .feature-card p { font-size: 15px; }
+
+  .step-card { padding: 24px 18px; }
+  .step-number { width: 44px; height: 44px; font-size: 20px; }
+  .step-card h3 { font-size: 18px; }
+  .step-card p { font-size: 15px; }
+  .step-arrow { font-size: 24px; }
+
+  .free-badge-large { font-size: 16px; padding: 6px 20px; margin-bottom: 16px; }
+  .free-banner-content h2 { font-size: 22px; }
+  .free-highlights { gap: 12px; }
+  .free-highlight-item { padding: 18px 16px; gap: 12px; }
+  .free-highlight-icon { font-size: 24px; }
+  .free-highlight-item strong { font-size: 16px; }
+  .free-highlight-item span { font-size: 14px; }
+
+  .cta-banner h2 { font-size: 24px; }
+  .cta-banner p { font-size: 16px; }
+
+  .footer { padding: 24px 0 32px; }
+  .footer-inner { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .footer-brand { font-size: 16px; }
+  .footer-links { margin-left: 0; flex-wrap: wrap; gap: 14px; }
+  .footer-links a { font-size: 14px; }
+  .footer-copy { font-size: 13px; }
 }
 
 /* ═══ Animations ═══════════════════════════════════════════════════════ */
