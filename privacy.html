@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy — FactScope</title>
+<meta name="description" content="FactScope privacy policy. Learn what data we collect, how we use it, and your rights.">
+<link rel="icon" href="assets/factscope-logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .policy { max-width: 1100px; margin: 0 auto; padding: 80px 60px 100px; }
+  .policy h1 { font-size: 47px; margin-bottom: 10px; letter-spacing: -0.03em; }
+  .policy .updated { color: var(--muted2); font-size: 21px; margin-bottom: 48px; }
+  .policy h2 { font-size: 31px; margin: 44px 0 16px; letter-spacing: -0.02em; }
+  .policy p, .policy li { color: var(--muted); font-size: 23px; line-height: 1.8; }
+  .policy p { margin-bottom: 16px; }
+  .policy ul { padding-left: 24px; margin-bottom: 16px; }
+  .policy li { margin-bottom: 8px; }
+  .policy strong { color: var(--text); }
+  .policy a { color: var(--accent-light); text-decoration: underline; text-underline-offset: 3px; }
+  .policy a:hover { color: var(--text); }
+  @media (max-width: 600px) { .policy { padding: 40px 24px 60px; } }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner container-wide">
+    <a class="brand" href="index.html">
+      <svg class="brand-logo" viewBox="0 0 100 100" width="32" height="32">
+        <circle cx="50" cy="50" r="46" fill="#4F46E5"/>
+        <circle cx="50" cy="50" r="38" fill="#6366F1"/>
+        <circle cx="50" cy="50" r="30" fill="#4F46E5"/>
+        <polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="brand-name">FactScope</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#how-it-works">How It Works</a>
+      <a href="index.html#pricing">Pricing</a>
+      <a href="privacy.html">Privacy</a>
+    </nav>
+    <a class="btn btn-primary btn-sm" href="index.html#install">Add to Chrome</a>
+  </div>
+</header>
+
+<main class="policy">
+
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: February 27, 2026</p>
+
+  <p>FactScope is designed to help you verify online content. We take your privacy seriously. This policy explains what data we handle, how we use it, and what we don't do.</p>
+
+  <h2>What we collect</h2>
+  <p>When you scan a page or image using FactScope, the following data is sent to our servers for analysis:</p>
+  <ul>
+    <li><strong>Page content excerpts</strong> — The text, title, and metadata of the page you choose to scan. This is only sent when you explicitly click "Scan" or right-click an image.</li>
+    <li><strong>Image data</strong> — When you verify an image, the image URL (or the image itself for context-menu scans) is sent for AI analysis.</li>
+    <li><strong>Anonymous user ID</strong> — A random identifier generated locally in your browser (not tied to your identity) used for rate limiting and community features.</li>
+    <li><strong>Community contributions</strong> — If you flag content or vote on accuracy, that action is stored along with your anonymous ID.</li>
+    <li><strong>Scan metadata</strong> — The domain name and timestamp of each scan, used for caching and trend detection.</li>
+  </ul>
+
+  <h2>What we do NOT collect</h2>
+  <ul>
+    <li>No personal information (name, email, address, phone number)</li>
+    <li>No passwords or authentication credentials</li>
+    <li>No browsing history — we never track which pages you visit</li>
+    <li>No cookies or cross-site tracking identifiers</li>
+    <li>No data from pages you don't explicitly scan</li>
+  </ul>
+
+  <h2>How your data is processed</h2>
+  <p>When you scan content, the following happens:</p>
+  <ul>
+    <li>Page text is sent to <strong>Google's Gemini API</strong> for AI-powered trust analysis. Google processes this data according to their <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener">Gemini API Terms of Service</a>.</li>
+    <li>Extracted claims are checked against <strong>Google News RSS</strong> (a public feed) and the <strong>Google Fact Check API</strong> for news corroboration. No personal data is shared in these queries.</li>
+    <li>Results are cached in our database to speed up future scans of the same content.</li>
+  </ul>
+
+  <h2>Data storage</h2>
+  <p>Scan results and community data are stored in <strong>Turso</strong>, a SQLite-compatible cloud database. Pattern matching data may also be indexed in <strong>Elasticsearch</strong>. All data is anonymized — no scan result is tied to a real identity.</p>
+
+  <h2>Third-party services</h2>
+  <ul>
+    <li><strong>Google Gemini API</strong> — AI analysis of page content and images</li>
+    <li><strong>Google News RSS &amp; Fact Check API</strong> — Claim corroboration against published news</li>
+    <li><strong>Render</strong> — Backend hosting</li>
+    <li><strong>Turso</strong> — Database storage</li>
+  </ul>
+
+  <h2>Data retention</h2>
+  <ul>
+    <li><strong>Scan results</strong> are cached for performance. Cached data may be retained for up to 30 days.</li>
+    <li><strong>Community flags and votes</strong> are stored indefinitely to build collective trust signals.</li>
+    <li><strong>No personal data</strong> is retained because none is collected.</li>
+  </ul>
+
+  <h2>Your rights</h2>
+  <p>Since FactScope does not collect personal information, there is no personal data to access, correct, or delete. However:</p>
+  <ul>
+    <li>You can <strong>uninstall the extension</strong> at any time to stop all data transmission.</li>
+    <li>You can <strong>clear extension data</strong> through Chrome settings (chrome://extensions) to reset your anonymous ID.</li>
+    <li>Community contributions (flags, votes) linked to your anonymous ID cannot currently be deleted individually, as they are anonymized.</li>
+  </ul>
+
+  <h2>Children's privacy</h2>
+  <p>FactScope is not directed at children under 13. We do not knowingly collect data from children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>We may update this policy as the product evolves. Material changes will be noted on this page with an updated date.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this privacy policy? Reach out at <strong>factscope@gmail.com</strong>.</p>
+
+</main>
+
+<footer class="footer">
+  <div class="container-wide footer-inner">
+    <div class="footer-brand">
+      <svg viewBox="0 0 100 100" width="24" height="24"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>FactScope</span>
+    </div>
+    <div class="footer-links">
+      <a href="privacy.html">Privacy Policy</a>
+      <a href="https://github.com/ARS-Technica/factscope" target="_blank" rel="noopener">GitHub</a>
+      <a href="#">Chrome Web Store</a>
+    </div>
+    <div class="footer-copy">&copy; 2025&ndash;2026 FactScope. Licensed under AGPL-3.0.</div>
+  </div>
+</footer>
+
+</body>
+</html>
