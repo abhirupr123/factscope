@@ -307,10 +307,12 @@ def extract_claims(text: str, title: str = "") -> list[str]:
         user_content = f"ARTICLE TITLE: {title}\n\n"
     user_content += text[:2500]
     try:
+        from config import FLAG_VALIDATION_MODEL
         raw = _call_llm(
             CLAIM_EXTRACTION_PROMPT,
             user_content,
             min_tokens=512,
+            model_override=FLAG_VALIDATION_MODEL,
         )
         raw = raw.strip()
         match = re.search(r"\[[\s\S]*\]", raw)
