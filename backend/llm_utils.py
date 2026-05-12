@@ -154,12 +154,14 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
     model_name = model_override or GEMINI_MODEL
     is_gemma = "gemma" in model_name.lower()
 
+    gen_config = {
+        "temperature": DEFAULT_TEMPERATURE,
+        "max_output_tokens": max_tokens,
+    }
+
     model_kwargs = {
         "model_name": model_name,
-        "generation_config": genai.GenerationConfig(
-            temperature=DEFAULT_TEMPERATURE,
-            max_output_tokens=max_tokens,
-        ),
+        "generation_config": genai.GenerationConfig(**gen_config),
     }
     if not is_gemma:
         model_kwargs["system_instruction"] = system_prompt
@@ -176,8 +178,34 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
         for emime, edata in extra_images:
             parts.append({"mime_type": emime, "data": edata})
 
-    response = model.generate_content(parts)
-    return response.text
+    import time
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = model.generate_content(parts)
+            # Gemma 4 models are "thinking" models that return thought + response parts.
+            # Extract only the non-thought text.
+            try:
+                text_parts = []
+                for candidate in response.candidates:
+                    for part in candidate.content.parts:
+                        if hasattr(part, "thought") and part.thought:
+                            continue
+                        if hasattr(part, "text") and part.text:
+                            text_parts.append(part.text)
+                if text_parts:
+                    return "\n".join(text_parts)
+            except Exception:
+                pass
+            return response.text
+        except Exception as e:
+            last_err = e
+            if "500" in str(e) and attempt < 2:
+                logger.warning("Gemini 500 error (attempt %d/3), retrying: %s", attempt + 1, e)
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise
+    raise last_err
 
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────

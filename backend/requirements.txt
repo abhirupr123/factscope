@@ -11,6 +11,6 @@ libsql-experimental>=0.0.55
 gunicorn>=21.2.0
 
 # LLM providers (install the one you need, or all three)
-google-generativeai>=0.8.0
+google-generativeai>=0.8.6
 openai>=1.60.0
 boto3>=1.35.0
