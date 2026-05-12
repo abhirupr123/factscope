@@ -315,11 +315,20 @@ def extract_claims(text: str, title: str = "") -> list[str]:
             model_override=FLAG_VALIDATION_MODEL,
         )
         raw = raw.strip()
-        match = re.search(r"\[[\s\S]*\]", raw)
-        if not match:
-            logger.info("Claim extraction: no JSON array found in LLM response")
+        # Find the JSON array — try from each '[' until one parses
+        claims = None
+        for m in re.finditer(r"\[", raw):
+            substr = raw[m.start():]
+            try:
+                decoded, end_idx = json.JSONDecoder().raw_decode(substr)
+                if isinstance(decoded, list):
+                    claims = decoded
+                    break
+            except json.JSONDecodeError:
+                continue
+        if claims is None:
+            logger.info("Claim extraction: no valid JSON array in LLM response")
             return []
-        claims = json.loads(match.group())
         if not isinstance(claims, list):
             logger.info("Claim extraction: LLM returned non-list JSON")
             return []
