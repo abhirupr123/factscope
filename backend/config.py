@@ -24,7 +24,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
 
 # Gemini (default)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-4-31b-it")
 
 # OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -38,7 +38,7 @@ TEXT_MODEL_ID = os.getenv("TEXT_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1
 MULTIMODAL_MODEL_ID = os.getenv("MULTIMODAL_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
 
 # Light model for flag validation (separate from main analysis model)
-FLAG_VALIDATION_MODEL = os.getenv("FLAG_VALIDATION_MODEL", "gemma-3-4b-it-latest")
+FLAG_VALIDATION_MODEL = os.getenv("FLAG_VALIDATION_MODEL", "gemma-4-26b-a4b-it")
 
 # ── Shared model parameters ──────────────────────────────────────────────────
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "500"))
