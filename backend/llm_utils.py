@@ -148,56 +148,56 @@ def _call_llm(
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
 def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override=None, extra_images=None):
-    import google.generativeai as genai
+    import requests, time
 
-    genai.configure(api_key=GEMINI_API_KEY)
     model_name = model_override or GEMINI_MODEL
     is_gemma = "gemma" in model_name.lower()
-
-    gen_config = {
-        "temperature": DEFAULT_TEMPERATURE,
-        "max_output_tokens": max_tokens,
-    }
-
-    model_kwargs = {
-        "model_name": model_name,
-        "generation_config": genai.GenerationConfig(**gen_config),
-    }
-    if not is_gemma:
-        model_kwargs["system_instruction"] = system_prompt
-
-    model = genai.GenerativeModel(**model_kwargs)
 
     if is_gemma and system_prompt:
         user_content = f"[INSTRUCTIONS]\n{system_prompt}\n\n[CONTENT]\n{user_content}"
 
-    parts = [user_content]
+    parts = [{"text": user_content}]
     if media_data and media_type and media_type.startswith("image/"):
-        parts.append({"mime_type": media_type, "data": media_data})
+        parts.append({"inline_data": {"mime_type": media_type, "data": base64.b64encode(media_data).decode()}})
     if extra_images:
         for emime, edata in extra_images:
-            parts.append({"mime_type": emime, "data": edata})
+            parts.append({"inline_data": {"mime_type": emime, "data": base64.b64encode(edata).decode()}})
 
-    import time
+    body = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "temperature": DEFAULT_TEMPERATURE,
+            "maxOutputTokens": max_tokens,
+            "thinkingConfig": {"thinkingLevel": "MINIMAL"},
+        },
+    }
+
+    if not is_gemma and system_prompt:
+        body["system_instruction"] = {"parts": [{"text": system_prompt}]}
+        body["generationConfig"].pop("thinkingConfig", None)
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+
     last_err = None
     for attempt in range(3):
         try:
-            response = model.generate_content(parts)
-            # Gemma 4 models are "thinking" models that return thought + response parts.
-            # Extract only the non-thought text.
-            try:
-                text_parts = []
-                for candidate in response.candidates:
-                    for part in candidate.content.parts:
-                        if hasattr(part, "thought") and part.thought:
-                            continue
-                        if hasattr(part, "text") and part.text:
-                            text_parts.append(part.text)
-                if text_parts:
-                    return "\n".join(text_parts)
-            except Exception:
-                pass
-            return response.text
+            resp = requests.post(url, json=body, timeout=90)
+            if resp.status_code != 200:
+                raise RuntimeError(f"{resp.status_code} {resp.text[:300]}")
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                feedback = data.get("promptFeedback", {})
+                raise RuntimeError(f"No candidates returned. Prompt feedback: {feedback}")
+            text_parts = []
+            for part in candidates[0].get("content", {}).get("parts", []):
+                if part.get("thought"):
+                    continue
+                if part.get("text"):
+                    text_parts.append(part["text"])
+            if text_parts:
+                return "\n".join(text_parts)
+            raise RuntimeError("No text in response parts")
         except Exception as e:
             last_err = e
             if "500" in str(e) and attempt < 2:
