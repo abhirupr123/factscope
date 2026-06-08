@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FactScope",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered misinformation detection. Scan any page or image for trust signals, fact-checks, and community verification.",
   "permissions": [
     "storage",
