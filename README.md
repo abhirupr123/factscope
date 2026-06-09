@@ -69,7 +69,7 @@ FactScope does not collect any personal information.
 - Only the content you explicitly choose to scan is processed
 - Your identity is fully anonymous
 
-Read the full [privacy policy](frontend/site/privacy.html).
+Read the full [privacy policy](https://factscope.netlify.app/privacy).
 
 ---
 
