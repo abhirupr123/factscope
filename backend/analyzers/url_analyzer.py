@@ -2,6 +2,7 @@ import requests
 from urllib.parse import urlparse
 from llm_utils import get_llm_judgement
 from typing import Dict, Any
+from safe_fetch import safe_get, UnsafeURLError, ResponseTooLargeError
 
 try:
     from bs4 import BeautifulSoup
@@ -45,23 +46,18 @@ async def analyze(url: str) -> Dict[str, Any]:
             'Connection': 'keep-alive',
         }
         
-        # Fetch the URL content with timeout
-        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True, stream=True)
-        response.raise_for_status()
-        
-        # Check content length to avoid downloading huge files
-        content_length = response.headers.get('content-length')
-        if content_length and int(content_length) > 50 * 1024 * 1024:  # 50MB limit
-            return {
-                "type": "url",
-                "url": url,
-                "error": f"Content too large: {content_length} bytes (50MB limit)",
-                "judgement": "Cannot analyze - content exceeds size limit"
-            }
-        
-        content_type = response.headers.get('content-type', '').lower()
-        
-        # Read the actual content
+        response = safe_get(
+            url,
+            max_bytes=5 * 1024 * 1024,
+            timeout=15,
+            max_redirects=3,
+            allowed_content_prefixes=("text/", "image/", "application/pdf", "application/xhtml+xml"),
+            headers=headers,
+        )
+        url = response.final_url
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc
+        content_type = response.content_type
         response_content = response.content
         
         # Handle different content types
@@ -74,6 +70,13 @@ async def analyze(url: str) -> Dict[str, Any]:
         else:
             return await _analyze_generic_content(url, domain, response_content.decode('utf-8', errors='ignore'), content_type)
             
+    except (UnsafeURLError, ResponseTooLargeError) as e:
+        return {
+            "type": "url",
+            "url": url,
+            "error": "URL blocked by outbound request policy",
+            "judgement": f"Cannot analyze this URL safely: {str(e)}"
+        }
     except requests.exceptions.RequestException as e:
         return {
             "type": "url",

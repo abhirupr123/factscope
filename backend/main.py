@@ -1,13 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor, Future
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, find_flagged_similar, find_trusted_similar, get_domain_profile
-from db import (store_image_scan, find_image_scan, add_community_flag,
+from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, add_community_flag,
                 get_flag_count, has_user_flagged, count_scans_for_fingerprint,
                 update_scan_claims, get_scan_claims, url_hash,
                 get_community_notes, store_vote, get_vote_stats,
@@ -21,7 +21,11 @@ from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
-from config import TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL, SCAN_LIMITS, ADMIN_USER_IDS
+from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
+                    DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL, SCAN_LIMITS,
+                    ADMIN_USER_IDS, ENVIRONMENT, MAX_REQUEST_BYTES,
+                    CORS_ALLOWED_ORIGINS)
+from safe_fetch import safe_get, UnsafeURLError, ResponseTooLargeError
 import json
 import re
 import uvicorn
@@ -30,17 +34,89 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
+
+class RequestTooLargeError(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Enforce the body limit even for chunked requests without Content-Length."""
+
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise RequestTooLargeError
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except RequestTooLargeError:
+            response = JSONResponse(
+                status_code=413,
+                content={"error": "request_too_large"},
+            )
+            await response(scope, receive, send)
+
+
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="FactScope API", version="0.4.0")
+app = FastAPI(
+    title="FactScope API",
+    version="0.4.0",
+    docs_url=None if ENVIRONMENT == "production" else "/docs",
+    redoc_url=None if ENVIRONMENT == "production" else "/redoc",
+    openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+
+
+
+@app.middleware("http")
+async def enforce_request_limits(request: Request, call_next):
+    """Reject oversized requests and add baseline browser security headers."""
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "request_too_large"},
+                )
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "invalid_content_length"})
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/s/"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'"
+        )
+    return response
 
 LLM_WEIGHT = 0.65
 STRUCTURAL_WEIGHT = 0.35
@@ -103,9 +179,9 @@ class PageMetadata(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    url: Optional[str] = None
-    title: Optional[str] = None
-    text: Optional[str] = None
+    url: Optional[str] = Field(default=None, max_length=2048)
+    title: Optional[str] = Field(default=None, max_length=500)
+    text: Optional[str] = Field(default=None, max_length=100000)
     links: Optional[list[str]] = None
     metadata: Optional[PageMetadata] = None
     video_info: Optional[VideoInfo] = None
@@ -181,10 +257,10 @@ class AnalyzeResponse(BaseModel):
 
 
 class FlagRequest(BaseModel):
-    fingerprint: str
+    fingerprint: str = Field(min_length=16, max_length=128)
     user_id: str
     category: str
-    justification: str
+    justification: str = Field(min_length=30, max_length=500)
     source_urls: Optional[list[str]] = None
 
 
@@ -209,9 +285,9 @@ class VoteResponse(BaseModel):
 
 
 class ImageVerifyRequest(BaseModel):
-    image_url: str
-    page_url: Optional[str] = None
-    page_text: Optional[str] = None
+    image_url: str = Field(min_length=8, max_length=2048)
+    page_url: Optional[str] = Field(default=None, max_length=2048)
+    page_text: Optional[str] = Field(default=None, max_length=5000)
     social_context: Optional[dict] = None
     user_id: Optional[str] = None
 
@@ -256,33 +332,31 @@ def _crop_bottom_edge(image_data: bytes) -> bytes | None:
 
 def _fetch_and_resize_image(url: str) -> tuple[bytes, str] | tuple[None, None]:
     """Fetch an image from URL and resize to save LLM tokens."""
-    import requests as req
     from io import BytesIO
 
     try:
-        resp = req.get(url, timeout=10, stream=True, headers={
-            "User-Agent": "FactScope/1.0",
-        })
-        if resp.status_code != 200:
-            logger.warning("Image fetch failed: %d", resp.status_code)
-            return None, None
-
-        content_type = resp.headers.get("content-type", "image/jpeg")
-        if not content_type.startswith("image/"):
-            return None, None
-
-        raw = resp.content
-        if len(raw) > 10_000_000:
-            logger.warning("Image too large: %d bytes", len(raw))
-            return None, None
+        fetched = safe_get(
+            url,
+            max_bytes=5_000_000,
+            timeout=10,
+            max_redirects=3,
+            allowed_content_prefixes=("image/",),
+        )
+        raw = fetched.content
+        content_type = fetched.content_type or "image/jpeg"
 
         try:
             from PIL import Image
+            Image.MAX_IMAGE_PIXELS = 20_000_000
             img = Image.open(BytesIO(raw))
-            if img.mode == "RGBA":
+            w, h = img.size
+            if w <= 0 or h <= 0 or w * h > 20_000_000:
+                logger.warning("Image dimensions are unsafe: %sx%s", w, h)
+                return None, None
+            img.load()
+            if img.mode in {"RGBA", "P", "LA"}:
                 img = img.convert("RGB")
 
-            w, h = img.size
             if max(w, h) > MAX_IMAGE_DIM:
                 ratio = MAX_IMAGE_DIM / max(w, h)
                 img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
@@ -296,6 +370,9 @@ def _fetch_and_resize_image(url: str) -> tuple[bytes, str] | tuple[None, None]:
                 return None, None
             return raw, content_type
 
+    except (UnsafeURLError, ResponseTooLargeError) as exc:
+        logger.warning("Blocked unsafe image fetch: %s", exc)
+        return None, None
     except Exception as exc:
         logger.warning("Image fetch error: %s", exc)
         return None, None
@@ -964,24 +1041,47 @@ async def get_claims(fingerprint: str):
 
 
 class ShareRequest(BaseModel):
-    result_type: str = "page"
-    score: int
-    verdict: str
-    explanation: str = ""
-    evidence: list[str] = []
-    domain: str = ""
-    source_info: Optional[dict] = None
-    scanned_url: str = ""
-    scanned_title: str = ""
-    fingerprint: str = ""
-    og_image: str = ""
+    fingerprint: str = Field(min_length=16, max_length=128)
 
 
 @app.post("/share")
 async def create_share(request: ShareRequest):
-    """Store a result snapshot and return a shareable URL."""
-    from config import ENVIRONMENT
-    data = request.model_dump()
+    """Create a share only from a result already stored by FactScope."""
+    fingerprint = request.fingerprint
+    if fingerprint.startswith("img:"):
+        stored = find_image_scan_by_fingerprint(fingerprint)
+        if not stored:
+            raise HTTPException(status_code=404, detail="Stored analysis not found")
+        scanned_url = stored.get("image_url", "")
+        data = {
+            "result_type": "image",
+            "score": stored.get("authenticity_score", 50),
+            "verdict": stored.get("verdict", "uncertain"),
+            "explanation": stored.get("explanation", ""),
+            "evidence": stored.get("evidence", []),
+            "scanned_url": scanned_url,
+            "fingerprint": fingerprint,
+        }
+    else:
+        stored = find_by_fingerprint(fingerprint)
+        if not stored:
+            raise HTTPException(status_code=404, detail="Stored analysis not found")
+        scanned_url = stored.get("url", "") or ""
+        from urllib.parse import urlsplit
+        try:
+            domain = urlsplit(scanned_url).hostname or ""
+        except ValueError:
+            domain = ""
+        data = {
+            "result_type": "page",
+            "score": stored.get("trust_score", 50),
+            "verdict": stored.get("verdict", "uncertain"),
+            "explanation": stored.get("explanation", ""),
+            "evidence": stored.get("evidence", []),
+            "domain": domain,
+            "scanned_url": scanned_url,
+            "fingerprint": fingerprint,
+        }
     share_id = store_shared_result(data)
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
@@ -995,9 +1095,25 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     import math
     from urllib.parse import quote
 
-    score = data.get("score", 50)
-    verdict = data.get("verdict", "uncertain")
-    result_type = data.get("result_type", "page")
+    def _safe_http_url(value: object) -> str:
+        from urllib.parse import urlsplit
+        raw = str(value or "")
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            return ""
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ""
+        if parsed.username or parsed.password:
+            return ""
+        return raw
+
+    try:
+        score = max(0, min(100, int(data.get("score", 50))))
+    except (TypeError, ValueError):
+        score = 50
+    verdict = str(data.get("verdict", "uncertain"))[:50]
+    result_type = "image" if data.get("result_type") == "image" else "page"
 
     is_image = result_type == "image"
     score_label = "authenticity score" if is_image else "trust score"
@@ -1014,23 +1130,23 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         "manipulated": ("Manipulated", "\u26A0\uFE0F"),
         "phishing": ("Phishing Alert", "\U0001F6A8"),
     }
-    verdict_label, verdict_icon = verdict_map.get(verdict, (verdict.replace("_", " ").title(), "\u2753"))
+    verdict_label, verdict_icon = verdict_map.get(verdict, (_html.escape(verdict.replace("_", " ").title()), "\u2753"))
     color = "#22c55e" if score >= 70 else "#f59e0b" if score >= 40 else "#ef4444"
 
     # Full-circle gauge geometry (SVG circle r=78, circumference = 2*pi*78)
     circumference = 2 * math.pi * 78  # ~490.1
     dash_offset = circumference * (1 - score / 100)
 
-    domain = _html.escape(data.get("domain", "") or "")
-    scanned_url = data.get("scanned_url", "") or ""
+    domain = _html.escape(str(data.get("domain", "") or "")[:253], quote=True)
+    scanned_url = _safe_http_url(data.get("scanned_url", ""))
     scanned_title = _html.escape(data.get("scanned_title", "") or "")
-    og_image = _html.escape(data.get("og_image", "") or "")
+    og_image = _safe_http_url(data.get("og_image", ""))
 
     # OG image: use article's own image for rich social previews
     if og_image:
         og_image_meta = (
-            f'<meta property="og:image" content="{og_image}">'
-            f'\n<meta name="twitter:image" content="{og_image}">'
+            f'<meta property="og:image" content="{_html.escape(og_image, quote=True)}">'
+            f'\n<meta name="twitter:image" content="{_html.escape(og_image, quote=True)}">'
         )
     else:
         og_image_meta = ""
@@ -1040,7 +1156,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else ""
 
     if og_image:
-        image_block = f'<img class="preview-image" src="{og_image}" alt="Preview" onerror="this.style.display=\'none\'">'
+        image_block = f'<img class="preview-image" src="{_html.escape(og_image, quote=True)}" alt="Preview" onerror="this.style.display=\'none\'">'
     else:
         image_block = ""
 
@@ -1288,6 +1404,23 @@ async def redeem_key(req: RedeemRequest):
         "limit": limit,
         "remaining": max(0, limit - used),
     }
+
+
+if ENVIRONMENT == "production":
+    _DEVELOPMENT_ONLY_PATHS = {
+        "/debug/db-status",
+        "/debug/find/{fp}",
+        "/analyze/text",
+        "/analyze/image",
+        "/analyze/pdf",
+        "/analyze/video",
+        "/analyze/url",
+        "/models/info",
+    }
+    app.router.routes = [
+        route for route in app.router.routes
+        if getattr(route, "path", None) not in _DEVELOPMENT_ONLY_PATHS
+    ]
 
 
 if __name__ == "__main__":

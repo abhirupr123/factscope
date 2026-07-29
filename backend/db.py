@@ -25,7 +25,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "factscope.db"
+DB_PATH = Path(os.getenv("FACTSCOPE_DB_PATH", str(Path(__file__).parent / "factscope.db")))
 
 _TURSO_URL = os.getenv("TURSO_DATABASE_URL")
 _TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
@@ -346,6 +346,7 @@ _SCHEMA_STATEMENTS = [
         fingerprint   TEXT,
         og_image      TEXT,
         card_png      BLOB,
+        server_verified INTEGER NOT NULL DEFAULT 0,
         created_at    TEXT NOT NULL
     )""",
 ]
@@ -360,6 +361,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE shared_results ADD COLUMN fingerprint TEXT",
     "ALTER TABLE shared_results ADD COLUMN og_image TEXT",
     "ALTER TABLE shared_results ADD COLUMN card_png BLOB",
+    "ALTER TABLE shared_results ADD COLUMN server_verified INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -618,6 +620,26 @@ def find_image_scan(image_url: str, max_age_hours: int = 24) -> dict | None:
     except Exception as exc:
         logger.debug("Image scan lookup failed: %s", exc)
     return None
+
+
+def find_image_scan_by_fingerprint(fingerprint: str) -> dict | None:
+    """Return the latest stored image result for a server-issued fingerprint."""
+    if not fingerprint or not fingerprint.startswith("img:"):
+        return None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM image_scans WHERE url_hash = ? ORDER BY timestamp DESC LIMIT 1",
+            (fingerprint[4:],),
+        ).fetchone()
+        if not row:
+            return None
+        doc = dict(row)
+        doc["evidence"] = json.loads(doc["evidence"]) if doc.get("evidence") else []
+        return doc
+    except Exception as exc:
+        logger.debug("Image fingerprint lookup failed: %s", exc)
+        return None
 
 
 def count_image_verdicts(verdict: str) -> int:
@@ -1067,14 +1089,29 @@ def store_shared_result(data: dict) -> str:
                 "SELECT id FROM shared_results WHERE fingerprint = ?", (fp,)
             ).fetchone()
             if row:
+                conn.execute(
+                    """UPDATE shared_results
+                       SET result_type = ?, score = ?, verdict = ?, explanation = ?,
+                           evidence = ?, domain = ?, source_info = ?, scanned_url = ?,
+                           scanned_title = ?, og_image = ?, server_verified = 1 WHERE id = ?""",
+                    (
+                        data.get("result_type", "page"), int(data.get("score", 50)),
+                        data.get("verdict", "uncertain"), data.get("explanation", ""),
+                        json.dumps(data.get("evidence", [])), data.get("domain", ""),
+                        json.dumps(data.get("source_info")) if data.get("source_info") else None,
+                        data.get("scanned_url", ""), data.get("scanned_title", ""),
+                        data.get("og_image", ""), row[0],
+                    ),
+                )
+                _commit_and_sync()
                 return row[0]
 
         short_id = ''.join(_secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
         conn.execute(
             """INSERT INTO shared_results
                (id, result_type, score, verdict, explanation, evidence, domain, source_info,
-                scanned_url, scanned_title, fingerprint, og_image, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                scanned_url, scanned_title, fingerprint, og_image, server_verified, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 short_id,
                 data.get("result_type", "page"),
@@ -1088,6 +1125,7 @@ def store_shared_result(data: dict) -> str:
                 data.get("scanned_title", ""),
                 fp or None,
                 data.get("og_image", ""),
+                1,
                 datetime.utcnow().isoformat(),
             ),
         )
@@ -1133,7 +1171,7 @@ def get_shared_result(share_id: str) -> dict | None:
     try:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT * FROM shared_results WHERE id = ?",
+            "SELECT * FROM shared_results WHERE id = ? AND server_verified = 1",
             (share_id,),
         ).fetchone()
         if not row:

@@ -31,6 +31,26 @@ function relativeTime(ts) {
   return new Date(ts).toLocaleDateString();
 }
 
+function escapeHTML(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeHistoryURL(value) {
+  try {
+    const parsed = new URL(String(value ?? ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    if (parsed.username || parsed.password) return '';
+    return escapeHTML(parsed.href);
+  } catch {
+    return '';
+  }
+}
+
 function truncate(str, len) {
   if (!str) return '';
   return str.length > len ? str.slice(0, len) + '\u2026' : str;
@@ -45,12 +65,13 @@ function renderHistory(history) {
   historySection.style.display = 'block';
   historyList.innerHTML = history.map((entry) => {
     const color = scoreColor(entry.score);
-    const label = VERDICT_LABELS[entry.verdict] || entry.verdict;
+    const label = escapeHTML(VERDICT_LABELS[entry.verdict] || entry.verdict);
     const typeIcon = entry.type === 'image' ? '\uD83D\uDDBC' : '\uD83D\uDCC4';
-    const title = truncate(entry.title || entry.domain || 'Unknown', 38);
-    const domain = entry.domain || '';
+    const title = escapeHTML(truncate(entry.title || entry.domain || 'Unknown', 38));
+    const domain = escapeHTML(entry.domain || '');
+    const url = safeHistoryURL(entry.url);
 
-    return `<div class="history-item" data-url="${entry.url || ''}">
+    return `<div class="history-item" data-url="${url}">
       <div class="history-score" style="border-color:${color};color:${color}">${Math.round(entry.score)}</div>
       <div class="history-info">
         <span class="history-item-title">${typeIcon} ${title}</span>

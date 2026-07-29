@@ -220,6 +220,54 @@
   function verdictIcon(v) { return VERDICT_ICONS[v] || ''; }
   function scoreColor(s) { return s > 70 ? '#10b981' : s > 40 ? '#f59e0b' : '#ef4444'; }
 
+  function escapeHTML(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function safeHTTPURL(value) {
+    try {
+      const parsed = new URL(String(value ?? ''));
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+      if (parsed.username || parsed.password) return '';
+      return escapeHTML(parsed.href);
+    } catch {
+      return '';
+    }
+  }
+
+  function sanitizeForHTML(value, key = '') {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') {
+      return key.toLowerCase().includes('url') ? safeHTTPURL(value) : escapeHTML(value);
+    }
+    if (typeof value !== 'object') return value;
+    if (value.__factscopeSanitized) return value;
+
+    if (Array.isArray(value)) {
+      const sanitized = value.map((item) => sanitizeForHTML(item, key));
+      Object.defineProperty(sanitized, '__factscopeSanitized', { value: true });
+      return sanitized;
+    }
+
+    const sanitized = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      sanitized[childKey] = sanitizeForHTML(childValue, childKey);
+    }
+    Object.defineProperty(sanitized, '__factscopeSanitized', { value: true });
+    return sanitized;
+  }
+
+  if (globalThis.__FACTSCOPE_SECURITY_TEST__) {
+    globalThis.__FACTSCOPE_SECURITY__ = {
+      escapeHTML, safeHTTPURL, sanitizeForHTML,
+    };
+  }
+
   /* ── UI rendering ─────────────────────────────────────────────────── */
 
   function removePanel() {
@@ -283,6 +331,7 @@
   function buildFactChecksHTML(factChecks) {
     if (!factChecks || factChecks.length === 0) return '';
 
+    factChecks = sanitizeForHTML(factChecks);
     const items = factChecks.map((fc) => {
       const isOpinion = fc.status === 'opinion';
       const hasFactCheck = !isOpinion && fc.status && fc.status !== 'no_fact_check_found';
@@ -369,6 +418,7 @@
   }
 
   function buildNoteCardHTML(note) {
+    note = sanitizeForHTML(note);
     const catLabel = FLAG_CATEGORIES[note.category] || note.category;
     const catColor = CATEGORY_COLORS[note.category] || '#64748b';
     let sourcesHTML = '';
@@ -671,6 +721,7 @@
   }
 
   function showResultPanel(result) {
+    result = sanitizeForHTML(result);
     if (result.verdict === 'rate_limited') {
       const rl = result.rate_limit || {};
       const panel = createPanel(`
@@ -986,6 +1037,7 @@
       showResultPanel(result);
       return;
     }
+    result = sanitizeForHTML(result);
 
     const score = result.authenticity_score;
     const color = imgScoreColor(score);

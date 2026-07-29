@@ -60,3 +60,17 @@ ADMIN_USER_IDS = set(
 # ── Deployment ───────────────────────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8000"))
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# Security controls
+MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", "2097152"))
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        (
+            "chrome-extension://cmmkbibkldbifbiefgebcecdakljejjd,"
+            "http://localhost:8000,http://127.0.0.1:8000"
+        ),
+    ).split(",")
+    if origin.strip()
+]
