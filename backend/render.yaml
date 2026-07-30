@@ -19,10 +19,34 @@ services:
         sync: false
       - key: TURSO_AUTH_TOKEN
         sync: false
+      - key: SESSION_SIGNING_SECRET
+        sync: false
       - key: DEFAULT_MAX_TOKENS
         value: "1024"
       - key: DEFAULT_TEMPERATURE
         value: "0.2"
+      - key: SESSION_TTL_DAYS
+        value: "180"
+      - key: SESSION_MINTS_PER_HOUR
+        value: "10"
+      - key: API_REQUESTS_PER_MINUTE
+        value: "60"
+      - key: ANALYSIS_REQUESTS_PER_MINUTE
+        value: "5"
+      - key: MAX_CONCURRENT_ANALYSES
+        value: "3"
+      - key: ANALYSIS_TIMEOUT_SECONDS
+        value: "100"
+      - key: IMAGE_ANALYSIS_TIMEOUT_SECONDS
+        value: "100"
+      - key: FACTCHECK_TIMEOUT_SECONDS
+        value: "20"
+      - key: PROVIDER_HTTP_TIMEOUT_SECONDS
+        value: "30"
+      - key: DAILY_LLM_CALL_LIMIT
+        value: "500"
+      - key: LLM_ESTIMATED_COST_USD
+        value: "0.002"
       - key: MAX_REQUEST_BYTES
         value: "2097152"
       - key: CORS_ALLOWED_ORIGINS

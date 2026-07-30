@@ -1,6 +1,9 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, Future
+from functools import wraps
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -15,7 +18,10 @@ from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprin
                 search_knowledge_base, VALID_FLAG_CATEGORIES,
                 store_shared_result, get_shared_result,
                 get_user_tier, get_daily_scan_count,
-                increment_daily_scan, redeem_license_key)
+                increment_daily_scan, redeem_license_key,
+                reserve_service_usage)
+from auth import AuthContext, SessionAuthError, authenticate_installation_token, issue_installation_session
+from controls import SlidingWindowLimiter, client_ip_hash, hash_network_identity
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
 from fingerprinting import compute_fingerprint
@@ -24,13 +30,20 @@ from fact_checker import verify_claims as _verify_claims, verify_image_claim as 
 from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
                     DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL, SCAN_LIMITS,
                     ADMIN_USER_IDS, ENVIRONMENT, MAX_REQUEST_BYTES,
-                    CORS_ALLOWED_ORIGINS)
+                    CORS_ALLOWED_ORIGINS, SESSION_MINTS_PER_HOUR,
+                    API_REQUESTS_PER_MINUTE, ANALYSIS_REQUESTS_PER_MINUTE,
+                    MAX_CONCURRENT_ANALYSES, ANALYSIS_TIMEOUT_SECONDS,
+                    IMAGE_ANALYSIS_TIMEOUT_SECONDS, DAILY_LLM_CALL_LIMIT,
+                    FACTCHECK_TIMEOUT_SECONDS,
+                    LLM_ESTIMATED_COST_USD)
 from safe_fetch import safe_get, UnsafeURLError, ResponseTooLargeError
 import json
 import re
 import uvicorn
 import logging
 from datetime import datetime, timedelta, timezone
+import time
+import uuid
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
@@ -76,7 +89,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.4.0",
+    version="0.5.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -87,7 +100,7 @@ app.add_middleware(
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
 
@@ -118,15 +131,147 @@ async def enforce_request_limits(request: Request, call_next):
         )
     return response
 
+
+@app.middleware("http")
+async def add_request_observability(request: Request, call_next):
+    """Attach request IDs and emit privacy-safe structured request metrics."""
+    request_id = uuid.uuid4().hex
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    response.headers["X-Request-ID"] = request_id
+    logger.info(json.dumps({
+        "event": "request_complete",
+        "request_id": request_id,
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "duration_ms": duration_ms,
+    }, separators=(",", ":")))
+    return response
+
+
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", uuid.uuid4().hex)
+
+
+@app.exception_handler(HTTPException)
+async def structured_http_error(request: Request, exc: HTTPException):
+    content = dict(exc.detail) if isinstance(exc.detail, dict) else {
+        "error": "request_failed", "message": str(exc.detail)
+    }
+    content["request_id"] = _request_id(request)
+    return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def structured_validation_error(request: Request, exc: RequestValidationError):
+    del exc
+    return JSONResponse(status_code=422, content={"error": "validation_error", "message": "The request payload is invalid", "request_id": _request_id(request)})
+
+
+@app.exception_handler(Exception)
+async def structured_internal_error(request: Request, exc: Exception):
+    logger.exception("Unhandled request failure: %s", type(exc).__name__)
+    return JSONResponse(status_code=500, content={"error": "internal_error", "message": "The request could not be completed", "request_id": _request_id(request)})
+
 LLM_WEIGHT = 0.65
 STRUCTURAL_WEIGHT = 0.35
 
 _bg_pool = ThreadPoolExecutor(max_workers=3)
+_session_mint_limiter = SlidingWindowLimiter()
+_api_burst_limiter = SlidingWindowLimiter()
+_analysis_burst_limiter = SlidingWindowLimiter()
+_analysis_semaphore = asyncio.Semaphore(MAX_CONCURRENT_ANALYSES)
 
 
-def _check_rate_limit(user_id: str | None) -> dict | None:
+def _burst_error(retry_after: int) -> HTTPException:
+    return HTTPException(status_code=429, detail={"error": "burst_limited", "message": "Too many requests; retry shortly"}, headers={"Retry-After": str(retry_after)})
+
+
+def _require_session(request: Request) -> AuthContext:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "authentication_required", "message": "A valid installation session is required"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        context = authenticate_installation_token(token)
+    except SessionAuthError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": exc.code, "message": exc.message},
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    for key in (f"session:{context.token_hash}", f"ip:{client_ip_hash(request)}"):
+        allowed, retry_after = _api_burst_limiter.hit(key, API_REQUESTS_PER_MINUTE, 60)
+        if not allowed:
+            raise _burst_error(retry_after)
+    return context
+
+
+def _enforce_analysis_burst(request: Request, context: AuthContext) -> None:
+    for key in (f"session:{context.token_hash}", f"ip:{client_ip_hash(request)}"):
+        allowed, retry_after = _analysis_burst_limiter.hit(
+            key, ANALYSIS_REQUESTS_PER_MINUTE, 60
+        )
+        if not allowed:
+            raise _burst_error(retry_after)
+
+
+def _limit_analysis_capacity(function):
+    @wraps(function)
+    async def wrapper(*args, **kwargs):
+        try:
+            await asyncio.wait_for(_analysis_semaphore.acquire(), timeout=0.05)
+        except TimeoutError:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "server_busy", "message": "Analysis capacity is busy; please retry shortly"},
+                headers={"Retry-After": "3"},
+            )
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            _analysis_semaphore.release()
+    return wrapper
+
+
+def _reserve_llm_call() -> int:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    allowed, count = reserve_service_usage("llm_calls", today, DAILY_LLM_CALL_LIMIT)
+    if not allowed:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "budget_exhausted", "message": "Analysis is temporarily unavailable; please try again later"},
+            headers={"Retry-After": "3600"},
+        )
+    logger.info("Provider usage reserved: calls=%d estimated_cost_usd=%.4f", count, count * LLM_ESTIMATED_COST_USD)
+    return count
+
+
+@app.post("/v1/session")
+async def create_installation_session(request: Request):
+    """Issue a signed, anonymous installation session to the extension."""
+    allowed, retry_after = _session_mint_limiter.hit(
+        client_ip_hash(request), SESSION_MINTS_PER_HOUR, 3600
+    )
+    if not allowed:
+        raise _burst_error(retry_after)
+    token, context = issue_installation_session()
+    return {
+        "token_type": "Bearer",
+        "access_token": token,
+        "expires_at": context.expires_at,
+    }
+
+
+def _check_rate_limit(uid: str) -> dict | None:
     """Return None if under limit, or an error dict if over."""
-    uid = user_id or "anonymous"
     if uid in ADMIN_USER_IDS:
         return None
     tier = get_user_tier(uid)
@@ -137,6 +282,7 @@ def _check_rate_limit(user_id: str | None) -> dict | None:
         tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).isoformat()
+        logger.info(json.dumps({"event": "daily_quota_rejected", "subject": hash_network_identity(uid), "tier": tier, "used": count, "limit": limit}, separators=(",", ":")))
         return {
             "error": "rate_limited",
             "tier": tier,
@@ -147,8 +293,7 @@ def _check_rate_limit(user_id: str | None) -> dict | None:
     return None
 
 
-def _increment_and_get_remaining(user_id: str | None) -> int:
-    uid = user_id or "anonymous"
+def _increment_and_get_remaining(uid: str) -> int:
     if uid in ADMIN_USER_IDS:
         return 999
     tier = get_user_tier(uid)
@@ -258,7 +403,7 @@ class AnalyzeResponse(BaseModel):
 
 class FlagRequest(BaseModel):
     fingerprint: str = Field(min_length=16, max_length=128)
-    user_id: str
+    user_id: Optional[str] = None
     category: str
     justification: str = Field(min_length=30, max_length=500)
     source_urls: Optional[list[str]] = None
@@ -274,7 +419,7 @@ class FlagResponse(BaseModel):
 
 class VoteRequest(BaseModel):
     fingerprint: str
-    user_id: str
+    user_id: Optional[str] = None
     vote: int
 
 
@@ -379,12 +524,17 @@ def _fetch_and_resize_image(url: str) -> tuple[bytes, str] | tuple[None, None]:
 
 
 @app.post("/analyze/verify-image")
-async def verify_image(request: ImageVerifyRequest):
+@_limit_analysis_capacity
+async def verify_image(request: ImageVerifyRequest, http_request: Request):
     """Verify an image for AI generation, manipulation, or misuse."""
+    auth = _require_session(http_request)
+    _enforce_analysis_burst(http_request, auth)
+    subject_id = auth.subject_id
 
     # ── Rate limit check ──────────────────────────────────────────────
-    rl = _check_rate_limit(request.user_id)
+    rl = _check_rate_limit(subject_id)
     if rl:
+        rl["request_id"] = _request_id(http_request)
         return JSONResponse(status_code=429, content=rl)
 
     img_fp = f"img:{url_hash(request.image_url)}"
@@ -406,10 +556,16 @@ async def verify_image(request: ImageVerifyRequest):
             community_flags=img_flags if img_flags >= 3 else None,
             community_notes=img_notes,
             vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
-            scans_remaining=_increment_and_get_remaining(request.user_id),
+            scans_remaining=_increment_and_get_remaining(subject_id),
         )
 
-    image_data, media_type = _fetch_and_resize_image(request.image_url)
+    try:
+        image_data, media_type = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_and_resize_image, request.image_url),
+            timeout=FACTCHECK_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        return ImageVerifyResponse(authenticity_score=50, verdict="uncertain", explanation="Image retrieval timed out. Please try again.", evidence=[])
     if not image_data:
         return ImageVerifyResponse(
             authenticity_score=50,
@@ -441,7 +597,15 @@ async def verify_image(request: ImageVerifyRequest):
     context = "\n".join(context_parts) if context_parts else ""
 
     bottom_crop = _crop_bottom_edge(image_data)
-    result = get_image_verification(image_data, media_type, context, bottom_crop=bottom_crop)
+    _reserve_llm_call()
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(get_image_verification, image_data, media_type, context, bottom_crop),
+            timeout=IMAGE_ANALYSIS_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning("Image provider timed out")
+        return ImageVerifyResponse(authenticity_score=50, verdict="uncertain", explanation="Image analysis timed out. Please try again.", evidence=[])
 
     _AI_TOOL_EXACT = re.compile(
         r"dall[\-\s]?e|midjourney|stable.diffusion|adobe.firefly|"
@@ -472,14 +636,20 @@ async def verify_image(request: ImageVerifyRequest):
     caption_tone = result.get("caption_tone", "informal")
     if caption and len(caption.strip()) >= 10 and caption_tone == "factual":
         try:
-            fc = _verify_image_claim(caption, source_url=request.page_url or "")
+            fc = await asyncio.wait_for(
+                asyncio.to_thread(_verify_image_claim, caption, request.page_url or ""),
+                timeout=FACTCHECK_TIMEOUT_SECONDS,
+            )
             if fc:
                 claim_results = [FactCheckResult(**c) for c in fc]
         except Exception as exc:
             logger.warning("Image claim verification failed: %s", exc)
     elif caption and len(caption.strip()) >= 10 and caption_tone == "opinion_or_rhetorical":
         try:
-            fc = _verify_image_claim(caption, source_url=request.page_url or "")
+            fc = await asyncio.wait_for(
+                asyncio.to_thread(_verify_image_claim, caption, request.page_url or ""),
+                timeout=FACTCHECK_TIMEOUT_SECONDS,
+            )
             if fc:
                 for c in fc:
                     c["status"] = "opinion"
@@ -574,7 +744,7 @@ async def verify_image(request: ImageVerifyRequest):
             "explanation": final_explanation,
             "evidence": result["evidence"],
             "claim_analysis": [c.model_dump() for c in claim_results] if claim_results else None,
-        }, user_id=request.user_id)
+        }, user_id=subject_id)
     except Exception as exc:
         logger.warning("Image scan storage failed: %s", exc)
 
@@ -592,7 +762,7 @@ async def verify_image(request: ImageVerifyRequest):
         community_flags=img_flags if img_flags >= 3 else None,
         community_notes=img_notes,
         vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
-        scans_remaining=_increment_and_get_remaining(request.user_id),
+        scans_remaining=_increment_and_get_remaining(subject_id),
     )
 
 
@@ -625,20 +795,29 @@ def _validate_flag_quality(category: str, justification: str) -> tuple[int, str]
 
 
 @app.post("/flag", response_model=FlagResponse)
-async def flag_content(request: FlagRequest):
+@_limit_analysis_capacity
+async def flag_content(request: FlagRequest, http_request: Request):
     """Add a community note (flag with justification), validated by LLM."""
+    auth = _require_session(http_request)
+    _enforce_analysis_burst(http_request, auth)
+    subject_id = auth.subject_id
     if request.category not in VALID_FLAG_CATEGORIES:
         return FlagResponse(success=False, flag_count=get_flag_count(request.fingerprint))
     if not request.justification or len(request.justification.strip()) < 30:
         return FlagResponse(success=False, flag_count=get_flag_count(request.fingerprint))
 
-    if has_user_flagged(request.fingerprint, request.user_id):
+    if has_user_flagged(request.fingerprint, subject_id):
         count = get_flag_count(request.fingerprint)
         return FlagResponse(success=True, flag_count=count, already_flagged=True)
 
-    quality_score, rejection_reason = _validate_flag_quality(
-        request.category, request.justification,
-    )
+    _reserve_llm_call()
+    try:
+        quality_score, rejection_reason = await asyncio.wait_for(
+            asyncio.to_thread(_validate_flag_quality, request.category, request.justification),
+            timeout=ANALYSIS_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail={"error": "provider_timeout", "message": "Flag validation timed out; please retry"}, headers={"Retry-After": "3"}) from exc
     if quality_score < 30:
         return FlagResponse(
             success=False,
@@ -647,7 +826,7 @@ async def flag_content(request: FlagRequest):
         )
 
     note_dict = add_community_flag(
-        request.fingerprint, request.user_id,
+        request.fingerprint, subject_id,
         request.category, request.justification,
         request.source_urls, quality_score=quality_score,
     )
@@ -664,18 +843,20 @@ async def flag_content(request: FlagRequest):
 
 
 @app.post("/vote", response_model=VoteResponse)
-async def vote_on_result(request: VoteRequest):
+async def vote_on_result(request: VoteRequest, http_request: Request):
     """Like (+1) or dislike (-1) an analysis result."""
+    subject_id = _require_session(http_request).subject_id
     if request.vote not in (1, -1):
         return VoteResponse(success=False)
-    stored = store_vote(request.fingerprint, request.user_id, request.vote)
+    stored = store_vote(request.fingerprint, subject_id, request.vote)
     stats = get_vote_stats(request.fingerprint)
     return VoteResponse(success=stored, likes=stats["likes"], dislikes=stats["dislikes"])
 
 
 @app.get("/community-notes/{fingerprint}")
-async def fetch_community_notes(fingerprint: str):
+async def fetch_community_notes(fingerprint: str, request: Request):
     """Fetch community notes and vote stats for a fingerprint."""
+    _require_session(request)
     notes = get_community_notes(fingerprint)
     stats = get_vote_stats(fingerprint)
     count = get_flag_count(fingerprint)
@@ -687,12 +868,17 @@ async def fetch_community_notes(fingerprint: str):
 
 
 @app.post("/analyze")
-async def analyze_page(request: AnalyzeRequest):
+@_limit_analysis_capacity
+async def analyze_page(request: AnalyzeRequest, http_request: Request):
     """Unified endpoint for the browser extension."""
+    auth = _require_session(http_request)
+    _enforce_analysis_burst(http_request, auth)
+    subject_id = auth.subject_id
 
     # ── Rate limit check ──────────────────────────────────────────────
-    rl = _check_rate_limit(request.user_id)
+    rl = _check_rate_limit(subject_id)
     if rl:
+        rl["request_id"] = _request_id(http_request)
         return JSONResponse(status_code=429, content=rl)
 
     # ── Fingerprint check (instant cache) ─────────────────────────────
@@ -747,7 +933,7 @@ async def analyze_page(request: AnalyzeRequest):
                 community_notes=notes,
                 vote_stats=VoteStats(**v_stats) if (v_stats["likes"] + v_stats["dislikes"]) > 0 else None,
                 fingerprint=fingerprint,
-                scans_remaining=_increment_and_get_remaining(request.user_id),
+                scans_remaining=_increment_and_get_remaining(subject_id),
             )
         elif cached:
             logger.info("Cache invalidated by votes for %s, re-analyzing", fingerprint[:16])
@@ -844,12 +1030,29 @@ async def analyze_page(request: AnalyzeRequest):
     fact_checks = []
     claims_pending = False
 
+    _reserve_llm_call()
     llm_future = _bg_pool.submit(get_structured_analysis, combined)
     fc_future = None
     if factcheck_available() and request.text:
         fc_future = _bg_pool.submit(_verify_claims, request.text, request.title or "", request.url or "")
 
-    llm_result = llm_future.result()
+    try:
+        llm_result = await asyncio.wait_for(
+            asyncio.wrap_future(llm_future), timeout=ANALYSIS_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        logger.warning("Article provider timed out")
+        if fc_future:
+            fc_future.cancel()
+        return AnalyzeResponse(
+            trust_score=50,
+            verdict="unknown",
+            explanation="Analysis timed out. Please try again.",
+            evidence=[],
+            cached=False,
+            fingerprint=fingerprint,
+            scans_remaining=_increment_and_get_remaining(subject_id),
+        )
 
     if fc_future is not None:
         if fc_future.done():
@@ -977,7 +1180,7 @@ async def analyze_page(request: AnalyzeRequest):
         store_analysis_result(
             "page_scan", combined[:500], result_dict,
             fingerprint=fingerprint, url=request.url,
-            user_id=request.user_id,
+            user_id=subject_id,
         )
     except Exception as exc:
         logger.warning("Storage failed: %s", exc)
@@ -1022,13 +1225,14 @@ async def analyze_page(request: AnalyzeRequest):
         kb_matches=kb_response,
         fingerprint=fingerprint,
         claims_pending=claims_pending if claims_pending else None,
-        scans_remaining=_increment_and_get_remaining(request.user_id),
+        scans_remaining=_increment_and_get_remaining(subject_id),
     )
 
 
 @app.get("/claims/{fingerprint}")
-async def get_claims(fingerprint: str):
+async def get_claims(fingerprint: str, request: Request):
     """Fetch claim analysis for a previously scanned page (used for progressive loading)."""
+    _require_session(request)
     raw = get_scan_claims(fingerprint)
     if raw:
         try:
@@ -1045,8 +1249,9 @@ class ShareRequest(BaseModel):
 
 
 @app.post("/share")
-async def create_share(request: ShareRequest):
+async def create_share(request: ShareRequest, http_request: Request):
     """Create a share only from a result already stored by FactScope."""
+    _require_session(http_request)
     fingerprint = request.fingerprint
     if fingerprint.startswith("img:"):
         stored = find_image_scan_by_fingerprint(fingerprint)
@@ -1261,7 +1466,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.4.0"}
+    return {"status": "ok", "version": "0.5.0"}
 
 
 @app.get("/debug/db-status")
@@ -1362,8 +1567,9 @@ async def get_model_info():
 
 
 @app.get("/user/usage")
-async def user_usage(user_id: str = ""):
-    uid = user_id or "anonymous"
+async def user_usage(request: Request, user_id: str = ""):
+    del user_id
+    uid = _require_session(request).subject_id
     tier = get_user_tier(uid)
     limit = SCAN_LIMITS.get(tier, SCAN_LIMITS["free"])
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1383,13 +1589,14 @@ async def user_usage(user_id: str = ""):
 
 
 class RedeemRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None
     key: str
 
 
 @app.post("/redeem-key")
-async def redeem_key(req: RedeemRequest):
-    new_tier = redeem_license_key(req.user_id, req.key)
+async def redeem_key(req: RedeemRequest, request: Request):
+    subject_id = _require_session(request).subject_id
+    new_tier = redeem_license_key(subject_id, req.key)
     if not new_tier:
         return JSONResponse(status_code=400, content={
             "error": "invalid_key",
@@ -1397,7 +1604,7 @@ async def redeem_key(req: RedeemRequest):
         })
     limit = SCAN_LIMITS.get(new_tier, SCAN_LIMITS["free"])
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    used = get_daily_scan_count(req.user_id, today)
+    used = get_daily_scan_count(subject_id, today)
     return {
         "success": True,
         "tier": new_tier,

@@ -74,3 +74,22 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+# Anonymous installation sessions and cost protection
+SESSION_SIGNING_SECRET = os.getenv("SESSION_SIGNING_SECRET", "")
+if ENVIRONMENT == "production" and len(SESSION_SIGNING_SECRET) < 32:
+    raise RuntimeError("SESSION_SIGNING_SECRET must be at least 32 characters in production")
+if not SESSION_SIGNING_SECRET:
+    SESSION_SIGNING_SECRET = "factscope-local-development-session-key"
+
+SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "180"))
+SESSION_MINTS_PER_HOUR = int(os.getenv("SESSION_MINTS_PER_HOUR", "10"))
+API_REQUESTS_PER_MINUTE = int(os.getenv("API_REQUESTS_PER_MINUTE", "60"))
+ANALYSIS_REQUESTS_PER_MINUTE = int(os.getenv("ANALYSIS_REQUESTS_PER_MINUTE", "5"))
+MAX_CONCURRENT_ANALYSES = int(os.getenv("MAX_CONCURRENT_ANALYSES", "3"))
+ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("ANALYSIS_TIMEOUT_SECONDS", "100"))
+IMAGE_ANALYSIS_TIMEOUT_SECONDS = float(os.getenv("IMAGE_ANALYSIS_TIMEOUT_SECONDS", "100"))
+PROVIDER_HTTP_TIMEOUT_SECONDS = float(os.getenv("PROVIDER_HTTP_TIMEOUT_SECONDS", "30"))
+FACTCHECK_TIMEOUT_SECONDS = float(os.getenv("FACTCHECK_TIMEOUT_SECONDS", "20"))
+DAILY_LLM_CALL_LIMIT = int(os.getenv("DAILY_LLM_CALL_LIMIT", "500"))
+LLM_ESTIMATED_COST_USD = float(os.getenv("LLM_ESTIMATED_COST_USD", "0.002"))

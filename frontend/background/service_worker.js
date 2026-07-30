@@ -5,24 +5,75 @@ let API_BASE = PROD_BASE;
 
 const _apiReady = (async () => {
   try {
-    const resp = await fetch(`${DEV_BASE}/models/info`, { signal: AbortSignal.timeout(1500) });
+    const resp = await fetch(`${DEV_BASE}/health`, { signal: AbortSignal.timeout(1500) });
     if (resp.ok) { API_BASE = DEV_BASE; return; }
   } catch { /* dev server not running */ }
   API_BASE = PROD_BASE;
 })();
 
-function getUserId() {
+const SESSION_TOKEN_KEY = 'factscope_session_token';
+const SESSION_EXPIRY_KEY = 'factscope_session_expires_at';
+let _sessionPromise = null;
+
+function storageGet(keys) {
   return new Promise((resolve) => {
-    chrome.storage.local.get('factscope_user_id', (data) => {
-      if (data.factscope_user_id) {
-        resolve(data.factscope_user_id);
-      } else {
-        const id = crypto.randomUUID();
-        chrome.storage.local.set({ factscope_user_id: id });
-        resolve(id);
-      }
-    });
+    chrome.storage.local.get(keys, resolve);
   });
+}
+
+function storageSet(values) {
+  return new Promise((resolve) => chrome.storage.local.set(values, resolve));
+}
+
+function storageRemove(keys) {
+  return new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+}
+
+async function getSessionToken(forceRefresh = false) {
+  await _apiReady;
+  if (!forceRefresh) {
+    const stored = await storageGet([SESSION_TOKEN_KEY, SESSION_EXPIRY_KEY]);
+    const expiresAt = Date.parse(stored[SESSION_EXPIRY_KEY] || '');
+    if (stored[SESSION_TOKEN_KEY] && expiresAt > Date.now() + 5 * 60 * 1000) {
+      return stored[SESSION_TOKEN_KEY];
+    }
+    if (_sessionPromise) return _sessionPromise;
+  } else {
+    await storageRemove([SESSION_TOKEN_KEY, SESSION_EXPIRY_KEY]);
+  }
+
+  _sessionPromise = (async () => {
+    const response = await fetch(`${API_BASE}/v1/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) throw new Error(`Session service returned ${response.status}`);
+    const session = await response.json();
+    if (!session.access_token || !session.expires_at) throw new Error('Invalid session response');
+    await storageSet({
+      [SESSION_TOKEN_KEY]: session.access_token,
+      [SESSION_EXPIRY_KEY]: session.expires_at,
+    });
+    return session.access_token;
+  })();
+
+  try {
+    return await _sessionPromise;
+  } finally {
+    _sessionPromise = null;
+  }
+}
+
+async function apiFetch(path, options = {}, retryAuth = true) {
+  const token = await getSessionToken();
+  const headers = new Headers(options.headers || {});
+  headers.set('Authorization', `Bearer ${token}`);
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (response.status === 401 && retryAuth) {
+    await getSessionToken(true);
+    return apiFetch(path, options, false);
+  }
+  return response;
 }
 
 /* ── Context menu for image verification ──────────────────────────── */
@@ -88,10 +139,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'analyze') {
     (async () => {
       await _apiReady;
-      const userId = await getUserId();
-      const payload = { ...message.payload, user_id: userId };
+      const payload = { ...message.payload };
       try {
-        const r = await fetch(`${API_BASE}/analyze`, {
+        const r = await apiFetch('/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -127,9 +177,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (err) {
         console.error('FactScope backend error:', err);
         sendResponse({
-          trust_score: 0,
-          verdict: 'error',
-          explanation: `Could not reach the FactScope backend. (${err.message})`,
+          trust_score: 50,
+          verdict: 'unknown',
+          explanation: 'FactScope could not complete the analysis. Please try again.',
           evidence: [],
         });
       }
@@ -140,10 +190,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'verify-image') {
     (async () => {
       await _apiReady;
-      const userId = await getUserId();
-      const payload = { ...message.payload, user_id: userId };
+      const payload = { ...message.payload };
       try {
-        const r = await fetch(`${API_BASE}/analyze/verify-image`, {
+        const r = await apiFetch('/analyze/verify-image', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -179,9 +228,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (err) {
         console.error('FactScope image verify error:', err);
         sendResponse({
-          authenticity_score: 0,
-          verdict: 'error',
-          explanation: `Could not reach the FactScope backend. (${err.message})`,
+          authenticity_score: 50,
+          verdict: 'uncertain',
+          explanation: 'FactScope could not complete the image analysis. Please try again.',
           evidence: [],
         });
       }
@@ -193,7 +242,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await _apiReady;
       try {
-        const r = await fetch(`${API_BASE}/claims/${encodeURIComponent(message.fingerprint)}`);
+        const r = await apiFetch(`/claims/${encodeURIComponent(message.fingerprint)}`);
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         sendResponse(await r.json());
       } catch (err) {
@@ -206,14 +255,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'flag-content') {
     (async () => {
       await _apiReady;
-      const userId = await getUserId();
       try {
-        const r = await fetch(`${API_BASE}/flag`, {
+        const r = await apiFetch('/flag', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             fingerprint: message.fingerprint,
-            user_id: userId,
             category: message.category,
             justification: message.justification,
             source_urls: message.source_urls || null,
@@ -232,14 +279,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'vote') {
     (async () => {
       await _apiReady;
-      const userId = await getUserId();
       try {
-        const r = await fetch(`${API_BASE}/vote`, {
+        const r = await apiFetch('/vote', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             fingerprint: message.fingerprint,
-            user_id: userId,
             vote: message.vote,
           }),
         });
@@ -256,7 +301,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await _apiReady;
       try {
-        const r = await fetch(`${API_BASE}/community-notes/${encodeURIComponent(message.fingerprint)}`);
+        const r = await apiFetch(`/community-notes/${encodeURIComponent(message.fingerprint)}`);
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         sendResponse(await r.json());
       } catch (err) {
@@ -269,9 +314,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'get-usage') {
     (async () => {
       await _apiReady;
-      const userId = await getUserId();
       try {
-        const r = await fetch(`${API_BASE}/user/usage?user_id=${encodeURIComponent(userId)}`);
+        const r = await apiFetch('/user/usage');
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         sendResponse(await r.json());
       } catch (err) {
@@ -284,12 +328,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'redeem-key') {
     (async () => {
       await _apiReady;
-      const userId = await getUserId();
       try {
-        const r = await fetch(`${API_BASE}/redeem-key`, {
+        const r = await apiFetch('/redeem-key', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId, key: message.key }),
+          body: JSON.stringify({ key: message.key }),
         });
         const data = await r.json();
         sendResponse(data);
@@ -304,7 +347,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await _apiReady;
       try {
-        const r = await fetch(`${API_BASE}/share`, {
+        const r = await apiFetch('/share', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(message.payload),
@@ -318,3 +361,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 });
+
+if (globalThis.__FACTSCOPE_SESSION_TEST__) {
+  globalThis.__FACTSCOPE_SESSION__ = { apiFetch, getSessionToken };
+}

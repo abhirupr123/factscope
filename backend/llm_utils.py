@@ -9,6 +9,7 @@ from config import (
     OPENAI_API_KEY, OPENAI_MODEL,
     AWS_REGION, AWS_ACCESS_KEY, AWS_SECRET_KEY,
     TEXT_MODEL_ID, MULTIMODAL_MODEL_ID,
+    PROVIDER_HTTP_TIMEOUT_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,11 @@ def _get_openai_client():
     global _openai_client
     if _openai_client is None:
         from openai import OpenAI
-        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        _openai_client = OpenAI(
+            api_key=OPENAI_API_KEY,
+            timeout=PROVIDER_HTTP_TIMEOUT_SECONDS,
+            max_retries=2,
+        )
     return _openai_client
 
 
@@ -102,11 +107,13 @@ def _get_bedrock_client():
     global _bedrock_client
     if _bedrock_client is None:
         import boto3
+        from botocore.config import Config
         _bedrock_client = boto3.client(
             service_name="bedrock-runtime",
             region_name=AWS_REGION,
             aws_access_key_id=AWS_ACCESS_KEY,
             aws_secret_access_key=AWS_SECRET_KEY,
+            config=Config(connect_timeout=10, read_timeout=PROVIDER_HTTP_TIMEOUT_SECONDS, retries={"max_attempts": 2, "mode": "standard"}),
         )
     return _bedrock_client
 
@@ -181,9 +188,9 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
     last_err = None
     for attempt in range(3):
         try:
-            resp = requests.post(url, json=body, timeout=90)
+            resp = requests.post(url, json=body, timeout=PROVIDER_HTTP_TIMEOUT_SECONDS)
             if resp.status_code != 200:
-                raise RuntimeError(f"{resp.status_code} {resp.text[:300]}")
+                raise RuntimeError(f"Provider HTTP {resp.status_code}")
             data = resp.json()
             candidates = data.get("candidates", [])
             if not candidates:
@@ -294,11 +301,11 @@ def get_structured_analysis(
         )
         return _parse_structured_response(raw_text)
     except Exception as exc:
-        logger.error("Structured analysis failed: %s", exc)
+        logger.error("Structured analysis provider failed: %s", type(exc).__name__)
         return {
-            "trust_score": 0,
-            "verdict": "error",
-            "explanation": f"Analysis could not be completed: {exc}",
+            "trust_score": 50,
+            "verdict": "unknown",
+            "explanation": "Analysis could not be completed because the provider was unavailable. Please try again.",
             "evidence": [],
         }
 

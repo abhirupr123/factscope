@@ -331,6 +331,25 @@ _SCHEMA_STATEMENTS = [
         created_at TEXT NOT NULL
     )""",
 
+    # Anonymous sessions: bearer tokens are represented only by a one-way hash.
+    """CREATE TABLE IF NOT EXISTS installation_sessions (
+        token_hash TEXT PRIMARY KEY,
+        subject_id TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_seen  TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked    INTEGER NOT NULL DEFAULT 0
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_installation_sessions_subject ON installation_sessions(subject_id)",
+
+    # Provider usage counters for the global daily spend circuit breaker.
+    """CREATE TABLE IF NOT EXISTS service_usage (
+        metric     TEXT NOT NULL,
+        usage_date TEXT NOT NULL,
+        count      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (metric, usage_date)
+    )""",
+
     # ── Shared results (shareable links) ───────────────────────────────
     """CREATE TABLE IF NOT EXISTS shared_results (
         id            TEXT PRIMARY KEY,
@@ -1270,6 +1289,88 @@ def redeem_license_key(user_id: str, key: str) -> str | None:
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
+
+# Anonymous installation sessions
+
+def create_installation_session(
+    token_hash: str, subject_id: str, created_at: str, expires_at: str
+) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """INSERT INTO installation_sessions
+           (token_hash, subject_id, created_at, last_seen, expires_at, revoked)
+           VALUES (?, ?, ?, ?, ?, 0)""",
+        (token_hash, subject_id, created_at, created_at, expires_at),
+    )
+    _commit_and_sync()
+
+
+def get_installation_session(token_hash: str) -> dict | None:
+    if not token_hash:
+        return None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """SELECT token_hash, subject_id, created_at, last_seen, expires_at, revoked
+               FROM installation_sessions WHERE token_hash = ?""",
+            (token_hash,),
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception as exc:
+        logger.warning("Installation session lookup failed: %s", exc)
+        return None
+
+
+def touch_installation_session(token_hash: str, seen_at: str) -> None:
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE installation_sessions SET last_seen = ? WHERE token_hash = ?",
+            (seen_at, token_hash),
+        )
+        _commit_and_sync()
+    except Exception as exc:
+        logger.debug("Installation session touch failed: %s", exc)
+
+
+def revoke_installation_session(token_hash: str) -> None:
+    conn = _get_conn()
+    conn.execute("UPDATE installation_sessions SET revoked = 1 WHERE token_hash = ?", (token_hash,))
+    _commit_and_sync()
+
+
+def get_service_usage(metric: str, usage_date: str) -> int:
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT count FROM service_usage WHERE metric = ? AND usage_date = ?",
+            (metric, usage_date),
+        ).fetchone()
+        return int(row["count"]) if row else 0
+    except Exception:
+        return 0
+
+
+def reserve_service_usage(metric: str, usage_date: str, limit: int) -> tuple[bool, int]:
+    """Atomically reserve one provider call without exceeding the configured limit."""
+    if limit <= 0:
+        return False, get_service_usage(metric, usage_date)
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """INSERT INTO service_usage (metric, usage_date, count)
+               VALUES (?, ?, 1)
+               ON CONFLICT(metric, usage_date) DO UPDATE SET count = count + 1
+               WHERE count < ?""",
+            (metric, usage_date, limit),
+        )
+        _commit_and_sync()
+        count = get_service_usage(metric, usage_date)
+        return cursor.rowcount == 1, count
+    except Exception as exc:
+        logger.error("Provider usage reservation failed: %s", exc)
+        return False, get_service_usage(metric, usage_date)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _extract_search_terms(text: str, max_terms: int = 12) -> list[str]:
