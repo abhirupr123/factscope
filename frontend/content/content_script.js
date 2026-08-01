@@ -1,5 +1,10 @@
 (() => {
+  if (window.__FACTSCOPE_CONTENT_SCRIPT_LOADED__) return;
+  window.__FACTSCOPE_CONTENT_SCRIPT_LOADED__ = true;
+
   const SCAN_EVENT = 'factscope-scan';
+  const CONSENT_KEY = 'factscope_scan_consent_version';
+  const CONSENT_VERSION = 1;
 
   /* ── Communication with service worker ────────────────────────────── */
 
@@ -25,6 +30,51 @@
           return;
         }
         resolve(response);
+      });
+    });
+  }
+
+  function ensureScanConsent(kind) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(CONSENT_KEY, (stored) => {
+        if (stored[CONSENT_KEY] === CONSENT_VERSION) {
+          resolve(true);
+          return;
+        }
+
+        const isImage = kind === 'image';
+        const panel = createPanel(`
+          <div class="fs-header">
+            <div class="fs-header-text">
+              <div class="fs-brand">Before your first scan</div>
+              <div class="fs-subtitle">You choose when FactScope receives content</div>
+            </div>
+          </div>
+          <div class="fs-consent-body">
+            <p>${isImage
+              ? 'Image verification sends the selected image URL, the page URL, and nearby caption or post context.'
+              : 'Page verification sends the page URL, title, extracted text, metadata, and a small set of links.'}</p>
+            <p>This information goes to the FactScope backend and its configured AI and fact-checking providers. Raw scans are retained for no more than 30 days.</p>
+            <p>Optional telemetry is off by default and never contains page text, titles, claims, full URLs, or image URLs.</p>
+            <div class="fs-consent-actions">
+              <button type="button" class="fs-consent-decline">Not now</button>
+              <button type="button" class="fs-consent-accept">Continue and scan</button>
+            </div>
+            <a class="fs-consent-link" href="https://factscope.netlify.app/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a>
+          </div>
+        `);
+
+        let settled = false;
+        const finish = (accepted) => {
+          if (settled) return;
+          settled = true;
+          removePanel();
+          resolve(accepted);
+        };
+        panel.querySelector('.fs-consent-decline').addEventListener('click', () => finish(false));
+        panel.querySelector('.fs-consent-accept').addEventListener('click', () => {
+          chrome.storage.local.set({ [CONSENT_KEY]: CONSENT_VERSION }, () => finish(true));
+        });
       });
     });
   }
@@ -1102,6 +1152,9 @@
   /* ── Image verification flow (triggered by context menu) ─────────── */
 
   async function verifyImage(imageUrl, pageUrl) {
+    const consented = await ensureScanConsent('image');
+    if (!consented) return;
+
     showImageScanningIndicator();
 
     const resolvedUrl = extractPostPermalink(imageUrl) || pageUrl;
@@ -1159,14 +1212,28 @@
   /* ── Listen for messages from service worker ────────────────────── */
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'factscope-ping') {
+      sendResponse({ ready: true });
+      return false;
+    }
+    if (message.type === 'factscope-start-page-scan') {
+      void scanPage();
+      sendResponse({ started: true });
+      return false;
+    }
     if (message.type === 'factscope-verify-image-start') {
-      verifyImage(message.imageUrl, message.pageUrl);
+      void verifyImage(message.imageUrl, message.pageUrl);
+      sendResponse({ started: true });
+      return false;
     }
   });
 
   /* ── Scan orchestration ───────────────────────────────────────────── */
 
   async function scanPage() {
+    const consented = await ensureScanConsent('page');
+    if (!consented) return;
+
     showScanningIndicator();
     const payload = extractPageContent();
     const result = await analyzePayload(payload);

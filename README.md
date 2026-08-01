@@ -61,13 +61,14 @@ That's it. FactScope does the heavy lifting.
 
 ## 🔒 Privacy
 
-FactScope does not collect any personal information.
+FactScope requires no account and processes content only after an explicit scan action.
 
 - No accounts or sign-ups required
-- No browsing history tracked
-- No cookies or tracking identifiers
-- Only the content you explicitly choose to scan is processed
-- Your identity is fully anonymous
+- No scripts run on pages you merely visit
+- A random signed installation session supports quotas, deletion, and community features
+- Optional event-name-only telemetry is off by default
+- Raw scan records and telemetry are deleted after 30 days
+- Local history can be cleared and installation-linked server data can be deleted
 
 Read the full [privacy policy](https://factscope.netlify.app/privacy).
 

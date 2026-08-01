@@ -1,6 +1,7 @@
 """Security regression tests for the production hotfix."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import socket
@@ -330,6 +331,133 @@ class ChunkTwoProtectionTests(unittest.TestCase):
         response = asyncio.run(main.structured_http_error(request, exc))
         self.assertEqual(response.status_code, 401)
         self.assertIn(b'"request_id":"request-123"', response.body)
+
+
+class ChunkThreePrivacyTests(unittest.TestCase):
+    def test_telemetry_accepts_only_allowlisted_event_names(self):
+        subject = f"telemetry-{uuid.uuid4().hex}"
+        self.assertTrue(db.store_telemetry_event(subject, "page_scan_completed"))
+        self.assertFalse(db.store_telemetry_event(subject, "https://example.com/private"))
+        conn = db._get_conn()
+        rows = conn.execute(
+            "SELECT event_name FROM telemetry_events WHERE subject_id = ?",
+            (subject,),
+        ).fetchall()
+        self.assertEqual([row["event_name"] for row in rows], ["page_scan_completed"])
+        conn.execute("DELETE FROM telemetry_events WHERE subject_id = ?", (subject,))
+        conn.commit()
+
+    def test_retention_cleanup_deletes_only_expired_raw_records(self):
+        marker = uuid.uuid4().hex
+        old_time = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+        new_time = datetime.now(timezone.utc).isoformat()
+        conn = db._get_conn()
+        conn.execute(
+            "INSERT INTO scans (doc_type, source, user_id, timestamp) VALUES (?, ?, ?, ?)",
+            ("test", f"old-{marker}", marker, old_time),
+        )
+        conn.execute(
+            "INSERT INTO scans (doc_type, source, user_id, timestamp) VALUES (?, ?, ?, ?)",
+            ("test", f"new-{marker}", marker, new_time),
+        )
+        conn.execute(
+            """INSERT INTO image_scans (image_url, url_hash, user_id, timestamp)
+               VALUES (?, ?, ?, ?)""",
+            (f"https://example.com/{marker}.png", f"old-{marker}", marker, old_time),
+        )
+        conn.execute(
+            "INSERT INTO telemetry_events (subject_id, event_name, created_at) VALUES (?, ?, ?)",
+            (marker, "scan_failed", old_time),
+        )
+        expired_subject = f"expired-{marker}"
+        conn.execute(
+            """INSERT INTO installation_sessions
+               (token_hash, subject_id, created_at, last_seen, expires_at, revoked)
+               VALUES (?, ?, ?, ?, ?, 0)""",
+            (f"token-{marker}", expired_subject, old_time, old_time, old_time),
+        )
+        conn.execute(
+            "INSERT INTO scans (doc_type, source, user_id, timestamp) VALUES (?, ?, ?, ?)",
+            ("test", f"session-{marker}", expired_subject, new_time),
+        )
+        conn.commit()
+
+        deleted = db.purge_expired_data(30, 30)
+        self.assertGreaterEqual(deleted["expired_installations"], 1)
+        self.assertGreaterEqual(deleted["scans"], 1)
+        self.assertGreaterEqual(deleted["image_scans"], 1)
+        self.assertGreaterEqual(deleted["telemetry_events"], 1)
+        remaining = conn.execute(
+            "SELECT source FROM scans WHERE user_id = ?", (marker,)
+        ).fetchall()
+        self.assertEqual([row["source"] for row in remaining], [f"new-{marker}"])
+        expired_rows = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM scans WHERE user_id = ?",
+            (expired_subject,),
+        ).fetchone()["cnt"]
+        self.assertEqual(expired_rows, 0)
+        conn.execute("DELETE FROM scans WHERE user_id = ?", (marker,))
+        conn.commit()
+
+    def test_installation_deletion_removes_linked_data_and_session(self):
+        token, context = main.issue_installation_session()
+        subject = context.subject_id
+        fingerprint = uuid.uuid4().hex * 2
+        db.store_scan(
+            "page_scan", "selected content", {"trust_score": 50, "verdict": "unknown"},
+            fingerprint=fingerprint, url="https://example.com/report", user_id=subject,
+        )
+        db.store_image_scan(
+            "https://example.com/image.png",
+            {"authenticity_score": 50, "verdict": "uncertain", "evidence": []},
+            user_id=subject,
+        )
+        db.add_community_flag(
+            fingerprint, subject, "other",
+            "A sufficiently detailed test justification for deletion coverage.",
+        )
+        db.store_vote(fingerprint, subject, 1)
+        db.store_telemetry_event(subject, "scan_failed")
+        db.increment_daily_scan(subject, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        share_id = db.store_shared_result({
+            "fingerprint": fingerprint,
+            "score": 50,
+            "verdict": "uncertain",
+            "owner_subject_id": subject,
+        })
+
+        deleted = db.delete_installation_data(subject)
+        self.assertGreaterEqual(deleted["sessions"], 1)
+        self.assertIsNone(db.get_shared_result(share_id))
+        with self.assertRaises(main.SessionAuthError):
+            main.authenticate_installation_token(token)
+
+        conn = db._get_conn()
+        checks = (
+            ("scans", "user_id"),
+            ("image_scans", "user_id"),
+            ("community_flags", "user_id"),
+            ("response_votes", "user_id"),
+            ("telemetry_events", "subject_id"),
+            ("user_scans", "user_id"),
+            ("installation_sessions", "subject_id"),
+        )
+        for table, column in checks:
+            with self.subTest(table=table):
+                count = conn.execute(
+                    f"SELECT COUNT(*) AS cnt FROM {table} WHERE {column} = ?",
+                    (subject,),
+                ).fetchone()["cnt"]
+                self.assertEqual(count, 0)
+
+    def test_privacy_routes_are_publicly_defined_but_authenticated(self):
+        paths = {getattr(route, "path", None) for route in main.app.router.routes}
+        self.assertIn("/v1/telemetry", paths)
+        self.assertIn("/v1/data", paths)
+        request = main.Request({"type": "http", "headers": []})
+        with self.assertRaises(main.HTTPException) as caught:
+            asyncio.run(main.delete_server_data(request))
+        self.assertEqual(caught.exception.status_code, 401)
 
 
 if __name__ == "__main__":

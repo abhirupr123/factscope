@@ -47,6 +47,12 @@ services:
         value: "500"
       - key: LLM_ESTIMATED_COST_USD
         value: "0.002"
+      - key: RAW_SCAN_RETENTION_DAYS
+        value: "30"
+      - key: TELEMETRY_RETENTION_DAYS
+        value: "30"
+      - key: RETENTION_CLEANUP_INTERVAL_SECONDS
+        value: "86400"
       - key: MAX_REQUEST_BYTES
         value: "2097152"
       - key: CORS_ALLOWED_ORIGINS

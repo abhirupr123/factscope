@@ -1034,3 +1034,48 @@
 .factscope-popup .fs-scanning-text {
   color: #64748b;
 }
+
+.factscope-popup .fs-consent-body {
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 16px;
+}
+
+.factscope-popup .fs-consent-body p {
+  margin: 0 0 10px;
+}
+
+.factscope-popup .fs-consent-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.factscope-popup .fs-consent-actions button {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 12px;
+}
+
+.factscope-popup .fs-consent-decline {
+  background: #fff;
+  color: #475569;
+}
+
+.factscope-popup .fs-consent-accept {
+  background: #4f46e5;
+  border-color: #4f46e5 !important;
+  color: #fff;
+}
+
+.factscope-popup .fs-consent-link {
+  color: #4f46e5;
+  display: inline-block;
+  font-size: 12px;
+  margin-top: 12px;
+  text-decoration: underline;
+}

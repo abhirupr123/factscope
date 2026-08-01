@@ -19,7 +19,8 @@ from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprin
                 store_shared_result, get_shared_result,
                 get_user_tier, get_daily_scan_count,
                 increment_daily_scan, redeem_license_key,
-                reserve_service_usage)
+                reserve_service_usage, store_telemetry_event,
+                purge_expired_data, delete_installation_data)
 from auth import AuthContext, SessionAuthError, authenticate_installation_token, issue_installation_session
 from controls import SlidingWindowLimiter, client_ip_hash, hash_network_identity
 from llm_utils import get_structured_analysis, get_image_verification
@@ -35,7 +36,9 @@ from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
                     MAX_CONCURRENT_ANALYSES, ANALYSIS_TIMEOUT_SECONDS,
                     IMAGE_ANALYSIS_TIMEOUT_SECONDS, DAILY_LLM_CALL_LIMIT,
                     FACTCHECK_TIMEOUT_SECONDS,
-                    LLM_ESTIMATED_COST_USD)
+                    LLM_ESTIMATED_COST_USD, RAW_SCAN_RETENTION_DAYS,
+                    TELEMETRY_RETENTION_DAYS,
+                    RETENTION_CLEANUP_INTERVAL_SECONDS)
 from safe_fetch import safe_get, UnsafeURLError, ResponseTooLargeError
 import json
 import re
@@ -89,7 +92,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.5.0",
+    version="0.6.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -99,7 +102,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
@@ -268,6 +271,30 @@ async def create_installation_session(request: Request):
         "access_token": token,
         "expires_at": context.expires_at,
     }
+
+class TelemetryRequest(BaseModel):
+    event: str = Field(min_length=1, max_length=40)
+
+
+@app.post("/v1/telemetry")
+async def record_telemetry(payload: TelemetryRequest, request: Request):
+    """Store an allowlisted event name only; no scan content or URLs."""
+    subject_id = _require_session(request).subject_id
+    if not store_telemetry_event(subject_id, payload.event):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "unsupported_telemetry_event", "message": "Unsupported telemetry event"},
+        )
+    return {"success": True}
+
+
+@app.delete("/v1/data")
+async def delete_server_data(request: Request):
+    """Delete data directly linked to the authenticated anonymous installation."""
+    subject_id = _require_session(request).subject_id
+    deleted = await asyncio.to_thread(delete_installation_data, subject_id)
+    logger.info(json.dumps({"event": "installation_data_deleted", "deleted": deleted}, separators=(",", ":")))
+    return {"success": True, "deleted": deleted}
 
 
 def _check_rate_limit(uid: str) -> dict | None:
@@ -1251,7 +1278,7 @@ class ShareRequest(BaseModel):
 @app.post("/share")
 async def create_share(request: ShareRequest, http_request: Request):
     """Create a share only from a result already stored by FactScope."""
-    _require_session(http_request)
+    auth_context = _require_session(http_request)
     fingerprint = request.fingerprint
     if fingerprint.startswith("img:"):
         stored = find_image_scan_by_fingerprint(fingerprint)
@@ -1287,6 +1314,7 @@ async def create_share(request: ShareRequest, http_request: Request):
             "scanned_url": scanned_url,
             "fingerprint": fingerprint,
         }
+    data["owner_subject_id"] = auth_context.subject_id
     share_id = store_shared_result(data)
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
@@ -1466,7 +1494,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.5.0"}
+    return {"status": "ok", "version": "0.6.0"}
 
 
 @app.get("/debug/db-status")
@@ -1613,6 +1641,42 @@ async def redeem_key(req: RedeemRequest, request: Request):
     }
 
 
+
+_retention_task = None
+
+
+async def _retention_cleanup_loop():
+    while True:
+        try:
+            deleted = await asyncio.to_thread(
+                purge_expired_data,
+                RAW_SCAN_RETENTION_DAYS,
+                TELEMETRY_RETENTION_DAYS,
+            )
+            logger.info(json.dumps({"event": "retention_cleanup", "deleted": deleted}, separators=(",", ":")))
+        except Exception as exc:
+            logger.error("Retention cleanup failed: %s", type(exc).__name__)
+        await asyncio.sleep(max(60, RETENTION_CLEANUP_INTERVAL_SECONDS))
+
+
+@app.on_event("startup")
+async def start_retention_cleanup():
+    global _retention_task
+    if _retention_task is None or _retention_task.done():
+        _retention_task = asyncio.create_task(_retention_cleanup_loop())
+
+
+@app.on_event("shutdown")
+async def stop_retention_cleanup():
+    global _retention_task
+    if _retention_task is None:
+        return
+    _retention_task.cancel()
+    try:
+        await _retention_task
+    except asyncio.CancelledError:
+        pass
+    _retention_task = None
 if ENVIRONMENT == "production":
     _DEVELOPMENT_ONLY_PATHS = {
         "/debug/db-status",

@@ -323,3 +323,74 @@ button:active {
 .redeem-msg.error {
   color: #ef4444;
 }
+
+.privacy-settings {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.privacy-settings summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.setting-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.setting-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.setting-row strong {
+  font-size: 12px;
+}
+
+.setting-row small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.setting-row input {
+  margin-top: 3px;
+}
+
+button.danger-outline {
+  background: transparent;
+  border: 1px solid #dc2626;
+  color: #b91c1c;
+  font-size: 11px;
+  padding: 8px 10px;
+}
+
+button.danger-outline:hover {
+  background: #fef2f2;
+}
+
+.privacy-status {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
+.privacy-status.error {
+  color: #b91c1c;
+}
+
+.privacy-link {
+  color: var(--accent);
+  display: inline-block;
+  font-size: 11px;
+  margin-top: 8px;
+}

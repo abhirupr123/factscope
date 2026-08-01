@@ -20,7 +20,7 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -350,6 +350,16 @@ _SCHEMA_STATEMENTS = [
         PRIMARY KEY (metric, usage_date)
     )""",
 
+    # Minimal, opt-in telemetry. Event names are server-allowlisted.
+    """CREATE TABLE IF NOT EXISTS telemetry_events (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject_id TEXT NOT NULL,
+        event_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_subject ON telemetry_events(subject_id)",
+    "CREATE INDEX IF NOT EXISTS idx_telemetry_created ON telemetry_events(created_at)",
+
     # ── Shared results (shareable links) ───────────────────────────────
     """CREATE TABLE IF NOT EXISTS shared_results (
         id            TEXT PRIMARY KEY,
@@ -366,6 +376,7 @@ _SCHEMA_STATEMENTS = [
         og_image      TEXT,
         card_png      BLOB,
         server_verified INTEGER NOT NULL DEFAULT 0,
+        owner_subject_id TEXT,
         created_at    TEXT NOT NULL
     )""",
 ]
@@ -381,6 +392,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE shared_results ADD COLUMN og_image TEXT",
     "ALTER TABLE shared_results ADD COLUMN card_png BLOB",
     "ALTER TABLE shared_results ADD COLUMN server_verified INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE shared_results ADD COLUMN owner_subject_id TEXT",
 ]
 
 
@@ -1101,11 +1113,13 @@ def store_shared_result(data: dict) -> str:
     import secrets as _secrets
 
     fp = data.get("fingerprint") or ""
+    owner_subject_id = data.get("owner_subject_id") or None
     try:
         conn = _get_conn()
-        if fp:
+        if fp and owner_subject_id:
             row = conn.execute(
-                "SELECT id FROM shared_results WHERE fingerprint = ?", (fp,)
+                "SELECT id FROM shared_results WHERE fingerprint = ? AND owner_subject_id = ?",
+                (fp, owner_subject_id),
             ).fetchone()
             if row:
                 conn.execute(
@@ -1129,8 +1143,9 @@ def store_shared_result(data: dict) -> str:
         conn.execute(
             """INSERT INTO shared_results
                (id, result_type, score, verdict, explanation, evidence, domain, source_info,
-                scanned_url, scanned_title, fingerprint, og_image, server_verified, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                scanned_url, scanned_title, fingerprint, og_image, server_verified,
+                owner_subject_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 short_id,
                 data.get("result_type", "page"),
@@ -1145,6 +1160,7 @@ def store_shared_result(data: dict) -> str:
                 fp or None,
                 data.get("og_image", ""),
                 1,
+                owner_subject_id,
                 datetime.utcnow().isoformat(),
             ),
         )
@@ -1386,6 +1402,85 @@ def _extract_search_terms(text: str, max_terms: int = 12) -> list[str]:
         if len(unique) >= max_terms:
             break
     return unique
+
+TELEMETRY_ALLOWED_EVENTS = frozenset({
+    "page_scan_completed",
+    "image_scan_completed",
+    "scan_failed",
+    "history_cleared",
+})
+
+
+def store_telemetry_event(subject_id: str, event_name: str) -> bool:
+    """Store only an allowlisted event name for an opted-in installation."""
+    if not subject_id or event_name not in TELEMETRY_ALLOWED_EVENTS:
+        return False
+    try:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO telemetry_events (subject_id, event_name, created_at)
+               VALUES (?, ?, ?)""",
+            (subject_id, event_name, datetime.now(timezone.utc).isoformat()),
+        )
+        _commit_and_sync()
+        return True
+    except Exception as exc:
+        logger.warning("Telemetry event storage failed: %s", type(exc).__name__)
+        return False
+
+
+def purge_expired_data(raw_scan_days: int = 30, telemetry_days: int = 30) -> dict[str, int]:
+    """Delete expired raw scans, telemetry events, and session records."""
+    now = datetime.now(timezone.utc)
+    raw_cutoff = (now - timedelta(days=max(0, raw_scan_days))).isoformat()
+    telemetry_cutoff = (now - timedelta(days=max(0, telemetry_days))).isoformat()
+    conn = _get_conn()
+    expired_subjects = conn.execute(
+        "SELECT subject_id FROM installation_sessions WHERE expires_at < ?",
+        (now.isoformat(),),
+    ).fetchall()
+    expired_record_count = 0
+    for row in expired_subjects:
+        expired_record_count += sum(delete_installation_data(row["subject_id"]).values())
+
+    deleted = {
+        "expired_installations": len(expired_subjects),
+        "expired_installation_records": expired_record_count,
+    }
+    statements = (
+        ("scans", "DELETE FROM scans WHERE timestamp < ?", (raw_cutoff,)),
+        ("image_scans", "DELETE FROM image_scans WHERE timestamp < ?", (raw_cutoff,)),
+        ("telemetry_events", "DELETE FROM telemetry_events WHERE created_at < ?", (telemetry_cutoff,)),
+    )
+    for name, sql, params in statements:
+        cursor = conn.execute(sql, params)
+        deleted[name] = max(0, cursor.rowcount)
+    _commit_and_sync()
+    return deleted
+
+
+def delete_installation_data(subject_id: str) -> dict[str, int]:
+    """Delete records directly linked to one anonymous installation."""
+    if not subject_id:
+        return {}
+    conn = _get_conn()
+    deleted = {}
+    statements = (
+        ("shares", "DELETE FROM shared_results WHERE owner_subject_id = ?"),
+        ("telemetry", "DELETE FROM telemetry_events WHERE subject_id = ?"),
+        ("flags", "DELETE FROM community_flags WHERE user_id = ?"),
+        ("votes", "DELETE FROM response_votes WHERE user_id = ?"),
+        ("page_scans", "DELETE FROM scans WHERE user_id = ?"),
+        ("image_scans", "DELETE FROM image_scans WHERE user_id = ?"),
+        ("quota_history", "DELETE FROM user_scans WHERE user_id = ?"),
+        ("tier", "DELETE FROM user_tiers WHERE user_id = ?"),
+        ("sessions", "DELETE FROM installation_sessions WHERE subject_id = ?"),
+    )
+    for name, sql in statements:
+        cursor = conn.execute(sql, (subject_id,))
+        deleted[name] = max(0, cursor.rowcount)
+    _commit_and_sync()
+    return deleted
 
 
 # Initialize on import

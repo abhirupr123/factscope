@@ -54,71 +54,78 @@
 <main class="policy">
 
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: February 27, 2026</p>
+  <p class="updated">Last updated: July 30, 2026</p>
 
-  <p>FactScope is designed to help you verify online content. We take your privacy seriously. This policy explains what data we handle, how we use it, and what we don't do.</p>
+  <p>FactScope is a verification assistant. It processes content only after you choose a page scan or image verification. This policy describes the extension, FactScope backend, configured providers, local storage, telemetry, and deletion controls.</p>
 
-  <h2>What we collect</h2>
-  <p>When you scan a page or image using FactScope, the following data is sent to our servers for analysis:</p>
+  <h2>What we handle</h2>
+  <p>FactScope handles the following data when you use a related feature:</p>
   <ul>
-    <li><strong>Page content excerpts</strong> — The text, title, and metadata of the page you choose to scan. This is only sent when you explicitly click "Scan" or right-click an image.</li>
-    <li><strong>Image data</strong> — When you verify an image, the image URL (or the image itself for context-menu scans) is sent for AI analysis.</li>
-    <li><strong>Anonymous user ID</strong> — A random identifier generated locally in your browser (not tied to your identity) used for rate limiting and community features.</li>
-    <li><strong>Community contributions</strong> — If you flag content or vote on accuracy, that action is stored along with your anonymous ID.</li>
-    <li><strong>Scan metadata</strong> — The domain name and timestamp of each scan, used for caching and trend detection.</li>
+    <li><strong>Page scans</strong> &mdash; The page URL, title, extracted text, author and publication metadata, limited outgoing links, and basic media information are sent only after you start a page scan and accept the first-scan disclosure.</li>
+    <li><strong>Image verification</strong> &mdash; The selected image URL, page URL, nearby caption or post text, platform, and public account name may be sent after you choose “Verify image with FactScope” and accept the disclosure. The backend fetches the selected image for analysis.</li>
+    <li><strong>Anonymous installation session</strong> &mdash; The server creates a random installation identifier and signed bearer token. The token is stored in Chrome local extension storage; only a one-way hash of the token and the random server identifier are stored in the database.</li>
+    <li><strong>Community contributions</strong> &mdash; Flags, justifications, source links, and votes are associated with the anonymous installation identifier.</li>
+    <li><strong>Operational data</strong> &mdash; Request ID, route, response status, latency, quota usage, and provider failure type are logged without scanned content or URLs. A keyed hash of the network address is used in memory for burst limiting.</li>
+    <li><strong>Optional telemetry</strong> &mdash; If enabled in the extension, FactScope stores only an allowlisted event name such as “page scan completed” or “history cleared,” plus the anonymous installation identifier and timestamp.</li>
+    <li><strong>Local history</strong> &mdash; The extension stores up to 15 recent entries locally, including full page URL, title, domain, result score, verdict, scan type, and timestamp.</li>
   </ul>
 
-  <h2>What we do NOT collect</h2>
+  <h2>What we do not collect</h2>
   <ul>
-    <li>No personal information (name, email, address, phone number)</li>
-    <li>No passwords or authentication credentials</li>
-    <li>No browsing history — we never track which pages you visit</li>
-    <li>No cookies or cross-site tracking identifiers</li>
-    <li>No data from pages you don't explicitly scan</li>
+    <li>No account profile, name, email address, phone number, or postal address</li>
+    <li>No passwords, page login credentials, cookies, or cross-site tracking identifiers</li>
+    <li>No content from pages you merely visit; scripts and styles are injected only after a scan or image-verification action</li>
+    <li>No page text, titles, claims, full URLs, or image URLs in optional telemetry</li>
+    <li>No sale of data or use of scanned content for advertising</li>
   </ul>
 
-  <h2>How your data is processed</h2>
-  <p>When you scan content, the following happens:</p>
+  <h2>How scans are processed</h2>
   <ul>
-    <li>Page text is sent to <strong>Google's Gemini API</strong> for AI-powered trust analysis. Google processes this data according to their <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener">Gemini API Terms of Service</a>.</li>
-    <li>Extracted claims are checked against <strong>Google News RSS</strong> (a public feed) and the <strong>Google Fact Check API</strong> for news corroboration. No personal data is shared in these queries.</li>
-    <li>Results are cached in our database to speed up future scans of the same content.</li>
+    <li>The selected content is sent through the FactScope backend hosted by <strong>Render</strong>.</li>
+    <li>Page text, image content, and relevant context are sent to the configured <strong>Google Gemini API</strong> model for analysis. Google processes this data under its <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noopener noreferrer">Gemini API terms</a>.</li>
+    <li>Extracted claims may be queried through <strong>Google News RSS</strong> and the <strong>Google Fact Check Tools API</strong>. These queries contain claim terms needed for corroboration, not your installation token.</li>
+    <li>Results are cached in the FactScope database so identical content can reuse an existing result during the retention period.</li>
   </ul>
 
-  <h2>Data storage</h2>
-  <p>Scan results and community data are stored in <strong>Turso</strong>, a SQLite-compatible cloud database. Pattern matching data may also be indexed in <strong>Elasticsearch</strong>. All data is anonymized — no scan result is tied to a real identity.</p>
+  <h2>Storage and security</h2>
+  <p>Production data is stored in <strong>Turso</strong>, a SQLite-compatible database. FactScope stores anonymous installation identifiers rather than account identities. Bearer tokens are signed, and only token hashes are stored server-side. Access controls, request limits, private-network URL blocking, and response-size limits are used to reduce misuse. No security measure can guarantee absolute protection.</p>
 
   <h2>Third-party services</h2>
   <ul>
-    <li><strong>Google Gemini API</strong> — AI analysis of page content and images</li>
-    <li><strong>Google News RSS &amp; Fact Check API</strong> — Claim corroboration against published news</li>
-    <li><strong>Render</strong> — Backend hosting</li>
-    <li><strong>Turso</strong> — Database storage</li>
+    <li><strong>Google Gemini API</strong> &mdash; AI analysis of selected page content and images</li>
+    <li><strong>Google News RSS and Fact Check Tools API</strong> &mdash; Claim corroboration</li>
+    <li><strong>Render</strong> &mdash; Backend hosting and operational logs</li>
+    <li><strong>Turso</strong> &mdash; Production database storage</li>
+    <li><strong>Chrome local extension storage</strong> &mdash; Session token, consent version, telemetry preference, and recent scan history on your device</li>
   </ul>
 
-  <h2>Data retention</h2>
+  <h2>Retention</h2>
   <ul>
-    <li><strong>Scan results</strong> are cached for performance. Cached data may be retained for up to 30 days.</li>
-    <li><strong>Community flags and votes</strong> are stored indefinitely to build collective trust signals.</li>
-    <li><strong>No personal data</strong> is retained because none is collected.</li>
+    <li><strong>Raw page and image scan records</strong> are automatically deleted after 30 days by a scheduled cleanup process.</li>
+    <li><strong>Optional telemetry events</strong> are automatically deleted after 30 days.</li>
+    <li><strong>Installation sessions</strong> expire after 180 days by default. Scheduled cleanup removes the expired session and records linked to that installation so data is not orphaned.</li>
+    <li><strong>Local scan history</strong> remains on your device until you clear it, delete server data through the extension, clear extension storage, or uninstall FactScope.</li>
+    <li><strong>Community flags, votes, quota records, and public share pages</strong> remain until you use “Delete my server data” or they are removed for operational or moderation reasons.</li>
+    <li><strong>Aggregated domain statistics and de-identified knowledge-base entries</strong> may remain because they are not linked to an installation identifier.</li>
   </ul>
 
-  <h2>Your rights</h2>
-  <p>Since FactScope does not collect personal information, there is no personal data to access, correct, or delete. However:</p>
+  <h2>Your controls</h2>
   <ul>
-    <li>You can <strong>uninstall the extension</strong> at any time to stop all data transmission.</li>
-    <li>You can <strong>clear extension data</strong> through Chrome settings (chrome://extensions) to reset your anonymous ID.</li>
-    <li>Community contributions (flags, votes) linked to your anonymous ID cannot currently be deleted individually, as they are anonymized.</li>
+    <li>You can decline the first-scan disclosure. Declining prevents that page or image content from being transmitted.</li>
+    <li>Optional telemetry is off by default and can be enabled or disabled under <strong>Privacy &amp; data</strong> in the extension popup.</li>
+    <li>You can clear recent local history from the extension popup.</li>
+    <li>You can select <strong>Delete my server data</strong> to delete scans, image scans, flags, votes, telemetry events, quota history, tier assignment, owned share pages, and anonymous sessions linked to the current installation. A new anonymous session is created if you use the service again.</li>
+    <li>You can uninstall the extension at any time to stop future transmission.</li>
   </ul>
 
   <h2>Children's privacy</h2>
-  <p>FactScope is not directed at children under 13. We do not knowingly collect data from children.</p>
+  <p>FactScope is not directed at children under 13. We do not knowingly collect personal information from children.</p>
 
   <h2>Changes to this policy</h2>
-  <p>We may update this policy as the product evolves. Material changes will be noted on this page with an updated date.</p>
+  <p>We may update this policy as FactScope changes. Material changes will be shown here with a revised date.</p>
 
   <h2>Contact</h2>
-  <p>Questions about this privacy policy? Reach out at <strong>factscope@gmail.com</strong>.</p>
+  <p>Questions or deletion problems? Contact <strong>factscope@gmail.com</strong>.</p>
 
 </main>
 

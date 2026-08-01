@@ -44,6 +44,20 @@
         <div id="history-list"></div>
       </div>
 
+      <details class="privacy-settings">
+        <summary>Privacy &amp; data</summary>
+        <label class="setting-row" for="telemetry-enabled">
+          <span>
+            <strong>Anonymous telemetry</strong>
+            <small>Send event names such as ?scan completed.? Never sends page text, titles, claims, or URLs.</small>
+          </span>
+          <input id="telemetry-enabled" type="checkbox" />
+        </label>
+        <button id="delete-server-data" class="danger-outline" type="button">Delete my server data</button>
+        <p id="privacy-status" class="privacy-status" role="status"></p>
+        <a class="privacy-link" href="https://factscope.netlify.app/privacy" target="_blank" rel="noopener noreferrer">Read the privacy policy</a>
+      </details>
+
       <!-- <details id="upgrade-section" class="upgrade-section">
         <summary>Have a license key?</summary>
         <div class="upgrade-form">

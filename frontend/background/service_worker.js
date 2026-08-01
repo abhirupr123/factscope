@@ -13,6 +13,8 @@ const _apiReady = (async () => {
 
 const SESSION_TOKEN_KEY = 'factscope_session_token';
 const SESSION_EXPIRY_KEY = 'factscope_session_expires_at';
+const TELEMETRY_ENABLED_KEY = 'factscope_telemetry_enabled';
+const HISTORY_KEY = 'factscope_history';
 let _sessionPromise = null;
 
 function storageGet(keys) {
@@ -76,6 +78,55 @@ async function apiFetch(path, options = {}, retryAuth = true) {
   return response;
 }
 
+async function recordTelemetry(event) {
+  const allowedEvents = new Set([
+    'page_scan_completed',
+    'image_scan_completed',
+    'scan_failed',
+    'history_cleared',
+  ]);
+  if (!allowedEvents.has(event)) return;
+  const stored = await storageGet([TELEMETRY_ENABLED_KEY]);
+  if (stored[TELEMETRY_ENABLED_KEY] !== true) return;
+  try {
+    await apiFetch('/v1/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event }),
+    });
+  } catch {
+    // Telemetry is best-effort and never affects product behavior.
+  }
+}
+
+function sendTabMessage(tabId, message) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(response);
+      }
+    });
+  });
+}
+
+async function ensureFactScopeInjected(tabId) {
+  try {
+    const response = await sendTabMessage(tabId, { type: 'factscope-ping' });
+    if (response?.ready) return;
+  } catch {
+    // The page has not received the action-triggered script yet.
+  }
+  await chrome.scripting.insertCSS({ target: { tabId }, files: ['content/overlay.css'] });
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content_script.js'] });
+}
+
+async function startPageScan(tabId) {
+  await ensureFactScopeInjected(tabId);
+  await sendTabMessage(tabId, { type: 'factscope-start-page-scan' });
+}
+
 /* ── Context menu for image verification ──────────────────────────── */
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -86,13 +137,18 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === 'factscope-verify-image' && info.srcUrl) {
-    chrome.tabs.sendMessage(tab.id, {
-      type: 'factscope-verify-image-start',
-      imageUrl: info.srcUrl,
-      pageUrl: info.pageUrl || tab.url,
-    });
+    try {
+      await ensureFactScopeInjected(tab.id);
+      await sendTabMessage(tab.id, {
+        type: 'factscope-verify-image-start',
+        imageUrl: info.srcUrl,
+        pageUrl: info.pageUrl || tab.url,
+      });
+    } catch (error) {
+      console.warn('FactScope cannot run on this page:', error.message);
+    }
   }
 });
 
@@ -117,17 +173,29 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 const MAX_HISTORY = 15;
 
 function saveHistoryEntry(entry) {
-  chrome.storage.local.get('factscope_history', (data) => {
-    const history = data.factscope_history || [];
+  chrome.storage.local.get(HISTORY_KEY, (data) => {
+    const history = data[HISTORY_KEY] || [];
     history.unshift(entry);
     if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
-    chrome.storage.local.set({ factscope_history: history });
+    chrome.storage.local.set({ [HISTORY_KEY]: history });
   });
 }
 
 /* ── Message routing ──────────────────────────────────────────────── */
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'start-page-scan') {
+    (async () => {
+      try {
+        await startPageScan(message.tabId);
+        sendResponse({ success: true });
+      } catch {
+        sendResponse({ success: false, error: 'FactScope cannot run on this page.' });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === 'update-badge') {
     const tabId = sender.tab?.id;
     if (tabId && typeof message.score === 'number') {
@@ -174,8 +242,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
         }
         sendResponse(data);
+        void recordTelemetry('page_scan_completed');
       } catch (err) {
         console.error('FactScope backend error:', err);
+        void recordTelemetry('scan_failed');
         sendResponse({
           trust_score: 50,
           verdict: 'unknown',
@@ -225,8 +295,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
         }
         sendResponse(data);
+        void recordTelemetry('image_scan_completed');
       } catch (err) {
         console.error('FactScope image verify error:', err);
+        void recordTelemetry('scan_failed');
         sendResponse({
           authenticity_score: 50,
           verdict: 'uncertain',
@@ -356,6 +428,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await r.json());
       } catch (err) {
         sendResponse({ error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'record-telemetry') {
+    void recordTelemetry(message.event);
+    sendResponse({ success: true });
+    return false;
+  }
+
+  if (message.type === 'delete-server-data') {
+    (async () => {
+      try {
+        const response = await apiFetch('/v1/data', { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok) {
+          sendResponse({ success: false, error: data.message || 'Deletion failed.' });
+          return;
+        }
+        await storageRemove([SESSION_TOKEN_KEY, SESSION_EXPIRY_KEY, HISTORY_KEY]);
+        sendResponse({ success: true, deleted: data.deleted || {} });
+      } catch {
+        sendResponse({ success: false, error: 'Could not delete server data. Please try again.' });
       }
     })();
     return true;

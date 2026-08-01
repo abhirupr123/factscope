@@ -3,6 +3,9 @@ const scanButton = document.getElementById('scan-tab');
 const historyList = document.getElementById('history-list');
 const historySection = document.getElementById('history-section');
 const clearBtn = document.getElementById('clear-history');
+const telemetryToggle = document.getElementById('telemetry-enabled');
+const deleteServerDataBtn = document.getElementById('delete-server-data');
+const privacyStatus = document.getElementById('privacy-status');
 
 const VERDICT_LABELS = {
   authentic: 'Authentic',
@@ -122,6 +125,7 @@ chrome.runtime.sendMessage({ type: 'get-usage' }, updateUsageUI);
 clearBtn.addEventListener('click', () => {
   chrome.storage.local.remove('factscope_history', () => {
     renderHistory([]);
+    chrome.runtime.sendMessage({ type: 'record-telemetry', event: 'history_cleared' });
   });
 });
 
@@ -134,16 +138,50 @@ scanButton.addEventListener('click', async () => {
       return;
     }
 
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => window.dispatchEvent(new CustomEvent('factscope-scan')),
+    chrome.runtime.sendMessage({ type: 'start-page-scan', tabId: tab.id }, (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        resultEl.textContent = response?.error || 'FactScope cannot run on this page.';
+        return;
+      }
+      window.close();
     });
-
-    window.close();
   } catch (err) {
     console.error('FactScope scan trigger failed:', err);
     resultEl.textContent = 'Could not trigger the scan. Check permissions and reload the page.';
   }
+});
+
+chrome.storage.local.get('factscope_telemetry_enabled', (data) => {
+  telemetryToggle.checked = data.factscope_telemetry_enabled === true;
+});
+
+telemetryToggle.addEventListener('change', () => {
+  chrome.storage.local.set({ factscope_telemetry_enabled: telemetryToggle.checked });
+  privacyStatus.textContent = telemetryToggle.checked
+    ? 'Anonymous telemetry enabled.'
+    : 'Anonymous telemetry disabled.';
+  privacyStatus.className = 'privacy-status';
+});
+
+deleteServerDataBtn.addEventListener('click', () => {
+  const confirmed = window.confirm(
+    'Delete scans, image scans, votes, flags, shares, telemetry, quota history, and this anonymous installation session from the FactScope server?'
+  );
+  if (!confirmed) return;
+  deleteServerDataBtn.disabled = true;
+  privacyStatus.textContent = 'Deleting server data...';
+  privacyStatus.className = 'privacy-status';
+  chrome.runtime.sendMessage({ type: 'delete-server-data' }, (response) => {
+    deleteServerDataBtn.disabled = false;
+    if (response?.success) {
+      renderHistory([]);
+      privacyStatus.textContent = 'Server data and local scan history deleted.';
+      privacyStatus.className = 'privacy-status';
+    } else {
+      privacyStatus.textContent = response?.error || 'Deletion failed. Please try again.';
+      privacyStatus.className = 'privacy-status error';
+    }
+  });
 });
 
 /* ── License key redemption ─────────────────────────────────────── */
@@ -152,7 +190,7 @@ const redeemBtn = document.getElementById('redeem-btn');
 const licenseInput = document.getElementById('license-key');
 const redeemMsg = document.getElementById('redeem-msg');
 
-redeemBtn.addEventListener('click', () => {
+redeemBtn?.addEventListener('click', () => {
   const key = licenseInput.value.trim();
   if (!key) return;
 
