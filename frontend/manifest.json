@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "FactScope",
   "version": "1.2.0",
-  "description": "AI-powered misinformation detection. Scan any page or image for trust signals, fact-checks, and community verification.",
+  "description": "Verification assistant for user-selected pages and images, showing trust signals, related evidence, and uncertainty.",
   "permissions": [
     "storage",
     "scripting",
@@ -10,7 +10,6 @@
     "contextMenus"
   ],
   "host_permissions": [
-    "http://localhost:8000/*",
     "https://factscope-api.onrender.com/*"
   ],
   "background": {

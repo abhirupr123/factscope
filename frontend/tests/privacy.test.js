@@ -13,9 +13,10 @@ const policy = fs.readFileSync(path.join(frontend, 'site', 'privacy.html'), 'utf
 assert.equal(manifest.version, '1.2.0');
 assert.equal(manifest.content_scripts, undefined, 'content scripts must not run on every page');
 assert.deepEqual(manifest.host_permissions, [
-  'http://localhost:8000/*',
   'https://factscope-api.onrender.com/*',
 ]);
+assert.doesNotMatch(worker, /localhost:8000/);
+assert.doesNotMatch(worker, /_apiReady/);
 assert.ok(manifest.permissions.includes('activeTab'));
 assert.ok(manifest.permissions.includes('scripting'));
 

@@ -1,15 +1,4 @@
-const PROD_BASE = 'https://factscope-api.onrender.com';
-const DEV_BASE = 'http://localhost:8000';
-
-let API_BASE = PROD_BASE;
-
-const _apiReady = (async () => {
-  try {
-    const resp = await fetch(`${DEV_BASE}/health`, { signal: AbortSignal.timeout(1500) });
-    if (resp.ok) { API_BASE = DEV_BASE; return; }
-  } catch { /* dev server not running */ }
-  API_BASE = PROD_BASE;
-})();
+const API_BASE = 'https://factscope-api.onrender.com';
 
 const SESSION_TOKEN_KEY = 'factscope_session_token';
 const SESSION_EXPIRY_KEY = 'factscope_session_expires_at';
@@ -32,7 +21,6 @@ function storageRemove(keys) {
 }
 
 async function getSessionToken(forceRefresh = false) {
-  await _apiReady;
   if (!forceRefresh) {
     const stored = await storageGet([SESSION_TOKEN_KEY, SESSION_EXPIRY_KEY]);
     const expiresAt = Date.parse(stored[SESSION_EXPIRY_KEY] || '');
@@ -206,7 +194,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'analyze') {
     (async () => {
-      await _apiReady;
       const payload = { ...message.payload };
       try {
         const r = await apiFetch('/analyze', {
@@ -259,7 +246,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'verify-image') {
     (async () => {
-      await _apiReady;
       const payload = { ...message.payload };
       try {
         const r = await apiFetch('/analyze/verify-image', {
@@ -312,7 +298,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'get-claims') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch(`/claims/${encodeURIComponent(message.fingerprint)}`);
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
@@ -326,7 +311,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'flag-content') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch('/flag', {
           method: 'POST',
@@ -350,7 +334,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'vote') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch('/vote', {
           method: 'POST',
@@ -371,7 +354,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'get-community-notes') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch(`/community-notes/${encodeURIComponent(message.fingerprint)}`);
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
@@ -385,7 +367,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'get-usage') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch('/user/usage');
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
@@ -399,7 +380,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'redeem-key') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch('/redeem-key', {
           method: 'POST',
@@ -417,7 +397,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'share-result') {
     (async () => {
-      await _apiReady;
       try {
         const r = await apiFetch('/share', {
           method: 'POST',
