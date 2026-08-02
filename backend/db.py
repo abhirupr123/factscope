@@ -1459,23 +1459,43 @@ def purge_expired_data(raw_scan_days: int = 30, telemetry_days: int = 30) -> dic
     return deleted
 
 
-def delete_installation_data(subject_id: str) -> dict[str, int]:
-    """Delete records directly linked to one anonymous installation."""
+def delete_installation_data(
+    subject_id: str,
+    *,
+    preserve_security_records: bool = False,
+) -> dict[str, int]:
+    """Delete records linked to an installation.
+
+    User-requested deletion preserves only the signed session and quota counter so
+    deleting data cannot reset free usage. Expired-session cleanup uses the default
+    full deletion path and removes those security records as well.
+    """
     if not subject_id:
         return {}
     conn = _get_conn()
     deleted = {}
-    statements = (
+    statements = [
         ("shares", "DELETE FROM shared_results WHERE owner_subject_id = ?"),
         ("telemetry", "DELETE FROM telemetry_events WHERE subject_id = ?"),
         ("flags", "DELETE FROM community_flags WHERE user_id = ?"),
         ("votes", "DELETE FROM response_votes WHERE user_id = ?"),
         ("page_scans", "DELETE FROM scans WHERE user_id = ?"),
         ("image_scans", "DELETE FROM image_scans WHERE user_id = ?"),
-        ("quota_history", "DELETE FROM user_scans WHERE user_id = ?"),
         ("tier", "DELETE FROM user_tiers WHERE user_id = ?"),
-        ("sessions", "DELETE FROM installation_sessions WHERE subject_id = ?"),
-    )
+    ]
+    if not preserve_security_records:
+        statements.extend((
+            ("quota_history", "DELETE FROM user_scans WHERE user_id = ?"),
+            ("sessions", "DELETE FROM installation_sessions WHERE subject_id = ?"),
+        ))
+    else:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        cursor = conn.execute(
+            "DELETE FROM user_scans WHERE user_id = ? AND scan_date <> ?",
+            (subject_id, today),
+        )
+        deleted["quota_history"] = max(0, cursor.rowcount)
+        deleted["sessions"] = 0
     for name, sql in statements:
         cursor = conn.execute(sql, (subject_id,))
         deleted[name] = max(0, cursor.rowcount)

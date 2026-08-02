@@ -8,7 +8,7 @@ import socket
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import uuid
 
 
@@ -29,6 +29,7 @@ from safe_fetch import (  # noqa: E402
     validate_public_url,
 )
 import main  # noqa: E402
+import llm_utils  # noqa: E402
 import db  # noqa: E402
 
 
@@ -333,6 +334,23 @@ class ChunkTwoProtectionTests(unittest.TestCase):
         self.assertIn(b'"request_id":"request-123"', response.body)
 
 
+    def test_gemini_retries_transient_503_and_returns_success(self):
+        unavailable = Mock(status_code=503)
+        success = Mock(status_code=200)
+        success.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
+        }
+
+        with patch("requests.post", side_effect=[unavailable, success]) as post, patch("time.sleep"):
+            result = llm_utils._call_gemini(
+                "system", "content", None, None, 100,
+                model_override="gemma-4-31b-it",
+            )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(post.call_count, 2)
+
+
 class ChunkThreePrivacyTests(unittest.TestCase):
     def test_telemetry_accepts_only_allowlisted_event_names(self):
         subject = f"telemetry-{uuid.uuid4().hex}"
@@ -449,6 +467,25 @@ class ChunkThreePrivacyTests(unittest.TestCase):
                     (subject,),
                 ).fetchone()["cnt"]
                 self.assertEqual(count, 0)
+
+    def test_user_requested_deletion_preserves_session_and_daily_quota(self):
+        token, context = main.issue_installation_session()
+        subject = context.subject_id
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        db.increment_daily_scan(subject, today)
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        db.increment_daily_scan(subject, yesterday)
+
+        deleted = db.delete_installation_data(
+            subject,
+            preserve_security_records=True,
+        )
+
+        self.assertEqual(deleted["quota_history"], 1)
+        self.assertEqual(deleted["sessions"], 0)
+        self.assertEqual(db.get_daily_scan_count(subject, today), 1)
+        self.assertEqual(db.get_daily_scan_count(subject, yesterday), 0)
+        self.assertEqual(main.authenticate_installation_token(token).subject_id, subject)
 
     def test_privacy_routes_are_publicly_defined_but_authenticated(self):
         paths = {getattr(route, "path", None) for route in main.app.router.routes}

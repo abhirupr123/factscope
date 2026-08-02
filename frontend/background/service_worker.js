@@ -448,7 +448,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ success: false, error: data.message || 'Deletion failed.' });
           return;
         }
-        await storageRemove([SESSION_TOKEN_KEY, SESSION_EXPIRY_KEY, HISTORY_KEY]);
+        await storageRemove([HISTORY_KEY]);
         sendResponse({ success: true, deleted: data.deleted || {} });
       } catch {
         sendResponse({ success: false, error: 'Could not delete server data. Please try again.' });

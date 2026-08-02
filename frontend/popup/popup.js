@@ -165,7 +165,7 @@ telemetryToggle.addEventListener('change', () => {
 
 deleteServerDataBtn.addEventListener('click', () => {
   const confirmed = window.confirm(
-    'Delete scans, image scans, votes, flags, shares, telemetry, quota history, and this anonymous installation session from the FactScope server?'
+    'Delete scans, image scans, votes, flags, shares, telemetry, and tier data from the FactScope server? A minimal session and current quota record are retained temporarily to prevent abuse.'
   );
   if (!confirmed) return;
   deleteServerDataBtn.disabled = true;

@@ -105,7 +105,8 @@
     <li><strong>Optional telemetry events</strong> are automatically deleted after 30 days.</li>
     <li><strong>Installation sessions</strong> expire after 180 days by default. Scheduled cleanup removes the expired session and records linked to that installation so data is not orphaned.</li>
     <li><strong>Local scan history</strong> remains on your device until you clear it, delete server data through the extension, clear extension storage, or uninstall FactScope.</li>
-    <li><strong>Community flags, votes, quota records, and public share pages</strong> remain until you use “Delete my server data” or they are removed for operational or moderation reasons.</li>
+    <li><strong>Community flags, votes, and public share pages</strong> remain until you use &ldquo;Delete my server data&rdquo; or they are removed for operational or moderation reasons.</li>
+    <li><strong>Minimal abuse-prevention records</strong> &mdash; the hashed installation session and current quota counter are retained after a deletion request until their normal expiry. They contain no page text, titles, claims, full URLs, or image URLs and prevent repeated deletion from resetting free usage limits.</li>
     <li><strong>Aggregated domain statistics and de-identified knowledge-base entries</strong> may remain because they are not linked to an installation identifier.</li>
   </ul>
 
@@ -114,7 +115,7 @@
     <li>You can decline the first-scan disclosure. Declining prevents that page or image content from being transmitted.</li>
     <li>Optional telemetry is off by default and can be enabled or disabled under <strong>Privacy &amp; data</strong> in the extension popup.</li>
     <li>You can clear recent local history from the extension popup.</li>
-    <li>You can select <strong>Delete my server data</strong> to delete scans, image scans, flags, votes, telemetry events, quota history, tier assignment, owned share pages, and anonymous sessions linked to the current installation. A new anonymous session is created if you use the service again.</li>
+    <li>You can select <strong>Delete my server data</strong> to delete scans, image scans, flags, votes, telemetry events, tier assignment, and owned share pages linked to the current installation. A minimal hashed session record and the current quota counter remain temporarily for security and abuse prevention, then expire automatically.</li>
     <li>You can uninstall the extension at any time to stop future transmission.</li>
   </ul>
 

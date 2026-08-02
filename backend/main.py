@@ -290,9 +290,13 @@ async def record_telemetry(payload: TelemetryRequest, request: Request):
 
 @app.delete("/v1/data")
 async def delete_server_data(request: Request):
-    """Delete data directly linked to the authenticated anonymous installation."""
+    """Delete user data while retaining minimal, expiring anti-abuse records."""
     subject_id = _require_session(request).subject_id
-    deleted = await asyncio.to_thread(delete_installation_data, subject_id)
+    deleted = await asyncio.to_thread(
+        delete_installation_data,
+        subject_id,
+        preserve_security_records=True,
+    )
     logger.info(json.dumps({"event": "installation_data_deleted", "deleted": deleted}, separators=(",", ":")))
     return {"success": True, "deleted": deleted}
 

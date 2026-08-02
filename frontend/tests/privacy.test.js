@@ -7,6 +7,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(frontend, 'manifest.json')
 const worker = fs.readFileSync(path.join(frontend, 'background', 'service_worker.js'), 'utf8');
 const content = fs.readFileSync(path.join(frontend, 'content', 'content_script.js'), 'utf8');
 const popup = fs.readFileSync(path.join(frontend, 'popup', 'popup.js'), 'utf8');
+const popupHtml = fs.readFileSync(path.join(frontend, 'popup', 'popup.html'), 'utf8');
 const policy = fs.readFileSync(path.join(frontend, 'site', 'privacy.html'), 'utf8');
 
 assert.equal(manifest.version, '1.2.0');
@@ -21,6 +22,8 @@ assert.ok(manifest.permissions.includes('scripting'));
 assert.match(worker, /ensureFactScopeInjected[\s\S]*chrome\.scripting\.insertCSS/);
 assert.match(worker, /ensureFactScopeInjected[\s\S]*chrome\.scripting\.executeScript/);
 assert.match(worker, /apiFetch\('\/v1\/data', \{ method: 'DELETE' \}\)/);
+assert.match(worker, /storageRemove\(\[HISTORY_KEY\]\)/);
+assert.doesNotMatch(worker, /storageRemove\(\[SESSION_TOKEN_KEY, SESSION_EXPIRY_KEY, HISTORY_KEY\]\)/);
 assert.match(worker, /body: JSON\.stringify\(\{ event \}\)/);
 
 const pageScan = content.slice(content.indexOf('async function scanPage()'));
@@ -40,9 +43,13 @@ assert.match(content, /if \(!consented\) return;/);
 
 assert.match(popup, /factscope_telemetry_enabled/);
 assert.match(popup, /delete-server-data/);
+assert.match(popup, /minimal session and current quota record are retained temporarily/);
+assert.match(popupHtml, /such as "scan completed\."/);
+assert.doesNotMatch(popupHtml, /\?scan completed\.\?/);
 assert.match(policy, /Raw page and image scan records/);
 assert.match(policy, /automatically deleted after 30 days/);
 assert.match(policy, /Optional telemetry is off by default/);
 assert.match(policy, /Delete my server data/);
 
+assert.match(policy, /Minimal abuse-prevention records/);
 console.log('frontend privacy tests passed');

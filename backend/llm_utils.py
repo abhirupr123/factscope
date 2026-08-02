@@ -14,6 +14,15 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+
+class ProviderHTTPError(RuntimeError):
+    """Sanitized upstream HTTP failure safe for operational logs."""
+
+    def __init__(self, status_code: int, model: str):
+        self.status_code = status_code
+        self.model = model
+        super().__init__(f"Provider HTTP {status_code}")
+
 STRUCTURED_SYSTEM_PROMPT = """\
 You are FactScope, a content-authenticity analyst. Today's date is {today}.
 
@@ -138,9 +147,19 @@ def _call_llm(
     """
     provider = LLM_PROVIDER
     max_tokens = max(DEFAULT_MAX_TOKENS, min_tokens)
-    logger.info("LLM call via provider=%s has_media=%s extra_imgs=%d max_tokens=%d model=%s",
-                provider, media_data is not None, len(extra_images or []),
-                max_tokens, model_override or "default")
+    effective_model = model_override
+    if provider == "gemini":
+        effective_model = effective_model or GEMINI_MODEL
+    elif provider == "openai":
+        effective_model = effective_model or OPENAI_MODEL
+    else:
+        effective_model = effective_model or "provider-default"
+    estimated_input_tokens = (len(system_prompt or "") + len(user_content or "") + 3) // 4
+    logger.info(
+        "LLM call via provider=%s has_media=%s extra_imgs=%d max_tokens=%d model=%s estimated_input_tokens=%d",
+        provider, media_data is not None, len(extra_images or []), max_tokens,
+        effective_model, estimated_input_tokens,
+    )
 
     if provider == "gemini":
         return _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override, extra_images)
@@ -186,11 +205,11 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
 
     last_err = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             resp = requests.post(url, json=body, timeout=PROVIDER_HTTP_TIMEOUT_SECONDS)
             if resp.status_code != 200:
-                raise RuntimeError(f"Provider HTTP {resp.status_code}")
+                raise ProviderHTTPError(resp.status_code, model_name)
             data = resp.json()
             candidates = data.get("candidates", [])
             if not candidates:
@@ -207,8 +226,17 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
             raise RuntimeError("No text in response parts")
         except Exception as e:
             last_err = e
-            if "500" in str(e) and attempt < 2:
-                logger.warning("Gemini 500 error (attempt %d/3), retrying: %s", attempt + 1, e)
+            status_code = getattr(e, "status_code", None)
+            retryable = status_code in {500, 502, 503, 504}
+            logger.warning(
+                "Gemini provider failure model=%s status=%s attempt=%d/2 retryable=%s error_type=%s",
+                model_name,
+                status_code if status_code is not None else "transport",
+                attempt + 1,
+                retryable,
+                type(e).__name__,
+            )
+            if retryable and attempt < 1:
                 time.sleep(2 * (attempt + 1))
                 continue
             raise
@@ -301,7 +329,12 @@ def get_structured_analysis(
         )
         return _parse_structured_response(raw_text)
     except Exception as exc:
-        logger.error("Structured analysis provider failed: %s", type(exc).__name__)
+        logger.error(
+            "Structured analysis provider failed: error_type=%s status=%s model=%s",
+            type(exc).__name__,
+            getattr(exc, "status_code", None),
+            getattr(exc, "model", GEMINI_MODEL if LLM_PROVIDER == "gemini" else "provider-default"),
+        )
         return {
             "trust_score": 50,
             "verdict": "unknown",
