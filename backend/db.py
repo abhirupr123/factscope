@@ -208,7 +208,8 @@ _SCHEMA_STATEMENTS = [
         source_info TEXT,
         og_image TEXT,
         content_signature TEXT,
-        content_classification TEXT
+        content_classification TEXT,
+        source_quality TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_scans_fingerprint ON scans(fingerprint)",
     "CREATE INDEX IF NOT EXISTS idx_scans_trust_score ON scans(trust_score)",
@@ -422,6 +423,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE scans ADD COLUMN og_image TEXT",
     "ALTER TABLE scans ADD COLUMN content_signature TEXT",
     "ALTER TABLE scans ADD COLUMN content_classification TEXT",
+    "ALTER TABLE scans ADD COLUMN source_quality TEXT",
     "ALTER TABLE image_scans ADD COLUMN analysis_version TEXT",
     "ALTER TABLE image_scans ADD COLUMN page_url TEXT",
     "ALTER TABLE image_scans ADD COLUMN scanned_title TEXT",
@@ -464,7 +466,8 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
                scanned_title: str = None, canonical_url: str = None,
                source_info: dict = None, og_image: str = None,
                content_signature: str = None,
-               content_classification: dict = None):
+               content_classification: dict = None,
+               source_quality: dict = None):
     """Store an analysis result."""
     try:
         conn = _get_conn()
@@ -489,6 +492,7 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
             "content_classification": (
                 json.dumps(content_classification) if content_classification else None
             ),
+            "source_quality": json.dumps(source_quality) if source_quality else None,
         }
 
         if isinstance(result, dict):
@@ -505,8 +509,8 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
                (doc_type, source, url, fingerprint, trust_score, verdict,
                 explanation, evidence, judgement, user_id, timestamp,
                 analysis_version, scanned_title, canonical_url, source_info, og_image,
-                content_signature, content_classification)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                content_signature, content_classification, source_quality)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc["doc_type"], doc["source"], doc["url"], doc["fingerprint"],
                 doc["trust_score"], doc["verdict"], doc["explanation"],
@@ -514,6 +518,7 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
                 doc["timestamp"], doc["analysis_version"], doc["scanned_title"],
                 doc["canonical_url"], doc["source_info"], doc["og_image"],
                 doc["content_signature"], doc["content_classification"],
+                doc["source_quality"],
             ),
         )
         _commit_and_sync()
@@ -549,6 +554,11 @@ def find_by_fingerprint(fingerprint: str) -> dict | None:
                     doc["content_classification"] = json.loads(doc["content_classification"])
                 except (json.JSONDecodeError, TypeError):
                     doc["content_classification"] = None
+            if doc.get("source_quality"):
+                try:
+                    doc["source_quality"] = json.loads(doc["source_quality"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["source_quality"] = None
             return doc
     except Exception as exc:
         logger.warning("Fingerprint lookup failed: %s", exc)
@@ -581,6 +591,9 @@ def find_cached_scan(fingerprint: str, analysis_version: str, max_age_hours: int
         doc["content_classification"] = (
             json.loads(doc["content_classification"])
             if doc.get("content_classification") else None
+        )
+        doc["source_quality"] = (
+            json.loads(doc["source_quality"]) if doc.get("source_quality") else None
         )
         logger.info("Analysis cache hit: %s version=%s", fingerprint[:16], analysis_version)
         return doc
@@ -627,6 +640,9 @@ def find_cached_scan_by_url(canonical_url: str, analysis_version: str,
             doc["content_classification"] = (
                 json.loads(doc["content_classification"])
                 if doc.get("content_classification") else None
+            )
+            doc["source_quality"] = (
+                json.loads(doc["source_quality"]) if doc.get("source_quality") else None
             )
             logger.info(
                 "Analysis URL cache hit: %s version=%s signature_distance=%d",

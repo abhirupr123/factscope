@@ -35,7 +35,12 @@ def update_domain_stats(url: str, trust_score: int, verdict: str):
 
 
 def compute_domain_trust_signal(url: str) -> dict | None:
-    """Check domain history and return a scoring signal, if noteworthy."""
+    """Return neutral historical context without changing the current assessment.
+
+    Previous model scores and anonymous reports are neither independent evidence
+    nor reliable source-quality inputs. Feeding them back into new scores creates
+    a self-reinforcing loop, so this signal is display-only.
+    """
     domain = extract_base_domain(url)
     if not domain:
         return None
@@ -46,27 +51,11 @@ def compute_domain_trust_signal(url: str) -> dict | None:
 
     avg = stats.get("avg_trust_score", 50)
     total = stats.get("total_scans", 0)
-    flags = stats.get("flag_count", 0)
-
-    if avg >= 80 and total >= 3:
-        return {
-            "name": "domain_history_good",
-            "delta": 8,
-            "detail": f"This domain has scored well across {total} previous scans (avg {avg:.0f}%)",
-        }
-
-    if flags >= 2 and avg < 40:
-        return {
-            "name": "domain_history_bad",
-            "delta": -12,
-            "detail": f"This domain has been flagged {flags} times across {total} scans (avg {avg:.0f}%)",
-        }
-
-    if flags >= 1:
-        return {
-            "name": "domain_history_mixed",
-            "delta": -4,
-            "detail": f"This domain has mixed history: {flags} flag(s) across {total} scans",
-        }
-
-    return None
+    return {
+        "name": "domain_history_context",
+        "delta": 0,
+        "detail": (
+            f"Historical source-quality context: {total} previous scans "
+            f"averaged {avg:.0f}/100. This does not affect the current assessment."
+        ),
+    }

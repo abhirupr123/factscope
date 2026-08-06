@@ -934,6 +934,83 @@ class ChunkFourV1ContractTests(unittest.TestCase):
         self.assertEqual(complete.processing_state, "complete")
         self.assertEqual(complete.claims[0].status, "supported")
 
+class ChunkFourSeparatedAssessmentTests(unittest.TestCase):
+    def test_v1_keeps_strong_source_quality_separate_from_contradicted_claim(self):
+        legacy = main.AnalyzeResponse(
+            trust_score=86,
+            verdict="authentic",
+            explanation="The page has a named author and professional presentation.",
+            evidence=["Named author"],
+            structural_signals=[{
+                "name": "has_author", "delta": 5, "detail": "A named author is present."
+            }],
+            fact_checks=[main.FactCheckResult(
+                claim="The event occurred.", status="disputed",
+                source="Independent Fact Checker",
+                source_url="https://facts.example/false", rating="False",
+            )],
+            fingerprint="1" * 64,
+        )
+
+        result = main._to_v1_analysis(legacy, "fallback")
+
+        self.assertEqual(result.source_quality.level, "high")
+        self.assertEqual(result.source_quality.score, 86)
+        self.assertEqual(result.factual_evidence.status, "contradicted")
+        self.assertEqual(result.factual_evidence.confidence, "high")
+        self.assertEqual(result.overall_evidence_summary, result.factual_evidence.summary)
+        self.assertNotEqual(result.overall_evidence_summary, legacy.explanation)
+        self.assertTrue(any("does not establish" in item for item in result.source_quality.limitations))
+
+    def test_v1_aggregates_conflicting_and_incomplete_claims_as_mixed(self):
+        claims = [
+            main.V1ClaimResult(claim="Claim A", status="supported", confidence="high"),
+            main.V1ClaimResult(claim="Claim B", status="insufficient_evidence", confidence="low"),
+        ]
+        result = main._build_factual_evidence_assessment(claims, "complete", None)
+        self.assertEqual(result.status, "mixed")
+        self.assertEqual(result.confidence, "medium")
+        self.assertEqual(result.supported_count, 1)
+        self.assertEqual(result.insufficient_count, 1)
+
+    def test_domain_history_is_neutral_context_not_a_score_modifier(self):
+        import trust_graph
+        with patch.object(trust_graph, "get_domain_stats", return_value={
+            "total_scans": 12, "avg_trust_score": 20, "flag_count": 9,
+        }):
+            signal = trust_graph.compute_domain_trust_signal("https://example.com/report")
+        self.assertEqual(signal["delta"], 0)
+        self.assertEqual(signal["name"], "domain_history_context")
+        self.assertIn("does not affect", signal["detail"])
+        self.assertNotIn("flagged", signal["detail"])
+
+    def test_source_quality_round_trips_through_versioned_cache(self):
+        fingerprint = uuid.uuid4().hex * 2
+        source_quality = {
+            "level": "medium", "score": 68,
+            "summary": "A mixture of source signals.",
+            "signals": [], "limitations": ["Not factual evidence."],
+        }
+        db.store_scan(
+            "page_scan", "Stored text", {
+                "trust_score": 68, "verdict": "uncertain",
+                "explanation": "Stored analysis", "evidence": [],
+            },
+            fingerprint=fingerprint, analysis_version="4d-test",
+            source_quality=source_quality,
+        )
+        cached = db.find_cached_scan(fingerprint, "4d-test", 24)
+        self.assertEqual(cached["source_quality"], source_quality)
+        conn = db._get_conn()
+        conn.execute("DELETE FROM scans WHERE fingerprint = ?", (fingerprint,))
+        conn.commit()
+
+    def test_claim_and_domain_history_score_modifiers_are_removed(self):
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("fc_delta", source)
+        self.assertNotIn('structural_score + domain_signal["delta"]', source)
+
+
 class ChunkFourContentClassificationTests(unittest.TestCase):
     @staticmethod
     def _request():

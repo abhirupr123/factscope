@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.9.0",
+    version="0.10.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -505,6 +505,21 @@ class ContentClassification(BaseModel):
     rationale: str
     factual_verdict_allowed: bool
 
+class V1SourceQualitySignal(BaseModel):
+    name: str
+    category: Literal["provenance", "presentation", "safety", "reputation", "technical", "context"]
+    direction: Literal["positive", "negative", "neutral"]
+    detail: str
+
+
+class V1SourceQualityAssessment(BaseModel):
+    level: Literal["low", "medium", "high", "unknown"]
+    score: int
+    summary: str
+    signals: list[V1SourceQualitySignal] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 class AnalyzeResponse(BaseModel):
     trust_score: int
     verdict: str
@@ -526,6 +541,7 @@ class AnalyzeResponse(BaseModel):
     claims_pending: Optional[bool] = None
     scans_remaining: Optional[int] = None
     content_classification: Optional[ContentClassification] = None
+    source_quality: Optional[V1SourceQualityAssessment] = None
 
 
 class V1EvidenceSource(BaseModel):
@@ -543,6 +559,20 @@ class V1ClaimResult(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
+class V1FactualEvidenceAssessment(BaseModel):
+    status: Literal[
+        "supported", "contradicted", "mixed", "insufficient_evidence",
+        "processing", "not_applicable",
+    ]
+    confidence: Literal["low", "medium", "high"]
+    summary: str
+    claim_count: int = 0
+    supported_count: int = 0
+    contradicted_count: int = 0
+    mixed_count: int = 0
+    insufficient_count: int = 0
+
+
 class V1AnalyzeResponse(AnalyzeResponse):
     schema_version: Literal["1.0"] = "1.0"
     analysis_id: str
@@ -551,6 +581,8 @@ class V1AnalyzeResponse(AnalyzeResponse):
     overall_evidence_summary: str
     confidence: Literal["low", "medium", "high"]
     claims: list[V1ClaimResult] = Field(default_factory=list)
+    factual_evidence: V1FactualEvidenceAssessment
+    source_quality: V1SourceQualityAssessment
     limitations: list[str] = Field(default_factory=list)
     legacy_score: int
     legacy_verdict: str
@@ -643,6 +675,133 @@ def _provider_failed(legacy: AnalyzeResponse) -> bool:
     ))
 
 
+def _source_signal_category(name: str) -> str:
+    lowered = (name or "").lower()
+    if any(token in lowered for token in ("author", "date", "site_name", "attribution")):
+        return "provenance"
+    if any(token in lowered for token in ("phishing", "spam", "ai_video", "suspicious")):
+        return "safety"
+    if any(token in lowered for token in ("domain", "reputable", "tld")):
+        return "reputation"
+    if any(token in lowered for token in ("https", "url", "shortener")):
+        return "technical"
+    if any(token in lowered for token in ("clickbait", "caps", "title", "content")):
+        return "presentation"
+    return "context"
+
+
+def _build_source_quality_assessment(
+    score: int,
+    structural_signals: Optional[list[dict]],
+) -> V1SourceQualityAssessment:
+    safe_score = max(0, min(100, int(score)))
+    if safe_score >= 75:
+        level = "high"
+        summary = "The page shows relatively strong source, safety, and presentation signals."
+    elif safe_score < 45:
+        level = "low"
+        summary = "The page shows weak or concerning source, safety, or presentation signals."
+    else:
+        level = "medium"
+        summary = "The page shows a mixture of source, safety, and presentation signals."
+
+    mapped_signals = []
+    for signal in structural_signals or []:
+        delta = signal.get("delta", 0)
+        mapped_signals.append(V1SourceQualitySignal(
+            name=str(signal.get("name") or "source_context"),
+            category=_source_signal_category(str(signal.get("name") or "")),
+            direction="positive" if delta > 0 else "negative" if delta < 0 else "neutral",
+            detail=str(signal.get("detail") or "Source context was observed."),
+        ))
+
+    limitations = [
+        "Source quality describes the page and publisher signals; it does not establish whether individual claims are true."
+    ]
+    if not mapped_signals:
+        limitations.append("Detailed source-quality signals were unavailable for this response.")
+    return V1SourceQualityAssessment(
+        level=level,
+        score=safe_score,
+        summary=summary,
+        signals=mapped_signals,
+        limitations=limitations,
+    )
+
+
+def _build_factual_evidence_assessment(
+    claims: list[V1ClaimResult],
+    processing_state: str,
+    classification: Optional[ContentClassification],
+) -> V1FactualEvidenceAssessment:
+    counts = {
+        "supported": sum(claim.status == "supported" for claim in claims),
+        "contradicted": sum(claim.status == "contradicted" for claim in claims),
+        "mixed": sum(claim.status == "mixed" for claim in claims),
+        "insufficient": sum(claim.status == "insufficient_evidence" for claim in claims),
+    }
+    common = {
+        "claim_count": len(claims),
+        "supported_count": counts["supported"],
+        "contradicted_count": counts["contradicted"],
+        "mixed_count": counts["mixed"],
+        "insufficient_count": counts["insufficient"],
+    }
+
+    if classification and not classification.factual_verdict_allowed:
+        return V1FactualEvidenceAssessment(
+            status="not_applicable",
+            confidence="low",
+            summary="FactScope did not assign an overall factual status to this type of content.",
+            **common,
+        )
+    if processing_state == "processing":
+        return V1FactualEvidenceAssessment(
+            status="processing",
+            confidence="low",
+            summary="Claim-level evidence is still being processed.",
+            **common,
+        )
+    if not claims:
+        return V1FactualEvidenceAssessment(
+            status="insufficient_evidence",
+            confidence="low",
+            summary="No claim-level evidence was available for an overall factual assessment.",
+            **common,
+        )
+
+    decisive_kinds = int(counts["supported"] > 0) + int(counts["contradicted"] > 0)
+    if counts["mixed"] or decisive_kinds > 1 or (
+        counts["insufficient"] and (counts["supported"] or counts["contradicted"])
+    ):
+        status = "mixed"
+        summary = "The checked claims have mixed outcomes or incomplete evidence."
+    elif counts["supported"]:
+        status = "supported"
+        summary = "The available direct evidence supports the checked claim or claims."
+    elif counts["contradicted"]:
+        status = "contradicted"
+        summary = "The available direct evidence contradicts the checked claim or claims."
+    else:
+        status = "insufficient_evidence"
+        summary = "The available evidence is not sufficient to support or contradict the checked claims."
+
+    claim_confidences = [claim.confidence for claim in claims]
+    if status == "insufficient_evidence" or processing_state != "complete":
+        confidence = "low"
+    elif claim_confidences and all(value == "high" for value in claim_confidences):
+        confidence = "high"
+    else:
+        confidence = "medium"
+
+    return V1FactualEvidenceAssessment(
+        status=status,
+        confidence=confidence,
+        summary=summary,
+        **common,
+    )
+
+
 def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1AnalyzeResponse:
     claims = [_map_v1_claim(item) for item in (legacy.fact_checks or [])]
     provider_failed = _provider_failed(legacy)
@@ -683,36 +842,37 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
         if not claims:
             limitations.append("No checkable claims were identified in the extracted content.")
 
-    if processing_state != "complete" or not claims:
-        confidence = "low"
-    elif all(claim.confidence == "high" for claim in claims):
-        confidence = "high"
-    else:
-        confidence = "medium"
-
     if any(claim.status == "insufficient_evidence" for claim in claims):
         limitations.append("At least one claim lacks enough evidence for a supported or contradicted status.")
 
     if classification:
         if not classification.factual_verdict_allowed:
-            confidence = "low"
             label = classification.content_type.replace("_", " ")
             limitations.append(
                 f"The page is classified as {label}; that classification does not mean it is false."
             )
         if classification.checkability == "no_checkable_claims":
-            confidence = "low"
             limitations.append("The extracted content did not provide claims suitable for factual verification.")
 
+    factual_evidence = _build_factual_evidence_assessment(
+        claims, processing_state, classification
+    )
+    source_quality = legacy.source_quality or _build_source_quality_assessment(
+        legacy.trust_score, legacy.structural_signals
+    )
+    legacy_payload = legacy.model_dump()
+    legacy_payload.pop("source_quality", None)
     analysis_id = legacy.fingerprint or fallback_analysis_id
     return V1AnalyzeResponse(
-        **legacy.model_dump(),
+        **legacy_payload,
         analysis_id=analysis_id,
         processing_state=processing_state,
         retryable=retryable,
-        overall_evidence_summary=legacy.explanation or "No evidence summary is available.",
-        confidence=confidence,
+        overall_evidence_summary=factual_evidence.summary,
+        confidence=factual_evidence.confidence,
         claims=claims,
+        factual_evidence=factual_evidence,
+        source_quality=source_quality,
         limitations=limitations,
         legacy_score=legacy.trust_score,
         legacy_verdict=legacy.verdict,
@@ -1283,6 +1443,10 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             cached_classification = ContentClassification(
                 **(cached.get("content_classification") or pre_classification_data)
             )
+            cached_source_quality = (
+                V1SourceQualityAssessment(**cached["source_quality"])
+                if cached.get("source_quality") else None
+            )
 
             return AnalyzeResponse(
                 trust_score=cached.get("trust_score", 50),
@@ -1302,6 +1466,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
                 fingerprint=fingerprint,
                 scans_remaining=_remaining_scans(subject_id),
                 content_classification=cached_classification,
+                source_quality=cached_source_quality,
             )
         _log_cache(http_request, "miss", fingerprint, "no_exact_or_similar_entry")
     else:
@@ -1488,7 +1653,6 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         domain_signal = compute_domain_trust_signal(request.url)
         if domain_signal:
             signals.append(domain_signal)
-            structural_score = max(0, min(100, structural_score + domain_signal["delta"]))
 
     # ── AI video platform signal ──────────────────────────────────────
     if request.video_info and request.video_info.ai_platform:
@@ -1499,20 +1663,14 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         })
         structural_score = max(0, min(100, structural_score - 20))
 
-    # Historical model scores and anonymous reports are not factual evidence and
-    # therefore do not modify this analysis.
-    # ── Fact-check score adjustments ──────────────────────────────────
-    fc_delta = 0
-    for fc in fact_checks:
-        if fc.get("status") == "disputed":
-            fc_delta -= 8
-        elif fc.get("status") == "verified":
-            fc_delta += 3
-
-    # ── Combine scores (weighted) ─────────────────────────────────────
+    # Claim evidence is represented separately in v1 and never changes the
+    # source-quality score used for legacy compatibility.
     llm_score = llm_result.get("trust_score", 50)
-    combined_score = int(LLM_WEIGHT * llm_score + STRUCTURAL_WEIGHT * structural_score)
-    combined_score = max(0, min(100, combined_score + fc_delta))
+    source_quality_score = max(
+        0, min(100, int(LLM_WEIGHT * llm_score + STRUCTURAL_WEIGHT * structural_score))
+    )
+    source_quality = _build_source_quality_assessment(source_quality_score, signals)
+    combined_score = source_quality_score
     combined_score, safe_verdict, safe_explanation = apply_factual_verdict_safeguard(
         combined_score,
         llm_result.get("verdict", "suspicious"),
@@ -1573,6 +1731,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             source_info=source_info.model_dump() if source_info else None,
             og_image=og_image, content_signature=content_signature,
             content_classification=classification_data,
+            source_quality=source_quality.model_dump(),
         )
     except Exception as exc:
         logger.warning("Storage failed: %s", exc)
@@ -1624,6 +1783,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         claims_pending=claims_pending if claims_pending else None,
         scans_remaining=scans_remaining,
         content_classification=content_classification,
+        source_quality=source_quality,
     )
 
 
@@ -1913,7 +2073,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.9.0"}
+    return {"status": "ok", "version": app.version}
 
 
 @app.get("/debug/db-status")
