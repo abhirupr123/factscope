@@ -117,6 +117,7 @@
       og_type: og('type') || null,
       site_name: og('site_name') || null,
       og_image: og('image') || meta('twitter:image') || null,
+      canonical_url: document.querySelector('link[rel="canonical"]')?.href || null,
       json_ld_type: jsonLdType,
     };
   }
@@ -379,7 +380,10 @@
   };
 
   function buildFactChecksHTML(factChecks) {
-    if (!factChecks || factChecks.length === 0) return '';
+    if (!Array.isArray(factChecks)) return '';
+    if (factChecks.length === 0) {
+      return '<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div><div class="fs-body">No checkable factual claims were identified in the extracted article text. This does not mean the article contains no factual claims.</div></div>';
+    }
 
     factChecks = sanitizeForHTML(factChecks);
     const items = factChecks.map((fc) => {
@@ -685,7 +689,7 @@
     if (!chrome.runtime?.id) return;
     chrome.runtime.sendMessage({ type: 'get-claims', fingerprint }, (resp) => {
       if (chrome.runtime.lastError) return;
-      if (resp && !resp.pending && resp.fact_checks) {
+      if (resp && !resp.pending && Array.isArray(resp.fact_checks)) {
         const slot = document.getElementById('fs-claims-slot');
         if (slot) slot.innerHTML = buildFactChecksHTML(resp.fact_checks);
       } else {

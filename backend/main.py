@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, Future
 from functools import wraps
+from threading import Lock
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -9,13 +10,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
-from elastic_utils import store_analysis_result, find_by_fingerprint, find_flagged_similar, find_trusted_similar, get_domain_profile
-from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, add_community_flag,
-                get_flag_count, has_user_flagged, count_scans_for_fingerprint,
+from elastic_utils import store_analysis_result, find_by_fingerprint, get_domain_profile
+from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, find_cached_scan, add_community_flag,
+                get_flag_count, has_user_flagged, count_scans_for_fingerprint, record_scan_access,
                 update_scan_claims, get_scan_claims, url_hash,
                 get_community_notes, store_vote, get_vote_stats,
-                should_invalidate_cache, graduate_flags_to_fact,
-                search_knowledge_base, VALID_FLAG_CATEGORIES,
+                VALID_FLAG_CATEGORIES,
                 store_shared_result, get_shared_result,
                 get_user_tier, get_daily_scan_count,
                 increment_daily_scan, redeem_license_key,
@@ -25,7 +25,7 @@ from auth import AuthContext, SessionAuthError, authenticate_installation_token,
 from controls import SlidingWindowLimiter, client_ip_hash, hash_network_identity
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
-from fingerprinting import compute_fingerprint
+from fingerprinting import compute_analysis_fingerprint, normalize_url
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
 from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
@@ -33,6 +33,8 @@ from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
                     ADMIN_USER_IDS, ENVIRONMENT, MAX_REQUEST_BYTES,
                     CORS_ALLOWED_ORIGINS, SESSION_MINTS_PER_HOUR,
                     API_REQUESTS_PER_MINUTE, ANALYSIS_REQUESTS_PER_MINUTE,
+                    CACHE_HITS_PER_HOUR, ANALYSIS_VERSION,
+                    ANALYSIS_CACHE_MAX_AGE_HOURS,
                     MAX_CONCURRENT_ANALYSES, ANALYSIS_TIMEOUT_SECONDS,
                     IMAGE_ANALYSIS_TIMEOUT_SECONDS, DAILY_LLM_CALL_LIMIT,
                     FACTCHECK_TIMEOUT_SECONDS,
@@ -92,7 +94,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.6.0",
+    version="0.7.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -183,10 +185,53 @@ LLM_WEIGHT = 0.65
 STRUCTURAL_WEIGHT = 0.35
 
 _bg_pool = ThreadPoolExecutor(max_workers=3)
+_access_pool = ThreadPoolExecutor(max_workers=1)
 _session_mint_limiter = SlidingWindowLimiter()
 _api_burst_limiter = SlidingWindowLimiter()
 _analysis_burst_limiter = SlidingWindowLimiter()
+_cache_hit_limiter = SlidingWindowLimiter()
 _analysis_semaphore = asyncio.Semaphore(MAX_CONCURRENT_ANALYSES)
+_inflight_guard = Lock()
+_inflight_page_analyses: dict[str, Future] = {}
+
+
+def _record_scan_access_async(fingerprint: str | None, subject_id: str, result_type: str) -> None:
+    if fingerprint:
+        _access_pool.submit(record_scan_access, fingerprint, subject_id, result_type)
+
+
+def _flush_scan_accesses() -> None:
+    """Wait for access writes queued before a deletion request."""
+    _access_pool.submit(lambda: None).result(timeout=ANALYSIS_TIMEOUT_SECONDS)
+
+def _claim_page_analysis(key: str) -> tuple[Future, bool]:
+    """Return a shared future and whether this request owns provider startup."""
+    with _inflight_guard:
+        existing = _inflight_page_analyses.get(key)
+        if existing is not None:
+            return existing, False
+        ready = Future()
+        _inflight_page_analyses[key] = ready
+        return ready, True
+
+
+def _publish_page_analysis(key: str, ready: Future, llm_future: Future, fact_future: Future | None) -> None:
+    if not ready.done():
+        ready.set_result((llm_future, fact_future))
+
+
+def _fail_page_analysis(key: str, ready: Future, exc: Exception) -> None:
+    if not ready.done():
+        ready.set_exception(exc)
+    with _inflight_guard:
+        if _inflight_page_analyses.get(key) is ready:
+            _inflight_page_analyses.pop(key, None)
+
+
+def _finish_page_analysis(key: str, ready: Future) -> None:
+    with _inflight_guard:
+        if _inflight_page_analyses.get(key) is ready:
+            _inflight_page_analyses.pop(key, None)
 
 
 def _burst_error(retry_after: int) -> HTTPException:
@@ -292,6 +337,7 @@ async def record_telemetry(payload: TelemetryRequest, request: Request):
 async def delete_server_data(request: Request):
     """Delete user data while retaining minimal, expiring anti-abuse records."""
     subject_id = _require_session(request).subject_id
+    await asyncio.to_thread(_flush_scan_accesses)
     deleted = await asyncio.to_thread(
         delete_installation_data,
         subject_id,
@@ -324,6 +370,15 @@ def _check_rate_limit(uid: str) -> dict | None:
     return None
 
 
+def _remaining_scans(uid: str) -> int:
+    if uid in ADMIN_USER_IDS:
+        return 999
+    tier = get_user_tier(uid)
+    limit = SCAN_LIMITS.get(tier, SCAN_LIMITS["free"])
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return max(0, limit - get_daily_scan_count(uid, today))
+
+
 def _increment_and_get_remaining(uid: str) -> int:
     if uid in ADMIN_USER_IDS:
         return 999
@@ -332,6 +387,31 @@ def _increment_and_get_remaining(uid: str) -> int:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     new_count = increment_daily_scan(uid, today)
     return max(0, limit - new_count)
+
+
+def _enforce_cache_hit_limit(uid: str) -> None:
+    if uid in ADMIN_USER_IDS:
+        return
+    allowed, retry_after = _cache_hit_limiter.hit(
+        hash_network_identity(uid), CACHE_HITS_PER_HOUR, 3600
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "cache_request_limited", "message": "Too many cached-result requests; retry later"},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _log_cache(request: Request, status: str, fingerprint: str | None, reason: str) -> None:
+    logger.info(json.dumps({
+        "event": "analysis_cache",
+        "request_id": _request_id(request),
+        "status": status,
+        "reason": reason,
+        "fingerprint": fingerprint[:16] if fingerprint else None,
+        "analysis_version": ANALYSIS_VERSION,
+    }, separators=(",", ":")))
 
 
 class VideoInfo(BaseModel):
@@ -351,6 +431,8 @@ class PageMetadata(BaseModel):
     description: Optional[str] = None
     og_type: Optional[str] = None
     site_name: Optional[str] = None
+    og_image: Optional[str] = Field(default=None, max_length=2048)
+    canonical_url: Optional[str] = Field(default=None, max_length=2048)
     json_ld_type: Optional[str] = None
 
 
@@ -422,6 +504,8 @@ class AnalyzeResponse(BaseModel):
     structural_signals: Optional[list[dict]] = None
     fact_checks: Optional[list[FactCheckResult]] = None
     cached: Optional[bool] = None
+    cache_status: Optional[str] = None
+    analysis_version: Optional[str] = None
     community_flags: Optional[int] = None
     community_scans: Optional[int] = None
     community_notes: Optional[list[CommunityNote]] = None
@@ -478,6 +562,9 @@ class ImageVerifyResponse(BaseModel):
     community_flags: Optional[int] = None
     community_notes: Optional[list[CommunityNote]] = None
     vote_stats: Optional[VoteStats] = None
+    cached: Optional[bool] = None
+    cache_status: Optional[str] = None
+    analysis_version: Optional[str] = None
     scans_remaining: Optional[int] = None
 
 
@@ -559,19 +646,19 @@ def _fetch_and_resize_image(url: str) -> tuple[bytes, str] | tuple[None, None]:
 async def verify_image(request: ImageVerifyRequest, http_request: Request):
     """Verify an image for AI generation, manipulation, or misuse."""
     auth = _require_session(http_request)
-    _enforce_analysis_burst(http_request, auth)
     subject_id = auth.subject_id
-
-    # ── Rate limit check ──────────────────────────────────────────────
-    rl = _check_rate_limit(subject_id)
-    if rl:
-        rl["request_id"] = _request_id(http_request)
-        return JSONResponse(status_code=429, content=rl)
 
     img_fp = f"img:{url_hash(request.image_url)}"
 
-    cached = find_image_scan(request.image_url)
+    cached = find_image_scan(
+        request.image_url,
+        max_age_hours=ANALYSIS_CACHE_MAX_AGE_HOURS,
+        analysis_version=ANALYSIS_VERSION,
+    )
     if cached:
+        _enforce_cache_hit_limit(subject_id)
+        _log_cache(http_request, "hit", img_fp, "fresh_versioned_image_entry")
+        _record_scan_access_async(img_fp, subject_id, "image")
         img_flags = get_flag_count(img_fp)
         img_notes_raw = get_community_notes(img_fp, limit=3)
         img_notes = [CommunityNote(**n) for n in img_notes_raw] if img_notes_raw else None
@@ -584,12 +671,21 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
             claim_analysis=[FactCheckResult(**c) for c in cached["claim_analysis"]]
             if cached.get("claim_analysis") else None,
             fingerprint=img_fp,
+            cached=True,
+            cache_status="hit",
+            analysis_version=ANALYSIS_VERSION,
             community_flags=img_flags if img_flags >= 3 else None,
             community_notes=img_notes,
             vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
-            scans_remaining=_increment_and_get_remaining(subject_id),
+            scans_remaining=_remaining_scans(subject_id),
         )
 
+    _log_cache(http_request, "miss", img_fp, "no_fresh_versioned_image_entry")
+    _enforce_analysis_burst(http_request, auth)
+    rl = _check_rate_limit(subject_id)
+    if rl:
+        rl["request_id"] = _request_id(http_request)
+        return JSONResponse(status_code=429, content=rl)
     try:
         image_data, media_type = await asyncio.wait_for(
             asyncio.to_thread(_fetch_and_resize_image, request.image_url),
@@ -629,6 +725,7 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
 
     bottom_crop = _crop_bottom_edge(image_data)
     _reserve_llm_call()
+    scans_remaining = _increment_and_get_remaining(subject_id)
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(get_image_verification, image_data, media_type, context, bottom_crop),
@@ -636,7 +733,12 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
         )
     except TimeoutError:
         logger.warning("Image provider timed out")
-        return ImageVerifyResponse(authenticity_score=50, verdict="uncertain", explanation="Image analysis timed out. Please try again.", evidence=[])
+        return ImageVerifyResponse(
+            authenticity_score=50, verdict="uncertain",
+            explanation="Image analysis timed out. Please try again.", evidence=[],
+            fingerprint=img_fp, cached=False, cache_status="miss",
+            analysis_version=ANALYSIS_VERSION, scans_remaining=scans_remaining,
+        )
 
     _AI_TOOL_EXACT = re.compile(
         r"dall[\-\s]?e|midjourney|stable.diffusion|adobe.firefly|"
@@ -775,10 +877,12 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
             "explanation": final_explanation,
             "evidence": result["evidence"],
             "claim_analysis": [c.model_dump() for c in claim_results] if claim_results else None,
-        }, user_id=subject_id)
+        }, user_id=subject_id, analysis_version=ANALYSIS_VERSION,
+           page_url=request.page_url, og_image=request.image_url)
     except Exception as exc:
         logger.warning("Image scan storage failed: %s", exc)
 
+    _record_scan_access_async(img_fp, subject_id, "image")
     img_flags = get_flag_count(img_fp)
     img_notes_raw = get_community_notes(img_fp, limit=3)
     img_notes = [CommunityNote(**n) for n in img_notes_raw] if img_notes_raw else None
@@ -790,10 +894,13 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
         evidence=result["evidence"],
         claim_analysis=claim_results,
         fingerprint=img_fp,
+        cached=False,
+        cache_status="miss",
+        analysis_version=ANALYSIS_VERSION,
         community_flags=img_flags if img_flags >= 3 else None,
         community_notes=img_notes,
         vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
-        scans_remaining=_increment_and_get_remaining(subject_id),
+        scans_remaining=scans_remaining,
     )
 
 
@@ -863,8 +970,6 @@ async def flag_content(request: FlagRequest, http_request: Request):
     )
     count = get_flag_count(request.fingerprint)
 
-    if note_dict:
-        graduate_flags_to_fact(request.fingerprint)
 
     return FlagResponse(
         success=note_dict is not None,
@@ -903,26 +1008,18 @@ async def fetch_community_notes(fingerprint: str, request: Request):
 async def analyze_page(request: AnalyzeRequest, http_request: Request):
     """Unified endpoint for the browser extension."""
     auth = _require_session(http_request)
-    _enforce_analysis_burst(http_request, auth)
     subject_id = auth.subject_id
 
-    # ── Rate limit check ──────────────────────────────────────────────
-    rl = _check_rate_limit(subject_id)
-    if rl:
-        rl["request_id"] = _request_id(http_request)
-        return JSONResponse(status_code=429, content=rl)
+    # Cache identity excludes common dynamic boilerplate and includes the
+    # analysis version so prompt/model changes never reuse stale results.
+    fingerprint = compute_analysis_fingerprint(
+        request.text,
+        url=(request.metadata.canonical_url if request.metadata and request.metadata.canonical_url else request.url),
+        title=request.title,
+        analysis_version=ANALYSIS_VERSION,
+    )
 
-    # ── Fingerprint check (instant cache) ─────────────────────────────
-    fp_input = ""
-    if request.title:
-        fp_input += request.title + "\n"
-    if request.text:
-        fp_input += request.text
-    fingerprint = compute_fingerprint(fp_input) if fp_input else None
-
-    vote_feedback = None
-
-    # ── Build domain profile (visible to user) ────────────────────────
+    # Build domain profile (visible to the user).
     domain_prof = None
     if request.url:
         base_domain = extract_base_domain(request.url)
@@ -933,15 +1030,18 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
                 domain_prof = DomainProfile(**prof_data)
 
     if fingerprint:
-        cached = find_by_fingerprint(fingerprint)
-        if cached and not should_invalidate_cache(fingerprint):
-            logger.info("Returning cached result for fingerprint %s", fingerprint[:16])
-
+        cached = find_cached_scan(
+            fingerprint, ANALYSIS_VERSION, ANALYSIS_CACHE_MAX_AGE_HOURS
+        )
+        if cached:
+            _enforce_cache_hit_limit(subject_id)
+            _log_cache(http_request, "hit", fingerprint, "fresh_versioned_entry")
+            _record_scan_access_async(fingerprint, subject_id, "page")
             fc_response = None
             if cached.get("judgement"):
                 try:
                     fc_data = json.loads(cached["judgement"])
-                    fc_response = [FactCheckResult(**fc) for fc in fc_data] if fc_data else None
+                    fc_response = [FactCheckResult(**fc) for fc in fc_data]
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -950,6 +1050,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             notes_raw = get_community_notes(fingerprint, limit=3)
             notes = [CommunityNote(**n) for n in notes_raw] if notes_raw else None
             v_stats = get_vote_stats(fingerprint)
+            cached_source = SourceInfo(**cached["source_info"]) if cached.get("source_info") else None
 
             return AnalyzeResponse(
                 trust_score=cached.get("trust_score", 50),
@@ -957,24 +1058,22 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
                 explanation=cached.get("explanation", ""),
                 evidence=cached.get("evidence", []),
                 cached=True,
+                cache_status="hit",
+                analysis_version=ANALYSIS_VERSION,
                 fact_checks=fc_response,
+                source_info=cached_source,
                 domain_profile=domain_prof,
                 community_flags=comm_flags if comm_flags >= 3 else None,
                 community_scans=comm_scans if comm_scans > 1 else None,
                 community_notes=notes,
                 vote_stats=VoteStats(**v_stats) if (v_stats["likes"] + v_stats["dislikes"]) > 0 else None,
                 fingerprint=fingerprint,
-                scans_remaining=_increment_and_get_remaining(subject_id),
+                scans_remaining=_remaining_scans(subject_id),
             )
-        elif cached:
-            logger.info("Cache invalidated by votes for %s, re-analyzing", fingerprint[:16])
-            vote_feedback = {
-                "previous_verdict": cached.get("verdict"),
-                "previous_explanation": cached.get("explanation", "")[:300],
-                "vote_stats": get_vote_stats(fingerprint),
-                "community_notes": get_community_notes(fingerprint, limit=3),
-            }
-
+        _log_cache(http_request, "miss", fingerprint, "no_fresh_versioned_entry")
+    else:
+        _log_cache(http_request, "bypass", None, "content_not_cacheable")
+    _enforce_analysis_burst(http_request, auth)
     # ── Build the LLM prompt with metadata + video context ────────────
     content_parts = []
 
@@ -1026,46 +1125,66 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             verdict="unknown",
             explanation="No content was provided for analysis.",
             evidence=["No text, links, or images were extracted from the page."],
+            cache_status="bypass",
+            analysis_version=ANALYSIS_VERSION,
+            scans_remaining=_remaining_scans(subject_id),
         )
 
-    # ── Knowledge base lookup (community-verified facts) ───────────────
+    # Anonymous community reports and helpfulness votes are retained for
+    # moderation/product feedback only; they never enter provider prompts.
     kb_hits = []
-    if request.text:
-        kb_hits = search_knowledge_base(request.text, limit=3)
-        if kb_hits:
-            kb_context = "\n\nCommunity-verified facts relevant to this content:"
-            for hit in kb_hits:
-                kb_context += f"\n- {hit['counter_claim']}"
-                if hit.get("sources"):
-                    kb_context += f" (Sources: {', '.join(hit['sources'][:3])})"
-                kb_context += f" [Confidence: {hit['confidence']:.0%}, flagged {hit['flag_count']} time(s)]"
-            combined += kb_context
-            logger.info("Injected %d knowledge base matches into LLM context", len(kb_hits))
-
-    # ── Vote feedback context (when re-analyzing a disliked result) ────
-    if vote_feedback:
-        feedback_ctx = "\n\nIMPORTANT — Previous analysis feedback:"
-        feedback_ctx += f"\nA prior analysis gave verdict '{vote_feedback['previous_verdict']}'"
-        feedback_ctx += f" but received {vote_feedback['vote_stats']['dislikes']} dislike(s)"
-        feedback_ctx += f" vs {vote_feedback['vote_stats']['likes']} like(s)."
-        if vote_feedback["community_notes"]:
-            feedback_ctx += "\nCommunity corrections:"
-            for n in vote_feedback["community_notes"]:
-                feedback_ctx += f"\n- [{n.get('category', 'general')}] {n.get('justification', '')[:200]}"
-        feedback_ctx += "\nPlease provide a fresh analysis, carefully considering this user feedback."
-        combined += feedback_ctx
-        logger.info("Injected vote feedback context for re-analysis")
-
     # ── Run LLM analysis + fact-checking in parallel ────────────────────
     llm_result = None
     fact_checks = []
     claims_pending = False
+    claims_completed = False
 
-    _reserve_llm_call()
-    llm_future = _bg_pool.submit(get_structured_analysis, combined)
-    fc_future = None
-    if factcheck_available() and request.text:
-        fc_future = _bg_pool.submit(_verify_claims, request.text, request.title or "", request.url or "")
+    inflight_key = fingerprint or f"uncacheable:{_request_id(http_request)}"
+    inflight_ready, owns_provider_start = _claim_page_analysis(inflight_key)
+    if owns_provider_start:
+        rl = _check_rate_limit(subject_id)
+        if rl:
+            rl["request_id"] = _request_id(http_request)
+            _fail_page_analysis(inflight_key, inflight_ready, RuntimeError("quota_rejected"))
+            return JSONResponse(status_code=429, content=rl)
+        try:
+            # Reserve global budget first; charge the installation only when
+            # provider work is actually about to begin.
+            _reserve_llm_call()
+            scans_remaining = _increment_and_get_remaining(subject_id)
+            llm_future = _bg_pool.submit(get_structured_analysis, combined)
+            fc_future = None
+            if factcheck_available() and request.text:
+                fc_future = _bg_pool.submit(
+                    _verify_claims, request.text, request.title or "", request.url or ""
+                )
+            _publish_page_analysis(
+                inflight_key, inflight_ready, llm_future, fc_future
+            )
+            result_cache_status = "miss"
+        except Exception as exc:
+            _fail_page_analysis(inflight_key, inflight_ready, exc)
+            raise
+    else:
+        logger.info(json.dumps({
+            "event": "analysis_coalesced",
+            "request_id": _request_id(http_request),
+            "fingerprint": fingerprint[:16] if fingerprint else None,
+            "analysis_version": ANALYSIS_VERSION,
+        }, separators=(",", ":")))
+        scans_remaining = _remaining_scans(subject_id)
+        result_cache_status = "coalesced"
+        try:
+            llm_future, fc_future = await asyncio.wait_for(
+                asyncio.wrap_future(inflight_ready),
+                timeout=ANALYSIS_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "provider_timeout", "message": "Analysis startup timed out; please retry"},
+                headers={"Retry-After": "3"},
+            ) from exc
 
     try:
         llm_result = await asyncio.wait_for(
@@ -1075,6 +1194,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         logger.warning("Article provider timed out")
         if fc_future:
             fc_future.cancel()
+        _finish_page_analysis(inflight_key, inflight_ready)
         return AnalyzeResponse(
             trust_score=50,
             verdict="unknown",
@@ -1082,13 +1202,19 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             evidence=[],
             cached=False,
             fingerprint=fingerprint,
-            scans_remaining=_increment_and_get_remaining(subject_id),
+            cache_status=result_cache_status,
+            analysis_version=ANALYSIS_VERSION,
+            scans_remaining=scans_remaining,
         )
+    except Exception:
+        _finish_page_analysis(inflight_key, inflight_ready)
+        raise
 
     if fc_future is not None:
         if fc_future.done():
             try:
                 fact_checks = fc_future.result()
+                claims_completed = True
             except Exception as exc:
                 logger.warning("Fact-check pipeline failed: %s", exc)
         else:
@@ -1096,8 +1222,8 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             def _on_claims_done(future: Future, fp=fingerprint):
                 try:
                     claims = future.result()
-                    if claims and fp:
-                        update_scan_claims(fp, json.dumps(claims))
+                    if fp:
+                        update_scan_claims(fp, json.dumps(claims or []))
                 except Exception as exc:
                     logger.warning("Background claims storage failed: %s", exc)
             fc_future.add_done_callback(_on_claims_done)
@@ -1128,29 +1254,8 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         })
         structural_score = max(0, min(100, structural_score - 20))
 
-    # ── Trend detection: check for previously flagged similar content ─
-    flagged_similar = find_flagged_similar(request.text) if request.text else []
-    if flagged_similar:
-        signals.append({
-            "name": "previously_flagged",
-            "delta": -10,
-            "detail": f"Similar content was previously flagged ({len(flagged_similar)} match(es))",
-        })
-        structural_score = max(0, min(100, structural_score - 10))
-
-    # ── Positive signal: similar content previously verified as trustworthy
-    trusted_similar = find_trusted_similar(
-        request.text, threshold=80, exclude_fingerprint=fingerprint,
-    ) if request.text else []
-    if trusted_similar:
-        trust_delta = min(10, len(trusted_similar) * 5)
-        signals.append({
-            "name": "previously_trusted",
-            "delta": trust_delta,
-            "detail": f"Similar content was previously verified as trustworthy ({len(trusted_similar)} match(es))",
-        })
-        structural_score = max(0, min(100, structural_score + trust_delta))
-
+    # Historical model scores and anonymous reports are not factual evidence and
+    # therefore do not modify this analysis.
     # ── Fact-check score adjustments ──────────────────────────────────
     fc_delta = 0
     for fc in fact_checks:
@@ -1166,15 +1271,6 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
 
     all_evidence = list(llm_result.get("evidence", []))
 
-    if flagged_similar:
-        all_evidence.append(
-            f"Similar content was previously flagged as suspicious ({len(flagged_similar)} time(s))."
-        )
-
-    if trusted_similar:
-        all_evidence.append(
-            f"Similar content was previously verified as trustworthy ({len(trusted_similar)} time(s))."
-        )
 
     for fc in fact_checks:
         if fc.get("status") == "disputed" and fc.get("source"):
@@ -1205,13 +1301,20 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         "verdict": llm_result.get("verdict", "suspicious"),
         "explanation": llm_result.get("explanation", ""),
         "evidence": all_evidence,
-        "judgement": json.dumps(fact_checks) if fact_checks else None,
+        "judgement": json.dumps(fact_checks) if claims_completed else None,
     }
     try:
+        canonical_url = normalize_url(
+            request.metadata.canonical_url if request.metadata and request.metadata.canonical_url else request.url
+        )
+        og_image = normalize_url(request.metadata.og_image) if request.metadata else ""
         store_analysis_result(
             "page_scan", combined[:500], result_dict,
             fingerprint=fingerprint, url=request.url,
-            user_id=subject_id,
+            user_id=subject_id, analysis_version=ANALYSIS_VERSION,
+            scanned_title=request.title, canonical_url=canonical_url,
+            source_info=source_info.model_dump() if source_info else None,
+            og_image=og_image,
         )
     except Exception as exc:
         logger.warning("Storage failed: %s", exc)
@@ -1222,7 +1325,9 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         except Exception as exc:
             logger.warning("Domain stats update failed: %s", exc)
 
-    fc_response = [FactCheckResult(**fc) for fc in fact_checks] if fact_checks else None
+    _record_scan_access_async(fingerprint, subject_id, "page")
+
+    fc_response = [FactCheckResult(**fc) for fc in fact_checks] if claims_completed else None
 
     comm_flags = get_flag_count(fingerprint) if fingerprint else 0
     comm_scans = count_scans_for_fingerprint(fingerprint) if fingerprint else 0
@@ -1239,6 +1344,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             "sources": h.get("sources", []),
         } for h in kb_hits]
 
+    _finish_page_analysis(inflight_key, inflight_ready)
     return AnalyzeResponse(
         trust_score=combined_score,
         verdict=llm_result.get("verdict", "suspicious"),
@@ -1249,6 +1355,8 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         structural_signals=signals,
         fact_checks=fc_response if not claims_pending else None,
         cached=False,
+        cache_status=result_cache_status,
+        analysis_version=ANALYSIS_VERSION,
         community_flags=comm_flags if comm_flags >= 3 else None,
         community_scans=comm_scans if comm_scans > 1 else None,
         community_notes=notes,
@@ -1256,7 +1364,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         kb_matches=kb_response,
         fingerprint=fingerprint,
         claims_pending=claims_pending if claims_pending else None,
-        scans_remaining=_increment_and_get_remaining(subject_id),
+        scans_remaining=scans_remaining,
     )
 
 
@@ -1268,7 +1376,7 @@ async def get_claims(fingerprint: str, request: Request):
     if raw:
         try:
             claims = json.loads(raw)
-            fc_response = [FactCheckResult(**fc) for fc in claims] if claims else None
+            fc_response = [FactCheckResult(**fc) for fc in claims]
             return {"pending": False, "fact_checks": fc_response}
         except (json.JSONDecodeError, TypeError):
             pass
@@ -1288,7 +1396,7 @@ async def create_share(request: ShareRequest, http_request: Request):
         stored = find_image_scan_by_fingerprint(fingerprint)
         if not stored:
             raise HTTPException(status_code=404, detail="Stored analysis not found")
-        scanned_url = stored.get("image_url", "")
+        scanned_url = stored.get("page_url", "") or stored.get("image_url", "")
         data = {
             "result_type": "image",
             "score": stored.get("authenticity_score", 50),
@@ -1296,13 +1404,15 @@ async def create_share(request: ShareRequest, http_request: Request):
             "explanation": stored.get("explanation", ""),
             "evidence": stored.get("evidence", []),
             "scanned_url": scanned_url,
+            "scanned_title": stored.get("scanned_title", ""),
+            "og_image": stored.get("og_image", "") or stored.get("image_url", ""),
             "fingerprint": fingerprint,
         }
     else:
         stored = find_by_fingerprint(fingerprint)
         if not stored:
             raise HTTPException(status_code=404, detail="Stored analysis not found")
-        scanned_url = stored.get("url", "") or ""
+        scanned_url = stored.get("canonical_url", "") or stored.get("url", "") or ""
         from urllib.parse import urlsplit
         try:
             domain = urlsplit(scanned_url).hostname or ""
@@ -1315,7 +1425,10 @@ async def create_share(request: ShareRequest, http_request: Request):
             "explanation": stored.get("explanation", ""),
             "evidence": stored.get("evidence", []),
             "domain": domain,
+            "source_info": stored.get("source_info"),
             "scanned_url": scanned_url,
+            "scanned_title": stored.get("scanned_title", ""),
+            "og_image": stored.get("og_image", ""),
             "fingerprint": fingerprint,
         }
     data["owner_subject_id"] = auth_context.subject_id
@@ -1393,7 +1506,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else ""
 
     if og_image:
-        image_block = f'<img class="preview-image" src="{_html.escape(og_image, quote=True)}" alt="Preview" onerror="this.style.display=\'none\'">'
+        image_block = f'<img class="preview-image" src="{_html.escape(og_image, quote=True)}" alt="Article preview" onerror="this.style.display=\'none\';document.querySelector(\'.main\').classList.add(\'no-preview-image\')">'
     else:
         image_block = ""
 
@@ -1471,6 +1584,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         domain=domain,
         og_image_meta=og_image_meta,
         preview_html=preview_html,
+        layout_class="" if og_image else "no-preview-image",
         explanation=explanation,
         explanation_short=explanation_short,
         evidence_html=evidence_html,
@@ -1498,7 +1612,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.6.0"}
+    return {"status": "ok", "version": "0.7.0"}
 
 
 @app.get("/debug/db-status")

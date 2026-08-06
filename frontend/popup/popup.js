@@ -165,7 +165,7 @@ telemetryToggle.addEventListener('change', () => {
 
 deleteServerDataBtn.addEventListener('click', () => {
   const confirmed = window.confirm(
-    'Delete scans, image scans, votes, flags, shares, telemetry, and tier data from the FactScope server? A minimal session and current quota record are retained temporarily to prevent abuse.'
+    'Delete scans, image scans, scan-access metadata, votes, flags, shares, telemetry, and tier data from the FactScope server? A minimal session and current quota record are retained temporarily to prevent abuse.'
   );
   if (!confirmed) return;
   deleteServerDataBtn.disabled = true;

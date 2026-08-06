@@ -7,6 +7,7 @@ content appearing on different URLs can be detected instantly.
 import hashlib
 import re
 import logging
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,78 @@ def compute_fingerprint(text: str) -> str | None:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+_BOILERPLATE_LINE = re.compile(
+    r"^(?:advertisement|skip advertisement|read more|also read|subscribe|"
+    r"sign in|log in|cookie settings|accept cookies|all rights reserved|"
+    r"updated?\s+(?:\d+\s+)?(?:seconds?|minutes?|hours?)\s+ago)$",
+    re.IGNORECASE,
+)
+_TRACKING_QUERY_PREFIXES = ("utm_",)
+_TRACKING_QUERY_KEYS = {
+    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "source",
+}
+
+
+def normalize_url(url: str | None) -> str:
+    """Return a stable HTTP(S) URL without fragments or tracking parameters."""
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    filtered_query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in _TRACKING_QUERY_KEYS
+        and not key.lower().startswith(_TRACKING_QUERY_PREFIXES)
+    ]
+    host = parsed.hostname.lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port and not (
+        parsed.scheme.lower() == "http" and port == 80
+        or parsed.scheme.lower() == "https" and port == 443
+    ):
+        host = f"{host}:{port}"
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    return urlunsplit((parsed.scheme.lower(), host, path, urlencode(filtered_query), ""))
+
+
+def normalize_article_text(text: str | None, max_chars: int = 12000) -> str:
+    """Remove common dynamic boilerplate before producing an exact cache hash."""
+    if not text:
+        return ""
+    stable_lines = []
+    for raw_line in text.replace("\u200b", "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line or _BOILERPLATE_LINE.fullmatch(line):
+            continue
+        stable_lines.append(line)
+    return normalize_text("\n".join(stable_lines)[:max_chars])
+
+
+def compute_analysis_fingerprint(
+    text: str | None,
+    *,
+    url: str | None = None,
+    title: str | None = None,
+    analysis_version: str = "1",
+) -> str | None:
+    """Compute a versioned cache identity from stable page content and URL."""
+    stable_text = normalize_article_text(text)
+    if len(stable_text) < 30:
+        stable_text = normalize_text(title or "")
+    if len(stable_text) < 30:
+        return None
+    seed = "\n".join((analysis_version, normalize_url(url), stable_text))
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 def compute_shingles(text: str, k: int = 3) -> set[str]:
     """Compute k-word shingles for fuzzy matching."""
     words = normalize_text(text[:2000]).split()

@@ -53,4 +53,9 @@ assert.match(policy, /Optional telemetry is off by default/);
 assert.match(policy, /Delete my server data/);
 
 assert.match(policy, /Minimal abuse-prevention records/);
+assert.match(policy, /Scan-access metadata/);
+assert.match(popup, /scan-access metadata/);
+assert.match(content, /No checkable factual claims were identified/);
+assert.match(content, /Array\.isArray\(resp\.fact_checks\)/);
+assert.match(content, /link\[rel="canonical"\]/);
 console.log('frontend privacy tests passed');

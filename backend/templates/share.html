@@ -126,6 +126,14 @@ body {{
   margin: 0 auto;
   align-items: start;
 }}
+.main.no-preview-image {{
+  grid-template-columns: 1fr;
+  max-width: 920px;
+  gap: 28px;
+}}
+.main.no-preview-image .preview {{
+  border-left: 4px solid var(--accent);
+}}
 
 /* ── Left column: Content Preview ───────────────────── */
 
@@ -491,7 +499,7 @@ body {{
   </div>
 </nav>
 
-<div class="main">
+<div class="main {layout_class}">
 
   <!-- Left: Content Preview -->
   {preview_html}

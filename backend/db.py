@@ -201,7 +201,12 @@ _SCHEMA_STATEMENTS = [
         evidence    TEXT,
         judgement   TEXT,
         user_id     TEXT,
-        timestamp   TEXT
+        timestamp   TEXT,
+        analysis_version TEXT,
+        scanned_title TEXT,
+        canonical_url TEXT,
+        source_info TEXT,
+        og_image TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_scans_fingerprint ON scans(fingerprint)",
     "CREATE INDEX IF NOT EXISTS idx_scans_trust_score ON scans(trust_score)",
@@ -226,6 +231,17 @@ _SCHEMA_STATEMENTS = [
         INSERT INTO scans_fts(rowid, source) VALUES (new.id, new.source);
     END""",
 
+    # Metadata-only scan access records. No page text, title, or URL is stored.
+    """CREATE TABLE IF NOT EXISTS scan_accesses (
+        fingerprint TEXT NOT NULL,
+        user_id     TEXT NOT NULL,
+        result_type TEXT NOT NULL,
+        first_seen  TEXT NOT NULL,
+        last_seen   TEXT NOT NULL,
+        access_count INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (fingerprint, user_id, result_type)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scan_accesses_last_seen ON scan_accesses(last_seen)",
     # ── Image scans ────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS image_scans (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,7 +253,11 @@ _SCHEMA_STATEMENTS = [
         evidence            TEXT,
         claim_analysis      TEXT,
         user_id             TEXT,
-        timestamp           TEXT
+        timestamp           TEXT,
+        analysis_version    TEXT,
+        page_url            TEXT,
+        scanned_title       TEXT,
+        og_image            TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_image_scans_url_hash ON image_scans(url_hash)",
 
@@ -393,6 +413,15 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE shared_results ADD COLUMN card_png BLOB",
     "ALTER TABLE shared_results ADD COLUMN server_verified INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE shared_results ADD COLUMN owner_subject_id TEXT",
+    "ALTER TABLE scans ADD COLUMN analysis_version TEXT",
+    "ALTER TABLE scans ADD COLUMN scanned_title TEXT",
+    "ALTER TABLE scans ADD COLUMN canonical_url TEXT",
+    "ALTER TABLE scans ADD COLUMN source_info TEXT",
+    "ALTER TABLE scans ADD COLUMN og_image TEXT",
+    "ALTER TABLE image_scans ADD COLUMN analysis_version TEXT",
+    "ALTER TABLE image_scans ADD COLUMN page_url TEXT",
+    "ALTER TABLE image_scans ADD COLUMN scanned_title TEXT",
+    "ALTER TABLE image_scans ADD COLUMN og_image TEXT",
 ]
 
 
@@ -427,7 +456,9 @@ def init_db():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def store_scan(doc_type: str, source, result, fingerprint: str = None,
-               url: str = None, user_id: str = None):
+               url: str = None, user_id: str = None, analysis_version: str = None,
+               scanned_title: str = None, canonical_url: str = None,
+               source_info: dict = None, og_image: str = None):
     """Store an analysis result."""
     try:
         conn = _get_conn()
@@ -443,6 +474,11 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
             "judgement": None,
             "user_id": user_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "analysis_version": analysis_version,
+            "scanned_title": (scanned_title or "")[:500],
+            "canonical_url": canonical_url,
+            "source_info": json.dumps(source_info) if source_info else None,
+            "og_image": og_image,
         }
 
         if isinstance(result, dict):
@@ -457,13 +493,15 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
         conn.execute(
             """INSERT INTO scans
                (doc_type, source, url, fingerprint, trust_score, verdict,
-                explanation, evidence, judgement, user_id, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                explanation, evidence, judgement, user_id, timestamp,
+                analysis_version, scanned_title, canonical_url, source_info, og_image)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc["doc_type"], doc["source"], doc["url"], doc["fingerprint"],
                 doc["trust_score"], doc["verdict"], doc["explanation"],
                 doc["evidence"], doc["judgement"], doc["user_id"],
-                doc["timestamp"],
+                doc["timestamp"], doc["analysis_version"], doc["scanned_title"],
+                doc["canonical_url"], doc["source_info"], doc["og_image"],
             ),
         )
         _commit_and_sync()
@@ -489,21 +527,85 @@ def find_by_fingerprint(fingerprint: str) -> dict | None:
                     doc["evidence"] = json.loads(doc["evidence"])
                 except (json.JSONDecodeError, TypeError):
                     doc["evidence"] = []
+            if doc.get("source_info"):
+                try:
+                    doc["source_info"] = json.loads(doc["source_info"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["source_info"] = None
             return doc
     except Exception as exc:
         logger.warning("Fingerprint lookup failed: %s", exc)
     return None
 
 
+def find_cached_scan(fingerprint: str, analysis_version: str, max_age_hours: int) -> dict | None:
+    """Return a fresh cache entry for the exact analysis version."""
+    if not fingerprint or not analysis_version:
+        return None
+    try:
+        conn = _get_conn()
+        row = conn.execute(
+            """SELECT * FROM scans
+               WHERE fingerprint = ? AND analysis_version = ?
+               ORDER BY timestamp DESC LIMIT 1""",
+            (fingerprint, analysis_version),
+        ).fetchone()
+        if not row:
+            return None
+        doc = dict(row)
+        scan_time = datetime.fromisoformat(doc["timestamp"])
+        if scan_time.tzinfo is None:
+            scan_time = scan_time.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - scan_time).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            return None
+        doc["evidence"] = json.loads(doc["evidence"]) if doc.get("evidence") else []
+        doc["source_info"] = json.loads(doc["source_info"]) if doc.get("source_info") else None
+        logger.info("Analysis cache hit: %s version=%s", fingerprint[:16], analysis_version)
+        return doc
+    except Exception as exc:
+        logger.warning("Analysis cache lookup failed: %s", type(exc).__name__)
+        return None
+
+
+def record_scan_access(fingerprint: str, user_id: str, result_type: str) -> bool:
+    """Record metadata-only access without storing scanned content or URLs."""
+    if not fingerprint or not user_id or result_type not in {"page", "image"}:
+        return False
+    try:
+        conn = _get_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO scan_accesses
+               (fingerprint, user_id, result_type, first_seen, last_seen, access_count)
+               VALUES (?, ?, ?, ?, ?, 1)
+               ON CONFLICT(fingerprint, user_id, result_type) DO UPDATE SET
+                   last_seen = excluded.last_seen,
+                   access_count = scan_accesses.access_count + 1""",
+            (fingerprint, user_id, result_type, now, now),
+        )
+        _commit_and_sync()
+        return True
+    except Exception as exc:
+        logger.warning("Failed to record scan access: %s", type(exc).__name__)
+        return False
+
+
 def count_scans_for_fingerprint(fingerprint: str) -> int:
-    """Count how many unique users scanned content with this fingerprint."""
+    """Count distinct installations that analyzed or accessed this fingerprint."""
     if not fingerprint:
         return 0
     try:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT COUNT(DISTINCT user_id) as cnt FROM scans WHERE fingerprint = ?",
-            (fingerprint,),
+            """SELECT COUNT(DISTINCT user_id) AS cnt FROM (
+                   SELECT user_id FROM scans
+                    WHERE fingerprint = ? AND user_id IS NOT NULL
+                   UNION ALL
+                   SELECT user_id FROM scan_accesses
+                    WHERE fingerprint = ?
+               )""",
+            (fingerprint, fingerprint),
         ).fetchone()
         return row["cnt"] if row else 0
     except Exception:
@@ -596,15 +698,18 @@ def url_hash(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:32]
 
 
-def store_image_scan(image_url: str, result: dict, user_id: str = None):
+def store_image_scan(image_url: str, result: dict, user_id: str = None,
+                     analysis_version: str = None, page_url: str = None,
+                     scanned_title: str = None, og_image: str = None):
     """Store an image verification result for caching."""
     try:
         conn = _get_conn()
         conn.execute(
             """INSERT INTO image_scans
                (image_url, url_hash, authenticity_score, verdict,
-                explanation, evidence, claim_analysis, user_id, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                explanation, evidence, claim_analysis, user_id, timestamp,
+                analysis_version, page_url, scanned_title, og_image)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 image_url,
                 url_hash(image_url),
@@ -615,6 +720,10 @@ def store_image_scan(image_url: str, result: dict, user_id: str = None):
                 json.dumps(result.get("claim_analysis")) if result.get("claim_analysis") else None,
                 user_id,
                 datetime.now(timezone.utc).isoformat(),
+                analysis_version,
+                page_url,
+                (scanned_title or "")[:500],
+                og_image,
             ),
         )
         _commit_and_sync()
@@ -622,13 +731,15 @@ def store_image_scan(image_url: str, result: dict, user_id: str = None):
         logger.warning("Failed to store image scan: %s", exc)
 
 
-def find_image_scan(image_url: str, max_age_hours: int = 24) -> dict | None:
+def find_image_scan(image_url: str, max_age_hours: int = 24, analysis_version: str = None) -> dict | None:
     """Return cached image scan if it exists and isn't too old."""
     try:
         conn = _get_conn()
         row = conn.execute(
-            "SELECT * FROM image_scans WHERE url_hash = ? ORDER BY timestamp DESC LIMIT 1",
-            (url_hash(image_url),),
+            """SELECT * FROM image_scans
+               WHERE url_hash = ? AND (? IS NULL OR analysis_version = ?)
+               ORDER BY timestamp DESC LIMIT 1""",
+            (url_hash(image_url), analysis_version, analysis_version),
         ).fetchone()
         if row:
             doc = dict(row)
@@ -1126,7 +1237,9 @@ def store_shared_result(data: dict) -> str:
                     """UPDATE shared_results
                        SET result_type = ?, score = ?, verdict = ?, explanation = ?,
                            evidence = ?, domain = ?, source_info = ?, scanned_url = ?,
-                           scanned_title = ?, og_image = ?, server_verified = 1 WHERE id = ?""",
+                           scanned_title = COALESCE(NULLIF(?, ''), scanned_title),
+                           og_image = COALESCE(NULLIF(?, ''), og_image),
+                           server_verified = 1 WHERE id = ?""",
                     (
                         data.get("result_type", "page"), int(data.get("score", 50)),
                         data.get("verdict", "uncertain"), data.get("explanation", ""),
@@ -1449,6 +1562,7 @@ def purge_expired_data(raw_scan_days: int = 30, telemetry_days: int = 30) -> dic
     }
     statements = (
         ("scans", "DELETE FROM scans WHERE timestamp < ?", (raw_cutoff,)),
+        ("scan_accesses", "DELETE FROM scan_accesses WHERE last_seen < ?", (raw_cutoff,)),
         ("image_scans", "DELETE FROM image_scans WHERE timestamp < ?", (raw_cutoff,)),
         ("telemetry_events", "DELETE FROM telemetry_events WHERE created_at < ?", (telemetry_cutoff,)),
     )
@@ -1480,6 +1594,7 @@ def delete_installation_data(
         ("flags", "DELETE FROM community_flags WHERE user_id = ?"),
         ("votes", "DELETE FROM response_votes WHERE user_id = ?"),
         ("page_scans", "DELETE FROM scans WHERE user_id = ?"),
+        ("scan_accesses", "DELETE FROM scan_accesses WHERE user_id = ?"),
         ("image_scans", "DELETE FROM image_scans WHERE user_id = ?"),
         ("tier", "DELETE FROM user_tiers WHERE user_id = ?"),
     ]

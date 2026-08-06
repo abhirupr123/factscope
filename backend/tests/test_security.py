@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -31,6 +32,7 @@ from safe_fetch import (  # noqa: E402
 import main  # noqa: E402
 import llm_utils  # noqa: E402
 import db  # noqa: E402
+import fingerprinting  # noqa: E402
 
 
 def tearDownModule():
@@ -223,6 +225,9 @@ class ProductionBoundaryTests(unittest.TestCase):
             "explanation": "Stored server result",
             "evidence": ["Stored evidence"],
             "url": "https://example.com/report",
+            "scanned_title": "Stored report title",
+            "og_image": "https://example.com/report.jpg",
+            "source_info": {"site_name": "Example News"},
         }
         token, _ = main.issue_installation_session()
         http_request = main.Request({
@@ -236,6 +241,9 @@ class ProductionBoundaryTests(unittest.TestCase):
         self.assertEqual(captured["score"], 27)
         self.assertEqual(captured["verdict"], "suspicious")
         self.assertEqual(captured["explanation"], "Stored server result")
+        self.assertEqual(captured["scanned_title"], "Stored report title")
+        self.assertEqual(captured["og_image"], "https://example.com/report.jpg")
+        self.assertEqual(captured["source_info"]["site_name"], "Example News")
 
     def test_share_html_escapes_text_and_rejects_javascript_urls(self):
         html = main._render_share_page({
@@ -435,6 +443,7 @@ class ChunkThreePrivacyTests(unittest.TestCase):
             "A sufficiently detailed test justification for deletion coverage.",
         )
         db.store_vote(fingerprint, subject, 1)
+        db.record_scan_access(fingerprint, subject, "page")
         db.store_telemetry_event(subject, "scan_failed")
         db.increment_daily_scan(subject, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
         share_id = db.store_shared_result({
@@ -456,6 +465,7 @@ class ChunkThreePrivacyTests(unittest.TestCase):
             ("image_scans", "user_id"),
             ("community_flags", "user_id"),
             ("response_votes", "user_id"),
+            ("scan_accesses", "user_id"),
             ("telemetry_events", "subject_id"),
             ("user_scans", "user_id"),
             ("installation_sessions", "subject_id"),
@@ -496,6 +506,257 @@ class ChunkThreePrivacyTests(unittest.TestCase):
             asyncio.run(main.delete_server_data(request))
         self.assertEqual(caught.exception.status_code, 401)
 
+
+    def test_completed_empty_claims_are_not_reported_as_pending(self):
+        request = main.Request({"type": "http", "headers": []})
+        with patch.object(main, "_require_session"), patch.object(
+            main, "get_scan_claims", return_value="[]"
+        ):
+            result = asyncio.run(main.get_claims("a" * 64, request))
+
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["fact_checks"], [])
+
+
+class ChunkFourFoundationTests(unittest.TestCase):
+    @staticmethod
+    def _request():
+        request = main.Request({"type": "http", "headers": []})
+        request.state.request_id = "chunk4-test-request"
+        return request
+
+    def setUp(self):
+        main._cache_hit_limiter.clear()
+        with main._inflight_guard:
+            main._inflight_page_analyses.clear()
+
+    def test_versioned_fingerprint_ignores_tracking_and_dynamic_boilerplate(self):
+        first = fingerprinting.compute_analysis_fingerprint(
+            "Updated 5 minutes ago\nA detailed report says the monument has developed a black crust.",
+            url="https://example.com/report?utm_source=test&ref=home",
+            analysis_version="4a-1",
+        )
+        second = fingerprinting.compute_analysis_fingerprint(
+            "Updated 9 minutes ago\nA detailed report says the monument has developed a black crust.",
+            url="https://example.com/report",
+            analysis_version="4a-1",
+        )
+        changed = fingerprinting.compute_analysis_fingerprint(
+            "Updated 9 minutes ago\nA detailed report says the monument has developed a white crust.",
+            url="https://example.com/report",
+            analysis_version="4a-1",
+        )
+        new_version = fingerprinting.compute_analysis_fingerprint(
+            "Updated 9 minutes ago\nA detailed report says the monument has developed a black crust.",
+            url="https://example.com/report",
+            analysis_version="4a-2",
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, changed)
+        self.assertNotEqual(first, new_version)
+
+    def test_cache_lookup_requires_current_version_and_round_trips_share_metadata(self):
+        fingerprint = uuid.uuid4().hex * 2
+        subject = f"cache-{uuid.uuid4().hex}"
+        db.store_scan(
+            "page_scan", "stable article text",
+            {"trust_score": 71, "verdict": "uncertain", "evidence": ["Evidence"]},
+            fingerprint=fingerprint, url="https://example.com/report", user_id=subject,
+            analysis_version="4a-test", scanned_title="Stored title",
+            canonical_url="https://example.com/report",
+            source_info={"site_name": "Example", "author": "Reporter"},
+            og_image="https://cdn.example.com/report.jpg",
+        )
+        cached = db.find_cached_scan(fingerprint, "4a-test", 24)
+        self.assertEqual(cached["scanned_title"], "Stored title")
+        self.assertEqual(cached["source_info"]["author"], "Reporter")
+        self.assertIsNone(db.find_cached_scan(fingerprint, "different-version", 24))
+        stored = db.find_by_fingerprint(fingerprint)
+        self.assertEqual(stored["source_info"]["site_name"], "Example")
+        conn = db._get_conn()
+        conn.execute("DELETE FROM scans WHERE fingerprint = ?", (fingerprint,))
+        conn.commit()
+
+    def test_scan_accesses_count_distinct_installations_without_content(self):
+        fingerprint = uuid.uuid4().hex * 2
+        first = f"access-{uuid.uuid4().hex}"
+        second = f"access-{uuid.uuid4().hex}"
+        self.assertTrue(db.record_scan_access(fingerprint, first, "page"))
+        self.assertTrue(db.record_scan_access(fingerprint, first, "page"))
+        self.assertTrue(db.record_scan_access(fingerprint, second, "page"))
+        self.assertEqual(db.count_scans_for_fingerprint(fingerprint), 2)
+        conn = db._get_conn()
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(scan_accesses)").fetchall()
+        }
+        self.assertNotIn("text", columns)
+        self.assertNotIn("title", columns)
+        self.assertNotIn("url", columns)
+        conn.execute("DELETE FROM scan_accesses WHERE fingerprint = ?", (fingerprint,))
+        conn.commit()
+    def test_cached_article_is_available_without_quota_or_provider_charge(self):
+        payload = main.AnalyzeRequest(
+            text="A sufficiently long stable article body that can be fingerprinted for this cache test."
+        )
+        cached = {
+            "trust_score": 68, "verdict": "uncertain", "explanation": "Stored",
+            "evidence": ["Stored evidence"], "judgement": "[]",
+            "source_info": {"site_name": "Example"},
+        }
+        auth = Mock(subject_id="cached-subject")
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async"), \
+             patch.object(main, "find_cached_scan", return_value=cached), \
+             patch.object(main, "_enforce_cache_hit_limit"), \
+             patch.object(main, "_remaining_scans", return_value=0), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}), \
+             patch.object(main, "_check_rate_limit", side_effect=AssertionError("quota checked on hit")), \
+             patch.object(main, "_reserve_llm_call", side_effect=AssertionError("provider reserved on hit")), \
+             patch.object(main, "_increment_and_get_remaining", side_effect=AssertionError("quota charged on hit")), \
+             patch.object(main, "_enforce_analysis_burst", side_effect=AssertionError("costly burst applied on hit")):
+            result = asyncio.run(main.analyze_page.__wrapped__(payload, self._request()))
+        self.assertTrue(result.cached)
+        self.assertEqual(result.cache_status, "hit")
+        self.assertEqual(result.scans_remaining, 0)
+        self.assertEqual(result.fact_checks, [])
+
+    def test_cached_image_is_available_without_quota_or_provider_charge(self):
+        payload = main.ImageVerifyRequest(image_url="https://example.com/image.jpg")
+        cached = {
+            "authenticity_score": 72, "verdict": "authentic",
+            "explanation": "Stored image result", "evidence": [],
+            "claim_analysis": None,
+        }
+        auth = Mock(subject_id="cached-image-subject")
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async"), \
+             patch.object(main, "find_image_scan", return_value=cached), \
+             patch.object(main, "_enforce_cache_hit_limit"), \
+             patch.object(main, "_remaining_scans", return_value=0), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}), \
+             patch.object(main, "_check_rate_limit", side_effect=AssertionError("quota checked on hit")), \
+             patch.object(main, "_reserve_llm_call", side_effect=AssertionError("provider reserved on hit")), \
+             patch.object(main, "_increment_and_get_remaining", side_effect=AssertionError("quota charged on hit")), \
+             patch.object(main, "_enforce_analysis_burst", side_effect=AssertionError("costly burst applied on hit")):
+            result = asyncio.run(main.verify_image.__wrapped__(payload, self._request()))
+        self.assertTrue(result.cached)
+        self.assertEqual(result.cache_status, "hit")
+        self.assertEqual(result.scans_remaining, 0)
+    def test_fresh_article_charges_once_when_provider_work_starts(self):
+        payload = main.AnalyzeRequest(
+            text="A sufficiently long stable article body containing a factual report for provider work."
+        )
+        auth = Mock(subject_id="fresh-subject")
+        llm_result = {
+            "trust_score": 60, "verdict": "uncertain",
+            "explanation": "Analysis", "evidence": [],
+        }
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async"), \
+             patch.object(main, "find_cached_scan", return_value=None), \
+             patch.object(main, "_enforce_analysis_burst"), \
+             patch.object(main, "_check_rate_limit", return_value=None), \
+             patch.object(main, "_reserve_llm_call") as reserve, \
+             patch.object(main, "_increment_and_get_remaining", return_value=9) as charge, \
+             patch.object(main, "get_structured_analysis", return_value=llm_result), \
+             patch.object(main, "factcheck_available", return_value=False), \
+             patch.object(main, "compute_structural_score", return_value=(50, [])), \
+             patch.object(main, "store_analysis_result"), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "count_scans_for_fingerprint", return_value=1), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}):
+            result = asyncio.run(main.analyze_page.__wrapped__(payload, self._request()))
+        self.assertFalse(result.cached)
+        self.assertEqual(result.cache_status, "miss")
+        self.assertEqual(result.scans_remaining, 9)
+        reserve.assert_called_once()
+        charge.assert_called_once_with("fresh-subject")
+        self.assertEqual(main._inflight_page_analyses, {})
+
+    def test_concurrent_identical_articles_share_one_provider_pipeline(self):
+        payload = main.AnalyzeRequest(
+            text="A sufficiently long stable article body used for concurrent provider deduplication."
+        )
+        auth = Mock(subject_id="coalesced-subject")
+        llm_result = {
+            "trust_score": 60, "verdict": "uncertain",
+            "explanation": "Analysis", "evidence": [],
+        }
+
+        def slow_provider(_content):
+            time.sleep(0.05)
+            return llm_result
+
+        async def run_both():
+            return await asyncio.gather(
+                main.analyze_page.__wrapped__(payload, self._request()),
+                main.analyze_page.__wrapped__(payload, self._request()),
+            )
+
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async"), \
+             patch.object(main, "find_cached_scan", return_value=None), \
+             patch.object(main, "_enforce_analysis_burst"), \
+             patch.object(main, "_check_rate_limit", return_value=None), \
+             patch.object(main, "_reserve_llm_call") as reserve, \
+             patch.object(main, "_increment_and_get_remaining", return_value=9) as charge, \
+             patch.object(main, "_remaining_scans", return_value=9), \
+             patch.object(main, "get_structured_analysis", side_effect=slow_provider) as provider, \
+             patch.object(main, "factcheck_available", return_value=False), \
+             patch.object(main, "compute_structural_score", return_value=(50, [])), \
+             patch.object(main, "store_analysis_result"), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "count_scans_for_fingerprint", return_value=1), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}):
+            results = asyncio.run(run_both())
+
+        self.assertEqual(provider.call_count, 1)
+        reserve.assert_called_once()
+        charge.assert_called_once_with("coalesced-subject")
+        self.assertEqual({result.cache_status for result in results}, {"miss", "coalesced"})
+        self.assertEqual(main._inflight_page_analyses, {})
+
+    def test_anonymous_community_data_has_no_automatic_analysis_path(self):
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("graduate_flags_to_fact(request.fingerprint)", source)
+        self.assertNotIn("should_invalidate_cache(fingerprint)", source)
+        self.assertNotIn("Community-verified facts relevant to this content", source)
+        self.assertNotIn("previously_flagged", source)
+    def test_sharing_again_does_not_erase_existing_title_or_image(self):
+        fingerprint = uuid.uuid4().hex * 2
+        owner = f"owner-{uuid.uuid4().hex}"
+        share_id = db.store_shared_result({
+            "fingerprint": fingerprint, "owner_subject_id": owner,
+            "score": 50, "verdict": "uncertain", "scanned_title": "Original title",
+            "og_image": "https://example.com/original.jpg",
+        })
+        same_id = db.store_shared_result({
+            "fingerprint": fingerprint, "owner_subject_id": owner,
+            "score": 55, "verdict": "uncertain", "scanned_title": "", "og_image": "",
+        })
+        stored = db.get_shared_result(share_id)
+        self.assertEqual(same_id, share_id)
+        self.assertEqual(stored["scanned_title"], "Original title")
+        self.assertEqual(stored["og_image"], "https://example.com/original.jpg")
+        conn = db._get_conn()
+        conn.execute("DELETE FROM shared_results WHERE id = ?", (share_id,))
+        conn.commit()
+
+    def test_share_page_collapses_to_meaningful_single_column_without_image(self):
+        html = main._render_share_page({
+            "score": 50, "verdict": "uncertain", "explanation": "Analysis",
+            "scanned_title": "Stored article", "scanned_url": "https://example.com/report",
+            "domain": "example.com", "og_image": "",
+        })
+        self.assertIn('class="main no-preview-image"', html)
+        self.assertIn("Stored article", html)
+        self.assertIn("Page scanned", html)
 
 if __name__ == "__main__":
     unittest.main()

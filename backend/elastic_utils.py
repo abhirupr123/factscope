@@ -7,6 +7,9 @@ but delegates everything to the SQLite backend in db.py.
 from db import store_scan, find_by_fingerprint, find_flagged_similar, find_trusted_similar, get_domain_profile  # noqa: F401
 
 
-def store_analysis_result(doc_type, source, result, fingerprint=None, url=None, user_id=None):
+def store_analysis_result(doc_type, source, result, fingerprint=None, url=None, user_id=None, **metadata):
     """Store an analysis result (delegates to db.store_scan)."""
-    store_scan(doc_type, source, result, fingerprint=fingerprint, url=url, user_id=user_id)
+    store_scan(
+        doc_type, source, result, fingerprint=fingerprint, url=url, user_id=user_id,
+        **metadata,
+    )
