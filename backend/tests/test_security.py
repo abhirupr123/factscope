@@ -144,8 +144,13 @@ class ProductionBoundaryTests(unittest.TestCase):
     def test_development_routes_are_absent_in_production(self):
         paths = {getattr(route, "path", None) for route in main.app.router.routes}
         self.assertNotIn("/debug/db-status", paths)
-        self.assertNotIn("/models/info", paths)
-        self.assertNotIn("/analyze/url", paths)
+        for retired_path in (
+            "/models/info", "/analyze/text", "/analyze/image",
+            "/analyze/pdf", "/analyze/video", "/analyze/url",
+        ):
+            self.assertNotIn(retired_path, paths)
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("from analyzers import", source)
         self.assertNotIn("/openapi.json", paths)
 
     def test_chunked_request_body_limit_returns_413(self):

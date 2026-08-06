@@ -3,13 +3,12 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from functools import wraps
 from threading import Lock
 
-from fastapi import FastAPI, UploadFile, File, Form, Path as ApiPath, Request, HTTPException
+from fastapi import FastAPI, Path as ApiPath, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Annotated, Optional, Literal
-from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, get_domain_profile
 from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, find_cached_scan, find_cached_scan_by_url, add_community_flag,
                 get_flag_count, has_user_flagged, count_scans_for_fingerprint, record_scan_access,
@@ -29,8 +28,7 @@ from content_classifier import classify_page_content, apply_factual_verdict_safe
 from fingerprinting import compute_analysis_fingerprint, compute_content_signature, normalize_url
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
-from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
-                    DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL, SCAN_LIMITS,
+from config import (FLAG_VALIDATION_MODEL, SCAN_LIMITS,
                     ADMIN_USER_IDS, ENVIRONMENT, MAX_REQUEST_BYTES,
                     CORS_ALLOWED_ORIGINS, SESSION_MINTS_PER_HOUR,
                     API_REQUESTS_PER_MINUTE, ANALYSIS_REQUESTS_PER_MINUTE,
@@ -2121,53 +2119,6 @@ async def debug_find(fp: str):
         return {"error": str(exc)}
 
 
-# --------------- legacy per-type endpoints (direct API usage) ---------------
-
-@app.post("/analyze/text")
-async def analyze_text(content: str = Form(...)):
-    result = text_analyzer.analyze(content)
-    store_analysis_result("text", content, result)
-    return result
-
-
-@app.post("/analyze/image")
-async def analyze_image(file: UploadFile = File(...)):
-    result = await image_analyzer.analyze(file)
-    store_analysis_result("image", file.filename, result)
-    return result
-
-
-@app.post("/analyze/pdf")
-async def analyze_pdf(file: UploadFile = File(...)):
-    result = await pdf_analyzer.analyze(file)
-    store_analysis_result("pdf", file.filename, result)
-    return result
-
-
-@app.post("/analyze/video")
-async def analyze_video(file: UploadFile = File(...)):
-    result = await video_analyzer.analyze(file)
-    store_analysis_result("video", file.filename, result)
-    return result
-
-
-@app.post("/analyze/url")
-async def analyze_url(url: str = Form(...)):
-    result = await url_analyzer.analyze(url)
-    store_analysis_result("url", url, result)
-    return result
-
-
-@app.get("/models/info")
-async def get_model_info():
-    return {
-        "text_model": {"id": TEXT_MODEL_ID, "max_tokens": DEFAULT_MAX_TOKENS},
-        "multimodal_model": {"id": MULTIMODAL_MODEL_ID, "max_tokens": max(DEFAULT_MAX_TOKENS, 800)},
-        "scoring": {"llm_weight": LLM_WEIGHT, "structural_weight": STRUCTURAL_WEIGHT},
-        "temperature": DEFAULT_TEMPERATURE,
-    }
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Rate-limit / Usage endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2260,12 +2211,6 @@ if ENVIRONMENT == "production":
     _DEVELOPMENT_ONLY_PATHS = {
         "/debug/db-status",
         "/debug/find/{fp}",
-        "/analyze/text",
-        "/analyze/image",
-        "/analyze/pdf",
-        "/analyze/video",
-        "/analyze/url",
-        "/models/info",
     }
     app.router.routes = [
         route for route in app.router.routes
