@@ -25,6 +25,7 @@ from auth import AuthContext, SessionAuthError, authenticate_installation_token,
 from controls import SlidingWindowLimiter, client_ip_hash, hash_network_identity
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
+from content_classifier import classify_page_content, apply_factual_verdict_safeguard
 from fingerprinting import compute_analysis_fingerprint, compute_content_signature, normalize_url
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
@@ -94,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.8.0",
+    version="0.9.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -494,6 +495,16 @@ class DomainProfile(BaseModel):
     last_verdict: Optional[str] = None
 
 
+class ContentClassification(BaseModel):
+    content_type: Literal[
+        "factual_report", "opinion", "satire", "prediction",
+        "breaking_news", "other", "unsupported_page",
+    ]
+    checkability: Literal["checkable", "mixed", "no_checkable_claims", "unknown"]
+    confidence: Literal["low", "medium", "high"]
+    rationale: str
+    factual_verdict_allowed: bool
+
 class AnalyzeResponse(BaseModel):
     trust_score: int
     verdict: str
@@ -514,6 +525,7 @@ class AnalyzeResponse(BaseModel):
     fingerprint: Optional[str] = None
     claims_pending: Optional[bool] = None
     scans_remaining: Optional[int] = None
+    content_classification: Optional[ContentClassification] = None
 
 
 class V1EvidenceSource(BaseModel):
@@ -634,6 +646,11 @@ def _provider_failed(legacy: AnalyzeResponse) -> bool:
 def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1AnalyzeResponse:
     claims = [_map_v1_claim(item) for item in (legacy.fact_checks or [])]
     provider_failed = _provider_failed(legacy)
+    classification = legacy.content_classification
+    classification_complete = bool(classification and (
+        classification.content_type == "unsupported_page"
+        or classification.checkability == "no_checkable_claims"
+    ))
     limitations = [
         "The legacy score includes model judgment and structural website signals; it is not a probability that the content is true."
     ]
@@ -652,6 +669,10 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
         processing_state = "failed"
         retryable = True
         limitations.append("The analysis provider was unavailable; no factual verdict should be inferred.")
+    elif classification_complete:
+        processing_state = "complete"
+        retryable = False
+        limitations.append("This content was classified without a claim-level factual verdict.")
     elif legacy.fact_checks is None:
         processing_state = "partial"
         retryable = False
@@ -671,6 +692,17 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
 
     if any(claim.status == "insufficient_evidence" for claim in claims):
         limitations.append("At least one claim lacks enough evidence for a supported or contradicted status.")
+
+    if classification:
+        if not classification.factual_verdict_allowed:
+            confidence = "low"
+            label = classification.content_type.replace("_", " ")
+            limitations.append(
+                f"The page is classified as {label}; that classification does not mean it is false."
+            )
+        if classification.checkability == "no_checkable_claims":
+            confidence = "low"
+            limitations.append("The extracted content did not provide claims suitable for factual verification.")
 
     analysis_id = legacy.fingerprint or fallback_analysis_id
     return V1AnalyzeResponse(
@@ -1181,6 +1213,15 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
     auth = _require_session(http_request)
     subject_id = auth.subject_id
 
+    meta_dict = request.metadata.model_dump() if request.metadata else {}
+    pre_classification_data = classify_page_content(
+        title=request.title,
+        text=request.text,
+        url=request.url,
+        metadata=meta_dict,
+    )
+    pre_classification = ContentClassification(**pre_classification_data)
+
     # Cache identity excludes common dynamic boilerplate and includes the
     # analysis version so prompt/model changes never reuse stale results.
     canonical_cache_url = normalize_url(
@@ -1239,6 +1280,9 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             notes = [CommunityNote(**n) for n in notes_raw] if notes_raw else None
             v_stats = get_vote_stats(fingerprint)
             cached_source = SourceInfo(**cached["source_info"]) if cached.get("source_info") else None
+            cached_classification = ContentClassification(
+                **(cached.get("content_classification") or pre_classification_data)
+            )
 
             return AnalyzeResponse(
                 trust_score=cached.get("trust_score", 50),
@@ -1257,6 +1301,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
                 vote_stats=VoteStats(**v_stats) if (v_stats["likes"] + v_stats["dislikes"]) > 0 else None,
                 fingerprint=fingerprint,
                 scans_remaining=_remaining_scans(subject_id),
+                content_classification=cached_classification,
             )
         _log_cache(http_request, "miss", fingerprint, "no_exact_or_similar_entry")
     else:
@@ -1316,6 +1361,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             cache_status="bypass",
             analysis_version=ANALYSIS_VERSION,
             scans_remaining=_remaining_scans(subject_id),
+            content_classification=pre_classification,
         )
 
     # Anonymous community reports and helpfulness votes are retained for
@@ -1393,6 +1439,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             cache_status=result_cache_status,
             analysis_version=ANALYSIS_VERSION,
             scans_remaining=scans_remaining,
+            content_classification=pre_classification,
         )
     except Exception:
         _finish_page_analysis(inflight_key, inflight_ready)
@@ -1417,7 +1464,17 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             fc_future.add_done_callback(_on_claims_done)
 
     # ── Run structural scoring ────────────────────────────────────────
-    meta_dict = request.metadata.model_dump() if request.metadata else {}
+    classification_data = classify_page_content(
+        title=request.title,
+        text=request.text,
+        url=request.url,
+        metadata=meta_dict,
+        llm_result=llm_result,
+        claims_completed=claims_completed,
+        fact_checks=fact_checks,
+    )
+    content_classification = ContentClassification(**classification_data)
+
     structural_score, signals = compute_structural_score(
         url=request.url,
         title=request.title,
@@ -1456,6 +1513,18 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
     llm_score = llm_result.get("trust_score", 50)
     combined_score = int(LLM_WEIGHT * llm_score + STRUCTURAL_WEIGHT * structural_score)
     combined_score = max(0, min(100, combined_score + fc_delta))
+    combined_score, safe_verdict, safe_explanation = apply_factual_verdict_safeguard(
+        combined_score,
+        llm_result.get("verdict", "suspicious"),
+        llm_result.get("explanation", ""),
+        classification_data,
+        fact_checks,
+    )
+    llm_result = {
+        **llm_result,
+        "verdict": safe_verdict,
+        "explanation": safe_explanation,
+    }
 
     all_evidence = list(llm_result.get("evidence", []))
 
@@ -1503,11 +1572,12 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             scanned_title=request.title, canonical_url=canonical_url,
             source_info=source_info.model_dump() if source_info else None,
             og_image=og_image, content_signature=content_signature,
+            content_classification=classification_data,
         )
     except Exception as exc:
         logger.warning("Storage failed: %s", exc)
 
-    if request.url:
+    if request.url and classification_data.get("factual_verdict_allowed"):
         try:
             update_domain_stats(request.url, combined_score, llm_result.get("verdict", "suspicious"))
         except Exception as exc:
@@ -1553,6 +1623,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         fingerprint=fingerprint,
         claims_pending=claims_pending if claims_pending else None,
         scans_remaining=scans_remaining,
+        content_classification=content_classification,
     )
 
 
@@ -1842,7 +1913,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.8.0"}
+    return {"status": "ok", "version": "0.9.0"}
 
 
 @app.get("/debug/db-status")

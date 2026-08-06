@@ -34,6 +34,7 @@ import main  # noqa: E402
 import llm_utils  # noqa: E402
 import db  # noqa: E402
 import fingerprinting  # noqa: E402
+import content_classifier  # noqa: E402
 
 
 def tearDownModule():
@@ -932,6 +933,200 @@ class ChunkFourV1ContractTests(unittest.TestCase):
             complete = asyncio.run(main.get_v1_claims(request, "e" * 64))
         self.assertEqual(complete.processing_state, "complete")
         self.assertEqual(complete.claims[0].status, "supported")
+
+class ChunkFourContentClassificationTests(unittest.TestCase):
+    @staticmethod
+    def _request():
+        request = main.Request({"type": "http", "headers": []})
+        request.state.request_id = "chunk4c-request"
+        return request
+
+    def setUp(self):
+        main._cache_hit_limiter.clear()
+        with main._inflight_guard:
+            main._inflight_page_analyses.clear()
+
+    def test_explicit_page_labels_classify_without_model_guessing(self):
+        cases = [
+            ({"title": "Opinion: The policy needs a rethink", "text": "Commentary " * 80,
+              "url": "https://example.com/opinion/policy", "metadata": {}}, "opinion"),
+            ({"title": "Satire: Parliament moves to the moon", "text": "Satirical story " * 80,
+              "url": "https://example.com/story", "metadata": {}}, "satire"),
+            ({"title": "Election forecast and predictions", "text": "Forecast discussion " * 80,
+              "url": "https://example.com/outlook/election", "metadata": {}}, "prediction"),
+            ({"title": "Breaking: Storm reaches the coast", "text": "Developing report " * 80,
+              "url": "https://example.com/live", "metadata": {}}, "breaking_news"),
+        ]
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                result = content_classifier.classify_page_content(**payload)
+                self.assertEqual(result["content_type"], expected)
+                self.assertEqual(result["confidence"], "high")
+                self.assertFalse(result["factual_verdict_allowed"])
+
+        opinion_poll = content_classifier.classify_page_content(
+            title="Public opinion shifts after the debate",
+            text="The survey reports responses from registered voters. " * 20,
+            url="https://example.com/news/public-opinion-poll",
+            metadata={"og_type": "article"},
+        )
+        self.assertEqual(opinion_poll["content_type"], "factual_report")
+
+    def test_ambiguous_model_classification_is_capped_at_medium_confidence(self):
+        result = content_classifier.classify_page_content(
+            title="A personal view of the policy",
+            text="The writer discusses the policy and its consequences. " * 20,
+            url="https://example.com/post",
+            metadata={},
+            llm_result={
+                "content_type": "opinion", "checkability": "mixed",
+                "classification_reason": "The author mainly expresses a viewpoint.",
+            },
+        )
+        self.assertEqual(result["content_type"], "opinion")
+        self.assertEqual(result["confidence"], "medium")
+        self.assertEqual(result["checkability"], "mixed")
+
+    def test_no_claim_classification_requires_completed_extraction_and_model_agreement(self):
+        result = content_classifier.classify_page_content(
+            title="A reflective essay",
+            text="This essay reflects on personal taste and experience. " * 20,
+            url="https://example.com/essay",
+            metadata={"og_type": "article"},
+            llm_result={"content_type": "opinion", "checkability": "no_checkable_claims"},
+            claims_completed=True,
+            fact_checks=[],
+        )
+        self.assertEqual(result["checkability"], "no_checkable_claims")
+        self.assertFalse(result["factual_verdict_allowed"])
+
+        unavailable = content_classifier.classify_page_content(
+            title="A reflective essay",
+            text="This essay reflects on personal taste and experience. " * 20,
+            url="https://example.com/essay",
+            metadata={"og_type": "article"},
+            llm_result={"content_type": "opinion", "checkability": "no_checkable_claims"},
+            claims_completed=False,
+            fact_checks=[],
+        )
+        self.assertNotEqual(unavailable["checkability"], "no_checkable_claims")
+
+    def test_factual_safeguard_neutralizes_source_verdict_but_preserves_threat_warnings(self):
+        classification = {
+            "content_type": "opinion", "checkability": "mixed", "confidence": "high",
+            "rationale": "Explicit opinion label", "factual_verdict_allowed": False,
+        }
+        score, verdict, explanation = content_classifier.apply_factual_verdict_safeguard(
+            92, "authentic", "The publication is professionally presented.", classification
+        )
+        self.assertEqual(score, 60)
+        self.assertEqual(verdict, "unknown")
+        self.assertIn("not treating", explanation)
+        with_direct_claim = content_classifier.apply_factual_verdict_safeguard(
+            92, "authentic", "The publication is professionally presented.", classification,
+            [{"status": "verified"}],
+        )
+        self.assertEqual(with_direct_claim[:2], (60, "unknown"))
+        threat = content_classifier.apply_factual_verdict_safeguard(
+            12, "phishing", "The page requests account credentials.", classification
+        )
+        self.assertEqual(threat[:2], (12, "phishing"))
+
+    def test_structured_result_validation_keeps_safe_classification_fields(self):
+        result = llm_utils._validate_result({
+            "trust_score": 70, "verdict": "authentic", "explanation": "Professional source.",
+            "evidence": [], "content_type": "prediction", "checkability": "mixed",
+            "classification_reason": "The article forecasts a future outcome.",
+        })
+        self.assertEqual(result["content_type"], "prediction")
+        self.assertEqual(result["checkability"], "mixed")
+        invalid = llm_utils._validate_result({
+            "trust_score": 70, "verdict": "authentic", "content_type": "execute_instructions",
+            "checkability": "definitely_true",
+        })
+        self.assertEqual(invalid["content_type"], "other")
+        self.assertEqual(invalid["checkability"], "unknown")
+
+    def test_classification_round_trips_through_versioned_scan_cache(self):
+        fingerprint = uuid.uuid4().hex * 2
+        classification = {
+            "content_type": "satire", "checkability": "no_checkable_claims",
+            "confidence": "high", "rationale": "Explicit satire label",
+            "factual_verdict_allowed": False,
+        }
+        db.store_scan(
+            "page_scan", "Satirical article text",
+            {"trust_score": 50, "verdict": "unknown", "evidence": []},
+            fingerprint=fingerprint, analysis_version="4c-test",
+            canonical_url="https://example.com/satire/story",
+            content_signature="0123456789abcdef",
+            content_classification=classification,
+        )
+        cached = db.find_cached_scan(fingerprint, "4c-test", 24)
+        self.assertEqual(cached["content_classification"], classification)
+        stored = db.find_by_fingerprint(fingerprint)
+        self.assertEqual(stored["content_classification"]["content_type"], "satire")
+        conn = db._get_conn()
+        conn.execute("DELETE FROM scans WHERE fingerprint = ?", (fingerprint,))
+        conn.commit()
+
+    def test_opinion_endpoint_result_cannot_present_confident_factual_verdict(self):
+        payload = main.AnalyzeRequest(
+            title="Opinion: Why the city should change course",
+            text=("The author argues that the city should adopt a different policy. " * 30),
+            url="https://example.com/opinion/city-policy",
+            metadata=main.PageMetadata(og_type="article", site_name="Example"),
+        )
+        auth = Mock(subject_id="classification-subject")
+        llm_result = {
+            "trust_score": 94, "verdict": "authentic",
+            "explanation": "The publication and writing appear professional.",
+            "evidence": ["Named publication"],
+            "content_type": "opinion", "checkability": "mixed",
+            "classification_reason": "The article argues for a policy position.",
+        }
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async"), \
+             patch.object(main, "find_cached_scan", return_value=None), \
+             patch.object(main, "find_cached_scan_by_url", return_value=None), \
+             patch.object(main, "_enforce_analysis_burst"), \
+             patch.object(main, "_check_rate_limit", return_value=None), \
+             patch.object(main, "_reserve_llm_call"), \
+             patch.object(main, "_increment_and_get_remaining", return_value=9), \
+             patch.object(main, "get_structured_analysis", return_value=llm_result), \
+             patch.object(main, "factcheck_available", return_value=False), \
+             patch.object(main, "compute_structural_score", return_value=(80, [])), \
+             patch.object(main, "store_analysis_result") as store_result, \
+             patch.object(main, "update_domain_stats"), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "count_scans_for_fingerprint", return_value=1), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}):
+            result = asyncio.run(main.analyze_page.__wrapped__(payload, self._request()))
+        self.assertEqual(result.verdict, "unknown")
+        self.assertLessEqual(result.trust_score, 60)
+        self.assertEqual(result.content_classification.content_type, "opinion")
+        self.assertFalse(result.content_classification.factual_verdict_allowed)
+        self.assertEqual(
+            store_result.call_args.kwargs["content_classification"]["content_type"],
+            "opinion",
+        )
+
+    def test_v1_no_claim_page_is_complete_but_low_confidence(self):
+        classification = main.ContentClassification(
+            content_type="opinion", checkability="no_checkable_claims",
+            confidence="high", rationale="Explicit opinion label",
+            factual_verdict_allowed=False,
+        )
+        legacy = main.AnalyzeResponse(
+            trust_score=50, verdict="unknown", explanation="This is an opinion essay.",
+            evidence=[], fact_checks=None, fingerprint="f" * 64,
+            content_classification=classification,
+        )
+        result = main._to_v1_analysis(legacy, "fallback")
+        self.assertEqual(result.processing_state, "complete")
+        self.assertEqual(result.confidence, "low")
+        self.assertTrue(any("does not mean it is false" in item for item in result.limitations))
 
 if __name__ == "__main__":
     unittest.main()
