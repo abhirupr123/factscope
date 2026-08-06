@@ -3,13 +3,12 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from functools import wraps
 from threading import Lock
 
-from fastapi import FastAPI, UploadFile, File, Form, Path as ApiPath, Request, HTTPException
+from fastapi import FastAPI, Path as ApiPath, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Annotated, Optional, Literal
-from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, get_domain_profile
 from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, find_cached_scan, find_cached_scan_by_url, add_community_flag,
                 get_flag_count, has_user_flagged, count_scans_for_fingerprint, record_scan_access,
@@ -29,8 +28,7 @@ from content_classifier import classify_page_content, apply_factual_verdict_safe
 from fingerprinting import compute_analysis_fingerprint, compute_content_signature, normalize_url
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
-from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
-                    DEFAULT_TEMPERATURE, FLAG_VALIDATION_MODEL, SCAN_LIMITS,
+from config import (FLAG_VALIDATION_MODEL, SCAN_LIMITS,
                     ADMIN_USER_IDS, ENVIRONMENT, MAX_REQUEST_BYTES,
                     CORS_ALLOWED_ORIGINS, SESSION_MINTS_PER_HOUR,
                     API_REQUESTS_PER_MINUTE, ANALYSIS_REQUESTS_PER_MINUTE,
@@ -95,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.10.0",
+    version="0.11.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -915,6 +913,42 @@ class ImageVerifyRequest(BaseModel):
     user_id: Optional[str] = None
 
 
+class V1ImageProvenanceAssessment(BaseModel):
+    status: Literal["visible_source_indicator", "no_visible_source_indicator", "unknown"]
+    confidence: Literal["low", "medium"]
+    summary: str
+    indicators: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class V1ImageManipulationAssessment(BaseModel):
+    status: Literal[
+        "no_indicators_detected", "possible_manipulation",
+        "likely_manipulated", "likely_ai_generated", "uncertain",
+    ]
+    confidence: Literal["low", "medium"]
+    summary: str
+    indicators: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class V1CaptionConsistencyAssessment(BaseModel):
+    status: Literal[
+        "consistent", "inconsistent", "mixed", "insufficient_evidence",
+        "not_provided", "not_applicable",
+    ]
+    confidence: Literal["low", "medium", "high"]
+    summary: str
+    claims: list[V1ClaimResult] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class V1ImageAssessment(BaseModel):
+    provenance: V1ImageProvenanceAssessment
+    manipulation: V1ImageManipulationAssessment
+    caption_consistency: V1CaptionConsistencyAssessment
+
+
 class ImageVerifyResponse(BaseModel):
     authenticity_score: int
     verdict: str
@@ -929,6 +963,215 @@ class ImageVerifyResponse(BaseModel):
     cache_status: Optional[str] = None
     analysis_version: Optional[str] = None
     scans_remaining: Optional[int] = None
+    image_assessment: Optional[V1ImageAssessment] = None
+
+
+class V1ImageVerifyResponse(ImageVerifyResponse):
+    schema_version: Literal["1.0"] = "1.0"
+    analysis_id: str
+    processing_state: Literal["complete", "partial", "failed"]
+    retryable: bool = False
+    assessment: V1ImageAssessment
+    limitations: list[str] = Field(default_factory=list)
+    legacy_score: int
+    legacy_verdict: str
+
+
+def _build_image_assessment(
+    provider_result: dict,
+    claim_results: Optional[list[FactCheckResult]],
+    caption_present: bool,
+    caption_tone: str,
+) -> V1ImageAssessment:
+    verdict = str(provider_result.get("verdict") or "uncertain")
+    score = max(0, min(100, int(provider_result.get("authenticity_score", 50))))
+    visual_confidence = provider_result.get("visual_confidence", "low")
+    if visual_confidence not in ("low", "medium", "high"):
+        visual_confidence = "low"
+    confidence = "medium" if visual_confidence in ("medium", "high") else "low"
+
+    provenance_indicators = [
+        str(item)[:240] for item in provider_result.get("provenance_indicators", [])
+        if item
+    ][:3]
+    if provenance_indicators:
+        provenance_status = "visible_source_indicator"
+        provenance_confidence = "medium"
+        provenance_summary = "Visible source or credit indicators were detected in the image."
+    elif provider_result.get("explanation") or provider_result.get("evidence"):
+        provenance_status = "no_visible_source_indicator"
+        provenance_confidence = "low"
+        provenance_summary = "No visible source or credit indicator was detected."
+    else:
+        provenance_status = "unknown"
+        provenance_confidence = "low"
+        provenance_summary = "Image provenance could not be assessed."
+
+    provenance = V1ImageProvenanceAssessment(
+        status=provenance_status,
+        confidence=provenance_confidence,
+        summary=provenance_summary,
+        indicators=provenance_indicators,
+        limitations=[
+            "Visible credits and watermarks do not prove ownership, origin, or an unedited chain of custody."
+        ],
+    )
+
+    manipulation_indicators = [
+        str(item)[:240] for item in provider_result.get("manipulation_indicators", [])
+        if item
+    ][:3]
+    if not manipulation_indicators and verdict in ("ai_generated", "manipulated"):
+        manipulation_indicators = [
+            str(item)[:240] for item in provider_result.get("evidence", []) if item
+        ][:3]
+
+    if verdict == "ai_generated":
+        manipulation_status = "likely_ai_generated"
+        manipulation_summary = "The visual analysis found indicators associated with AI generation."
+    elif verdict == "manipulated":
+        manipulation_status = "likely_manipulated"
+        manipulation_summary = "The visual analysis found indicators associated with image manipulation."
+    elif verdict == "authentic" and score >= 70:
+        manipulation_status = "no_indicators_detected"
+        manipulation_summary = "No clear AI-generation or manipulation indicators were detected."
+    elif verdict == "out_of_context":
+        manipulation_status = "uncertain"
+        manipulation_summary = "Visual inspection cannot determine whether the image is used in the correct context."
+        confidence = "low"
+    elif manipulation_indicators:
+        manipulation_status = "possible_manipulation"
+        manipulation_summary = "Some visual indicators warrant further inspection."
+    else:
+        manipulation_status = "uncertain"
+        manipulation_summary = "The visual evidence was not sufficient for a manipulation assessment."
+
+    provider_limitations = [
+        str(item)[:240] for item in provider_result.get("limitations", []) if item
+    ][:3]
+    manipulation = V1ImageManipulationAssessment(
+        status=manipulation_status,
+        confidence=confidence,
+        summary=manipulation_summary,
+        indicators=manipulation_indicators,
+        limitations=provider_limitations + [
+            "This is a model-based visual assessment, not a forensic or cryptographic verification."
+        ],
+    )
+
+    mapped_claims = [_map_v1_claim(item) for item in (claim_results or [])]
+    if not caption_present:
+        caption_status = "not_provided"
+        caption_confidence = "low"
+        caption_summary = "No caption or contextual claim was provided."
+        caption_limitations = []
+    elif caption_tone == "opinion_or_rhetorical":
+        caption_status = "not_applicable"
+        caption_confidence = "low"
+        caption_summary = "The caption appears opinion-based or rhetorical rather than fact-checkable."
+        caption_limitations = ["An opinion classification does not mean the caption is false."]
+    elif not mapped_claims:
+        caption_status = "insufficient_evidence"
+        caption_confidence = "low"
+        caption_summary = "No direct evidence was available to evaluate caption consistency."
+        caption_limitations = ["Related coverage alone is not treated as direct caption evidence."]
+    else:
+        statuses = {claim.status for claim in mapped_claims}
+        if "mixed" in statuses or (
+            "supported" in statuses and "contradicted" in statuses
+        ) or (
+            "insufficient_evidence" in statuses
+            and ("supported" in statuses or "contradicted" in statuses)
+        ):
+            caption_status = "mixed"
+            caption_summary = "The caption claims have mixed outcomes or incomplete evidence."
+        elif statuses == {"supported"}:
+            caption_status = "consistent"
+            caption_summary = "Direct evidence supports the checked caption claim or claims."
+        elif statuses == {"contradicted"}:
+            caption_status = "inconsistent"
+            caption_summary = "Direct evidence contradicts the checked caption claim or claims."
+        else:
+            caption_status = "insufficient_evidence"
+            caption_summary = "The available evidence is insufficient to evaluate caption consistency."
+        if caption_status in ("insufficient_evidence", "mixed"):
+            caption_confidence = "low" if caption_status == "insufficient_evidence" else "medium"
+        elif all(claim.confidence == "high" for claim in mapped_claims):
+            caption_confidence = "high"
+        else:
+            caption_confidence = "medium"
+        caption_limitations = []
+
+    caption_consistency = V1CaptionConsistencyAssessment(
+        status=caption_status,
+        confidence=caption_confidence,
+        summary=caption_summary,
+        claims=mapped_claims,
+        limitations=caption_limitations,
+    )
+    return V1ImageAssessment(
+        provenance=provenance,
+        manipulation=manipulation,
+        caption_consistency=caption_consistency,
+    )
+
+
+def _to_v1_image_analysis(
+    legacy: ImageVerifyResponse,
+    fallback_analysis_id: str,
+    caption_present: bool = False,
+    caption_tone: str = "informal",
+) -> V1ImageVerifyResponse:
+    explanation = (legacy.explanation or "").lower()
+    timed_out = "timed out" in explanation
+    provider_failed = any(marker in explanation for marker in (
+        "could not be completed", "rate limit reached", "content safety filters",
+    ))
+    fetch_failed = "could not fetch the image" in explanation
+    failed = timed_out or provider_failed or fetch_failed
+    if failed:
+        assessment = _build_image_assessment(
+            {
+                "authenticity_score": 50,
+                "verdict": "uncertain",
+                "visual_confidence": "low",
+            },
+            None,
+            caption_present,
+            caption_tone,
+        )
+    else:
+        assessment = legacy.image_assessment or _build_image_assessment(
+            {
+                "authenticity_score": legacy.authenticity_score,
+                "verdict": legacy.verdict,
+                "explanation": legacy.explanation,
+                "evidence": legacy.evidence,
+                "visual_confidence": "low",
+            },
+            legacy.claim_analysis,
+            caption_present,
+            caption_tone,
+        )
+    limitations = list(dict.fromkeys(
+        assessment.provenance.limitations
+        + assessment.manipulation.limitations
+        + assessment.caption_consistency.limitations
+    ))
+    if failed:
+        limitations.append("No visual conclusion should be inferred from this technical failure.")
+    payload = legacy.model_dump()
+    payload.pop("image_assessment", None)
+    return V1ImageVerifyResponse(
+        **payload,
+        analysis_id=legacy.fingerprint or fallback_analysis_id,
+        processing_state="failed" if failed else "complete",
+        retryable=timed_out or provider_failed,
+        assessment=assessment,
+        limitations=limitations,
+        legacy_score=legacy.authenticity_score,
+        legacy_verdict=legacy.verdict,
+    )
 
 
 MAX_IMAGE_BYTES = 1_500_000  # ~1.5 MB limit to keep tokens low
@@ -1026,6 +1269,10 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
         img_notes_raw = get_community_notes(img_fp, limit=3)
         img_notes = [CommunityNote(**n) for n in img_notes_raw] if img_notes_raw else None
         img_v_stats = get_vote_stats(img_fp)
+        cached_assessment = (
+            V1ImageAssessment(**cached["image_assessment"])
+            if cached.get("image_assessment") else None
+        )
         return ImageVerifyResponse(
             authenticity_score=cached.get("authenticity_score", 50),
             verdict=cached.get("verdict", "uncertain"),
@@ -1041,6 +1288,7 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
             community_notes=img_notes,
             vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
             scans_remaining=_remaining_scans(subject_id),
+            image_assessment=cached_assessment,
         )
 
     _log_cache(http_request, "miss", img_fp, "no_fresh_versioned_image_entry")
@@ -1141,18 +1389,7 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
         except Exception as exc:
             logger.warning("Image claim verification failed: %s", exc)
     elif caption and len(caption.strip()) >= 10 and caption_tone == "opinion_or_rhetorical":
-        try:
-            fc = await asyncio.wait_for(
-                asyncio.to_thread(_verify_image_claim, caption, request.page_url or ""),
-                timeout=FACTCHECK_TIMEOUT_SECONDS,
-            )
-            if fc:
-                for c in fc:
-                    c["status"] = "opinion"
-                claim_results = [FactCheckResult(**c) for c in fc]
-        except Exception as exc:
-            logger.warning("Image claim verification failed: %s", exc)
-        logger.info("Caption is opinion/rhetorical — claims tagged as opinion")
+        logger.info("Caption is opinion/rhetorical; factual claim verification skipped")
     elif caption and caption_tone == "informal":
         logger.info("Skipping claim verification — caption tone is informal")
 
@@ -1160,78 +1397,11 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
     final_verdict = result["verdict"]
     final_explanation = result["explanation"]
 
-    if claim_results:
-        best_sc = 0
-        best_corr = "not_corroborated"
-        has_dispute = False
-        has_verified = False
-        source_names = []
-
-        for cr in claim_results:
-            if cr.status == "opinion":
-                continue
-            corr = cr.corroboration or "not_corroborated"
-            sc = cr.source_count or 0
-
-            if sc > best_sc:
-                best_sc = sc
-                best_corr = corr
-
-            if cr.status == "disputed":
-                has_dispute = True
-            elif cr.status == "verified":
-                has_verified = True
-
-            if cr.related_articles:
-                for a in cr.related_articles:
-                    if a.source and a.source not in source_names:
-                        source_names.append(a.source)
-
-        image_is_fake = final_verdict in ("ai_generated", "manipulated")
-
-        relevant_corr = best_corr in ("lightly_reported", "multiple_sources", "widely_reported")
-
-        if not image_is_fake and relevant_corr:
-            corr_boost = min(25, best_sc * 5)
-            final_score = min(100, final_score + corr_boost)
-
-            if has_verified:
-                final_score = min(100, final_score + 15)
-
-        if has_dispute:
-            final_score = max(0, final_score - 25)
-
-        if best_sc >= 2 and source_names and relevant_corr:
-            names = ", ".join(source_names[:4])
-            if image_is_fake:
-                final_explanation += (
-                    f" Note: the claimed event is real ({best_sc} news source(s) "
-                    f"including {names}), but the image itself appears to be "
-                    f"{'AI-generated' if final_verdict == 'ai_generated' else 'manipulated'}."
-                )
-            else:
-                _negatives = re.compile(
-                    r"(?:improbable|unverifiable|unsupported|unsubstantiated|"
-                    r"no (?:clear |visible )?(?:indication|evidence|sign)|"
-                    r"(?:not |un)(?:visib|confirm|verif))",
-                    re.IGNORECASE,
-                )
-                if _negatives.search(final_explanation):
-                    final_explanation = (
-                        f"The claimed event is corroborated by {best_sc} news "
-                        f"source(s) including {names}."
-                    )
-                else:
-                    final_explanation += (
-                        f" The claimed event is corroborated by "
-                        f"{best_sc} news source(s) including {names}."
-                    )
-
-        if not image_is_fake:
-            if final_score >= 55 and final_verdict in ("out_of_context", "uncertain"):
-                final_verdict = "uncertain" if final_score < 65 else "authentic"
-            elif final_score <= 25 and final_verdict == "uncertain":
-                final_verdict = "manipulated"
+    # Caption evidence is reported separately and never changes the visual
+    # authenticity score or manipulation verdict.
+    image_assessment = _build_image_assessment(
+        result, claim_results, bool(caption.strip()), caption_tone
+    )
 
     try:
         store_image_scan(request.image_url, {
@@ -1241,7 +1411,8 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
             "evidence": result["evidence"],
             "claim_analysis": [c.model_dump() for c in claim_results] if claim_results else None,
         }, user_id=subject_id, analysis_version=ANALYSIS_VERSION,
-           page_url=request.page_url, og_image=request.image_url)
+           page_url=request.page_url, og_image=request.image_url,
+           image_assessment=image_assessment.model_dump())
     except Exception as exc:
         logger.warning("Image scan storage failed: %s", exc)
 
@@ -1264,6 +1435,25 @@ async def verify_image(request: ImageVerifyRequest, http_request: Request):
         community_notes=img_notes,
         vote_stats=VoteStats(**img_v_stats) if (img_v_stats["likes"] + img_v_stats["dislikes"]) > 0 else None,
         scans_remaining=scans_remaining,
+        image_assessment=image_assessment,
+    )
+
+
+@app.post("/v1/analyze/verify-image", response_model=V1ImageVerifyResponse)
+async def verify_image_v1(request: ImageVerifyRequest, http_request: Request):
+    """Return separated provenance, manipulation, and caption assessments."""
+    legacy = await verify_image(request, http_request)
+    if not isinstance(legacy, ImageVerifyResponse):
+        return legacy
+    caption = ""
+    if request.social_context and request.social_context.get("post_text"):
+        caption = str(request.social_context["post_text"])
+    elif request.page_text:
+        caption = request.page_text[:500]
+    return _to_v1_image_analysis(
+        legacy,
+        _request_id(http_request),
+        caption_present=bool(caption.strip()),
     )
 
 
@@ -2121,53 +2311,6 @@ async def debug_find(fp: str):
         return {"error": str(exc)}
 
 
-# --------------- legacy per-type endpoints (direct API usage) ---------------
-
-@app.post("/analyze/text")
-async def analyze_text(content: str = Form(...)):
-    result = text_analyzer.analyze(content)
-    store_analysis_result("text", content, result)
-    return result
-
-
-@app.post("/analyze/image")
-async def analyze_image(file: UploadFile = File(...)):
-    result = await image_analyzer.analyze(file)
-    store_analysis_result("image", file.filename, result)
-    return result
-
-
-@app.post("/analyze/pdf")
-async def analyze_pdf(file: UploadFile = File(...)):
-    result = await pdf_analyzer.analyze(file)
-    store_analysis_result("pdf", file.filename, result)
-    return result
-
-
-@app.post("/analyze/video")
-async def analyze_video(file: UploadFile = File(...)):
-    result = await video_analyzer.analyze(file)
-    store_analysis_result("video", file.filename, result)
-    return result
-
-
-@app.post("/analyze/url")
-async def analyze_url(url: str = Form(...)):
-    result = await url_analyzer.analyze(url)
-    store_analysis_result("url", url, result)
-    return result
-
-
-@app.get("/models/info")
-async def get_model_info():
-    return {
-        "text_model": {"id": TEXT_MODEL_ID, "max_tokens": DEFAULT_MAX_TOKENS},
-        "multimodal_model": {"id": MULTIMODAL_MODEL_ID, "max_tokens": max(DEFAULT_MAX_TOKENS, 800)},
-        "scoring": {"llm_weight": LLM_WEIGHT, "structural_weight": STRUCTURAL_WEIGHT},
-        "temperature": DEFAULT_TEMPERATURE,
-    }
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Rate-limit / Usage endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2260,12 +2403,6 @@ if ENVIRONMENT == "production":
     _DEVELOPMENT_ONLY_PATHS = {
         "/debug/db-status",
         "/debug/find/{fp}",
-        "/analyze/text",
-        "/analyze/image",
-        "/analyze/pdf",
-        "/analyze/video",
-        "/analyze/url",
-        "/models/info",
     }
     app.router.routes = [
         route for route in app.router.routes

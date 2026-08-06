@@ -260,7 +260,8 @@ _SCHEMA_STATEMENTS = [
         analysis_version    TEXT,
         page_url            TEXT,
         scanned_title       TEXT,
-        og_image            TEXT
+        og_image            TEXT,
+        image_assessment     TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_image_scans_url_hash ON image_scans(url_hash)",
 
@@ -428,6 +429,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE image_scans ADD COLUMN page_url TEXT",
     "ALTER TABLE image_scans ADD COLUMN scanned_title TEXT",
     "ALTER TABLE image_scans ADD COLUMN og_image TEXT",
+    "ALTER TABLE image_scans ADD COLUMN image_assessment TEXT",
 ]
 
 
@@ -785,7 +787,8 @@ def url_hash(url: str) -> str:
 
 def store_image_scan(image_url: str, result: dict, user_id: str = None,
                      analysis_version: str = None, page_url: str = None,
-                     scanned_title: str = None, og_image: str = None):
+                     scanned_title: str = None, og_image: str = None,
+                     image_assessment: dict = None):
     """Store an image verification result for caching."""
     try:
         conn = _get_conn()
@@ -793,8 +796,9 @@ def store_image_scan(image_url: str, result: dict, user_id: str = None,
             """INSERT INTO image_scans
                (image_url, url_hash, authenticity_score, verdict,
                 explanation, evidence, claim_analysis, user_id, timestamp,
-                analysis_version, page_url, scanned_title, og_image)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                analysis_version, page_url, scanned_title, og_image,
+                image_assessment)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 image_url,
                 url_hash(image_url),
@@ -809,6 +813,7 @@ def store_image_scan(image_url: str, result: dict, user_id: str = None,
                 page_url,
                 (scanned_title or "")[:500],
                 og_image,
+                json.dumps(image_assessment) if image_assessment else None,
             ),
         )
         _commit_and_sync()
@@ -842,6 +847,11 @@ def find_image_scan(image_url: str, max_age_hours: int = 24, analysis_version: s
                     doc["claim_analysis"] = json.loads(doc["claim_analysis"])
                 except (json.JSONDecodeError, TypeError):
                     doc["claim_analysis"] = None
+            if doc.get("image_assessment"):
+                try:
+                    doc["image_assessment"] = json.loads(doc["image_assessment"])
+                except (json.JSONDecodeError, TypeError):
+                    doc["image_assessment"] = None
             logger.info("Image cache hit: %s", image_url[:60])
             return doc
     except Exception as exc:
@@ -863,6 +873,9 @@ def find_image_scan_by_fingerprint(fingerprint: str) -> dict | None:
             return None
         doc = dict(row)
         doc["evidence"] = json.loads(doc["evidence"]) if doc.get("evidence") else []
+        doc["image_assessment"] = (
+            json.loads(doc["image_assessment"]) if doc.get("image_assessment") else None
+        )
         return doc
     except Exception as exc:
         logger.debug("Image fingerprint lookup failed: %s", exc)

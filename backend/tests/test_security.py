@@ -144,8 +144,13 @@ class ProductionBoundaryTests(unittest.TestCase):
     def test_development_routes_are_absent_in_production(self):
         paths = {getattr(route, "path", None) for route in main.app.router.routes}
         self.assertNotIn("/debug/db-status", paths)
-        self.assertNotIn("/models/info", paths)
-        self.assertNotIn("/analyze/url", paths)
+        for retired_path in (
+            "/models/info", "/analyze/text", "/analyze/image",
+            "/analyze/pdf", "/analyze/video", "/analyze/url",
+        ):
+            self.assertNotIn(retired_path, paths)
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("from analyzers import", source)
         self.assertNotIn("/openapi.json", paths)
 
     def test_chunked_request_body_limit_returns_413(self):
@@ -1009,6 +1014,147 @@ class ChunkFourSeparatedAssessmentTests(unittest.TestCase):
         source = Path(main.__file__).read_text(encoding="utf-8")
         self.assertNotIn("fc_delta", source)
         self.assertNotIn('structural_score + domain_signal["delta"]', source)
+
+
+class ChunkFourImageAssessmentTests(unittest.TestCase):
+    @staticmethod
+    def _request():
+        request = main.Request({"type": "http", "headers": []})
+        request.state.request_id = "chunk4e-image-request"
+        return request
+
+    def test_image_validator_preserves_separated_fields_and_opinion_tone(self):
+        result = llm_utils._validate_image_result({
+            "authenticity_score": 74,
+            "verdict": "uncertain",
+            "evidence": ["Compression limits inspection"],
+            "provenance_indicators": ["Reuters credit is visible"],
+            "manipulation_indicators": ["Uneven edge around foreground"],
+            "limitations": ["Low resolution"],
+            "visual_confidence": "medium",
+            "caption_tone": "opinion_or_rhetorical",
+        })
+        self.assertEqual(result["caption_tone"], "opinion_or_rhetorical")
+        self.assertEqual(result["visual_confidence"], "medium")
+        self.assertEqual(result["provenance_indicators"], ["Reuters credit is visible"])
+        self.assertEqual(result["manipulation_indicators"], ["Uneven edge around foreground"])
+
+    def test_real_event_does_not_make_manipulated_image_authentic(self):
+        claim = main.FactCheckResult(
+            claim="The reported event occurred.", status="verified",
+            source="Independent Fact Checker",
+            source_url="https://facts.example/event", rating="True",
+        )
+        assessment = main._build_image_assessment({
+            "authenticity_score": 15,
+            "verdict": "manipulated",
+            "explanation": "Visible compositing artifacts.",
+            "evidence": ["Inconsistent edge lighting"],
+            "manipulation_indicators": ["Inconsistent edge lighting"],
+            "provenance_indicators": [],
+            "limitations": [],
+            "visual_confidence": "high",
+        }, [claim], True, "factual")
+
+        self.assertEqual(assessment.manipulation.status, "likely_manipulated")
+        self.assertEqual(assessment.caption_consistency.status, "consistent")
+        self.assertNotEqual(
+            assessment.manipulation.status,
+            assessment.caption_consistency.status,
+        )
+
+    def test_disputed_caption_does_not_label_pixels_as_manipulated(self):
+        claim = main.FactCheckResult(
+            claim="The caption claim occurred.", status="disputed",
+            source="Independent Fact Checker",
+            source_url="https://facts.example/caption", rating="False",
+        )
+        assessment = main._build_image_assessment({
+            "authenticity_score": 88,
+            "verdict": "authentic",
+            "explanation": "No visible manipulation indicators.",
+            "evidence": [],
+            "manipulation_indicators": [],
+            "provenance_indicators": [],
+            "limitations": [],
+            "visual_confidence": "medium",
+        }, [claim], True, "factual")
+
+        self.assertEqual(assessment.manipulation.status, "no_indicators_detected")
+        self.assertEqual(assessment.caption_consistency.status, "inconsistent")
+
+    def test_opinion_caption_is_not_applicable_not_false(self):
+        assessment = main._build_image_assessment({
+            "authenticity_score": 50, "verdict": "uncertain",
+            "explanation": "The image is too compressed.", "evidence": [],
+            "visual_confidence": "low",
+        }, None, True, "opinion_or_rhetorical")
+        self.assertEqual(assessment.caption_consistency.status, "not_applicable")
+        self.assertTrue(any(
+            "does not mean" in item
+            for item in assessment.caption_consistency.limitations
+        ))
+
+    def test_v1_image_failure_is_retryable_and_neutral(self):
+        legacy = main.ImageVerifyResponse(
+            authenticity_score=50,
+            verdict="uncertain",
+            explanation="Image analysis timed out. Please try again.",
+            evidence=[],
+            fingerprint="img:" + "a" * 32,
+        )
+        result = main._to_v1_image_analysis(legacy, "fallback")
+        self.assertEqual(result.processing_state, "failed")
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.legacy_score, 50)
+        self.assertEqual(result.assessment.manipulation.status, "uncertain")
+        self.assertEqual(result.assessment.provenance.status, "unknown")
+        self.assertTrue(any("technical failure" in item for item in result.limitations))
+
+    def test_image_assessment_round_trips_through_versioned_cache(self):
+        image_url = f"https://example.com/{uuid.uuid4().hex}.jpg"
+        assessment = main._build_image_assessment({
+            "authenticity_score": 82, "verdict": "authentic",
+            "explanation": "No visible manipulation indicators.",
+            "evidence": [], "visual_confidence": "medium",
+        }, None, False, "informal")
+        db.store_image_scan(
+            image_url,
+            {
+                "authenticity_score": 82, "verdict": "authentic",
+                "explanation": "Stored image analysis", "evidence": [],
+            },
+            analysis_version="4e-test",
+            image_assessment=assessment.model_dump(),
+        )
+        cached = db.find_image_scan(image_url, 24, "4e-test")
+        self.assertEqual(cached["image_assessment"], assessment.model_dump())
+        conn = db._get_conn()
+        conn.execute("DELETE FROM image_scans WHERE url_hash = ?", (db.url_hash(image_url),))
+        conn.commit()
+
+    def test_v1_image_route_preserves_legacy_fields(self):
+        legacy = main.ImageVerifyResponse(
+            authenticity_score=81,
+            verdict="authentic",
+            explanation="No visible manipulation indicators.",
+            evidence=[],
+            fingerprint="img:" + "b" * 32,
+        )
+        payload = main.ImageVerifyRequest(image_url="https://example.com/image.jpg")
+        with patch.object(main, "verify_image", new=AsyncMock(return_value=legacy)):
+            result = asyncio.run(main.verify_image_v1(payload, self._request()))
+        self.assertIsInstance(result, main.V1ImageVerifyResponse)
+        self.assertEqual(result.authenticity_score, 81)
+        self.assertEqual(result.legacy_score, 81)
+        self.assertIn("/analyze/verify-image", main.app.openapi()["paths"])
+        self.assertIn("/v1/analyze/verify-image", main.app.openapi()["paths"])
+
+    def test_caption_score_modifiers_are_removed_from_image_flow(self):
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("corr_boost", source)
+        self.assertNotIn("final_score - 25", source)
+        self.assertIn("Caption evidence is reported separately", source)
 
 
 class ChunkFourContentClassificationTests(unittest.TestCase):
