@@ -103,6 +103,45 @@ def compute_analysis_fingerprint(
         return None
     seed = "\n".join((analysis_version, normalize_url(url), stable_text))
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+def compute_content_signature(text: str | None) -> str | None:
+    """Return a locality-sensitive 64-bit signature for near-duplicate articles.
+
+    Exact hashes are intentionally sensitive to edits. News pages often inject
+    rotating recommendations or timestamps into otherwise unchanged article
+    text. This signature recognizes those near-duplicates while still rejecting
+    materially different content.
+    """
+    stable_text = normalize_article_text(text)
+    words = stable_text.split()
+    if len(words) < 12:
+        return None
+    features = [" ".join(words[i:i + 3]) for i in range(len(words) - 2)]
+    weights = [0] * 64
+    for feature in features:
+        value = int.from_bytes(
+            hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest(), "big"
+        )
+        for bit in range(64):
+            weights[bit] += 1 if value & (1 << bit) else -1
+    signature = 0
+    for bit, weight in enumerate(weights):
+        if weight >= 0:
+            signature |= 1 << bit
+    return f"{signature:016x}"
+
+
+def content_signature_distance(first: str | None, second: str | None) -> int | None:
+    """Return the Hamming distance between two validated 64-bit signatures."""
+    if not first or not second:
+        return None
+    try:
+        if len(first) != 16 or len(second) != 16:
+            return None
+        return (int(first, 16) ^ int(second, 16)).bit_count()
+    except ValueError:
+        return None
+
 def compute_shingles(text: str, k: int = 3) -> set[str]:
     """Compute k-word shingles for fuzzy matching."""
     words = normalize_text(text[:2000]).split()

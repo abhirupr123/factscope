@@ -54,7 +54,7 @@
 <main class="policy">
 
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: July 30, 2026</p>
+  <p class="updated">Last updated: August 6, 2026</p>
 
   <p>FactScope is a verification assistant. It processes content only after you choose a page scan or image verification. This policy describes the extension, FactScope backend, configured providers, local storage, telemetry, and deletion controls.</p>
 
@@ -64,6 +64,7 @@
     <li><strong>Page scans</strong> &mdash; The page URL, title, extracted text, author and publication metadata, limited outgoing links, and basic media information are sent only after you start a page scan and accept the first-scan disclosure.</li>
     <li><strong>Image verification</strong> &mdash; The selected image URL, page URL, nearby caption or post text, platform, and public account name may be sent after you choose “Verify image with FactScope” and accept the disclosure. The backend fetches the selected image for analysis.</li>
     <li><strong>Anonymous installation session</strong> &mdash; The server creates a random installation identifier and signed bearer token. The token is stored in Chrome local extension storage; only a one-way hash of the token and the random server identifier are stored in the database.</li>
+    <li><strong>Scan-access metadata</strong> &mdash; To count distinct anonymous installations that access an analysis, the server stores the analysis fingerprint, anonymous installation identifier, result type, timestamps, and access count. These records contain no page text, title, full URL, image URL, or claim.</li>
     <li><strong>Community contributions</strong> &mdash; Flags, justifications, source links, and votes are associated with the anonymous installation identifier.</li>
     <li><strong>Operational data</strong> &mdash; Request ID, route, response status, latency, quota usage, and provider failure type are logged without scanned content or URLs. A keyed hash of the network address is used in memory for burst limiting.</li>
     <li><strong>Optional telemetry</strong> &mdash; If enabled in the extension, FactScope stores only an allowlisted event name such as “page scan completed” or “history cleared,” plus the anonymous installation identifier and timestamp.</li>
@@ -102,6 +103,7 @@
   <h2>Retention</h2>
   <ul>
     <li><strong>Raw page and image scan records</strong> are automatically deleted after 30 days by a scheduled cleanup process.</li>
+    <li><strong>Scan-access metadata</strong> is automatically deleted 30 days after its last access.</li>
     <li><strong>Optional telemetry events</strong> are automatically deleted after 30 days.</li>
     <li><strong>Installation sessions</strong> expire after 180 days by default. Scheduled cleanup removes the expired session and records linked to that installation so data is not orphaned.</li>
     <li><strong>Local scan history</strong> remains on your device until you clear it, delete server data through the extension, clear extension storage, or uninstall FactScope.</li>
@@ -115,7 +117,7 @@
     <li>You can decline the first-scan disclosure. Declining prevents that page or image content from being transmitted.</li>
     <li>Optional telemetry is off by default and can be enabled or disabled under <strong>Privacy &amp; data</strong> in the extension popup.</li>
     <li>You can clear recent local history from the extension popup.</li>
-    <li>You can select <strong>Delete my server data</strong> to delete scans, image scans, flags, votes, telemetry events, tier assignment, and owned share pages linked to the current installation. A minimal hashed session record and the current quota counter remain temporarily for security and abuse prevention, then expire automatically.</li>
+    <li>You can select <strong>Delete my server data</strong> to delete scans, image scans, scan-access metadata, flags, votes, telemetry events, tier assignment, and owned share pages linked to the current installation. A minimal hashed session record and the current quota counter remain temporarily for security and abuse prevention, then expire automatically.</li>
     <li>You can uninstall the extension at any time to stop future transmission.</li>
   </ul>
 

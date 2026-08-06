@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, get_domain_profile
-from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, find_cached_scan, add_community_flag,
+from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, find_cached_scan, find_cached_scan_by_url, add_community_flag,
                 get_flag_count, has_user_flagged, count_scans_for_fingerprint, record_scan_access,
                 update_scan_claims, get_scan_claims, url_hash,
                 get_community_notes, store_vote, get_vote_stats,
@@ -25,7 +25,7 @@ from auth import AuthContext, SessionAuthError, authenticate_installation_token,
 from controls import SlidingWindowLimiter, client_ip_hash, hash_network_identity
 from llm_utils import get_structured_analysis, get_image_verification
 from scoring import compute_structural_score, REPUTABLE_DOMAINS
-from fingerprinting import compute_analysis_fingerprint, normalize_url
+from fingerprinting import compute_analysis_fingerprint, compute_content_signature, normalize_url
 from trust_graph import update_domain_stats, compute_domain_trust_signal, extract_base_domain
 from fact_checker import verify_claims as _verify_claims, verify_image_claim as _verify_image_claim, is_available as factcheck_available
 from config import (TEXT_MODEL_ID, MULTIMODAL_MODEL_ID, DEFAULT_MAX_TOKENS,
@@ -94,7 +94,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.7.0",
+    version="0.7.1",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -1012,9 +1012,15 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
 
     # Cache identity excludes common dynamic boilerplate and includes the
     # analysis version so prompt/model changes never reuse stale results.
+    canonical_cache_url = normalize_url(
+        request.metadata.canonical_url
+        if request.metadata and request.metadata.canonical_url
+        else request.url
+    )
+    content_signature = compute_content_signature(request.text)
     fingerprint = compute_analysis_fingerprint(
         request.text,
-        url=(request.metadata.canonical_url if request.metadata and request.metadata.canonical_url else request.url),
+        url=canonical_cache_url,
         title=request.title,
         analysis_version=ANALYSIS_VERSION,
     )
@@ -1033,9 +1039,20 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         cached = find_cached_scan(
             fingerprint, ANALYSIS_VERSION, ANALYSIS_CACHE_MAX_AGE_HOURS
         )
+        cache_reason = "fresh_versioned_entry"
+        if not cached and canonical_cache_url and content_signature:
+            cached = find_cached_scan_by_url(
+                canonical_cache_url, ANALYSIS_VERSION, content_signature,
+                ANALYSIS_CACHE_MAX_AGE_HOURS,
+            )
+            if cached and cached.get("fingerprint"):
+                # Claims, shares, votes and scan-access counts must continue to
+                # reference the stored analysis identity on a near-duplicate hit.
+                fingerprint = cached["fingerprint"]
+                cache_reason = "same_url_similar_content"
         if cached:
             _enforce_cache_hit_limit(subject_id)
-            _log_cache(http_request, "hit", fingerprint, "fresh_versioned_entry")
+            _log_cache(http_request, "hit", fingerprint, cache_reason)
             _record_scan_access_async(fingerprint, subject_id, "page")
             fc_response = None
             if cached.get("judgement"):
@@ -1070,7 +1087,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
                 fingerprint=fingerprint,
                 scans_remaining=_remaining_scans(subject_id),
             )
-        _log_cache(http_request, "miss", fingerprint, "no_fresh_versioned_entry")
+        _log_cache(http_request, "miss", fingerprint, "no_exact_or_similar_entry")
     else:
         _log_cache(http_request, "bypass", None, "content_not_cacheable")
     _enforce_analysis_burst(http_request, auth)
@@ -1314,7 +1331,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             user_id=subject_id, analysis_version=ANALYSIS_VERSION,
             scanned_title=request.title, canonical_url=canonical_url,
             source_info=source_info.model_dump() if source_info else None,
-            og_image=og_image,
+            og_image=og_image, content_signature=content_signature,
         )
     except Exception as exc:
         logger.warning("Storage failed: %s", exc)
@@ -1612,7 +1629,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.7.0"}
+    return {"status": "ok", "version": "0.7.1"}
 
 
 @app.get("/debug/db-status")

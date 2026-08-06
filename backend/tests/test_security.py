@@ -555,6 +555,31 @@ class ChunkFourFoundationTests(unittest.TestCase):
         self.assertNotEqual(first, changed)
         self.assertNotEqual(first, new_version)
 
+    def test_content_signature_tolerates_rotating_page_chrome_but_rejects_new_article(self):
+        article = (
+            "Meta officials discussed paid amplification policies and the company response. "
+            * 20
+        )
+        rotating = "Recommended story: local weather changes today. " + article
+        different = (
+            "A cricket team won a championship after a close final match. " * 20
+        )
+        original_signature = fingerprinting.compute_content_signature(article)
+        self.assertLessEqual(
+            fingerprinting.content_signature_distance(
+                original_signature,
+                fingerprinting.compute_content_signature(rotating),
+            ),
+            10,
+        )
+        self.assertGreater(
+            fingerprinting.content_signature_distance(
+                original_signature,
+                fingerprinting.compute_content_signature(different),
+            ),
+            10,
+        )
+
     def test_cache_lookup_requires_current_version_and_round_trips_share_metadata(self):
         fingerprint = uuid.uuid4().hex * 2
         subject = f"cache-{uuid.uuid4().hex}"
@@ -566,10 +591,18 @@ class ChunkFourFoundationTests(unittest.TestCase):
             canonical_url="https://example.com/report",
             source_info={"site_name": "Example", "author": "Reporter"},
             og_image="https://cdn.example.com/report.jpg",
+            content_signature="0123456789abcdef",
         )
         cached = db.find_cached_scan(fingerprint, "4a-test", 24)
         self.assertEqual(cached["scanned_title"], "Stored title")
         self.assertEqual(cached["source_info"]["author"], "Reporter")
+        similar = db.find_cached_scan_by_url(
+            "https://example.com/report", "4a-test", "0123456789abcdee", 24
+        )
+        self.assertEqual(similar["fingerprint"], fingerprint)
+        self.assertIsNone(db.find_cached_scan_by_url(
+            "https://example.com/report", "4a-test", "fedcba9876543210", 24
+        ))
         self.assertIsNone(db.find_cached_scan(fingerprint, "different-version", 24))
         stored = db.find_by_fingerprint(fingerprint)
         self.assertEqual(stored["source_info"]["site_name"], "Example")
@@ -621,6 +654,41 @@ class ChunkFourFoundationTests(unittest.TestCase):
         self.assertEqual(result.cache_status, "hit")
         self.assertEqual(result.scans_remaining, 0)
         self.assertEqual(result.fact_checks, [])
+
+    def test_same_url_similar_article_uses_stored_identity_without_quota_charge(self):
+        payload = main.AnalyzeRequest(
+            text=("Stable article reporting a factual event with enough detail. " * 20),
+            url="https://example.com/report?utm_source=home",
+            metadata=main.PageMetadata(canonical_url="https://example.com/report"),
+        )
+        stored_fingerprint = "a" * 64
+        cached = {
+            "fingerprint": stored_fingerprint,
+            "trust_score": 68, "verdict": "uncertain", "explanation": "Stored",
+            "evidence": ["Stored evidence"], "judgement": "[]",
+            "source_info": {"site_name": "Example"},
+        }
+        auth = Mock(subject_id="similar-url-subject")
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async") as record_access, \
+             patch.object(main, "find_cached_scan", return_value=None), \
+             patch.object(main, "find_cached_scan_by_url", return_value=cached) as url_lookup, \
+             patch.object(main, "_enforce_cache_hit_limit"), \
+             patch.object(main, "_remaining_scans", return_value=7), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "count_scans_for_fingerprint", return_value=1), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}), \
+             patch.object(main, "_check_rate_limit", side_effect=AssertionError("quota checked on hit")), \
+             patch.object(main, "_reserve_llm_call", side_effect=AssertionError("provider reserved on hit")), \
+             patch.object(main, "_increment_and_get_remaining", side_effect=AssertionError("quota charged on hit")), \
+             patch.object(main, "_enforce_analysis_burst", side_effect=AssertionError("costly burst applied on hit")):
+            result = asyncio.run(main.analyze_page.__wrapped__(payload, self._request()))
+        self.assertTrue(result.cached)
+        self.assertEqual(result.cache_status, "hit")
+        self.assertEqual(result.fingerprint, stored_fingerprint)
+        url_lookup.assert_called_once()
+        record_access.assert_called_once_with(stored_fingerprint, "similar-url-subject", "page")
 
     def test_cached_image_is_available_without_quota_or_provider_charge(self):
         payload = main.ImageVerifyRequest(image_url="https://example.com/image.jpg")

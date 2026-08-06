@@ -206,7 +206,8 @@ _SCHEMA_STATEMENTS = [
         scanned_title TEXT,
         canonical_url TEXT,
         source_info TEXT,
-        og_image TEXT
+        og_image TEXT,
+        content_signature TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_scans_fingerprint ON scans(fingerprint)",
     "CREATE INDEX IF NOT EXISTS idx_scans_trust_score ON scans(trust_score)",
@@ -418,6 +419,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE scans ADD COLUMN canonical_url TEXT",
     "ALTER TABLE scans ADD COLUMN source_info TEXT",
     "ALTER TABLE scans ADD COLUMN og_image TEXT",
+    "ALTER TABLE scans ADD COLUMN content_signature TEXT",
     "ALTER TABLE image_scans ADD COLUMN analysis_version TEXT",
     "ALTER TABLE image_scans ADD COLUMN page_url TEXT",
     "ALTER TABLE image_scans ADD COLUMN scanned_title TEXT",
@@ -458,7 +460,8 @@ def init_db():
 def store_scan(doc_type: str, source, result, fingerprint: str = None,
                url: str = None, user_id: str = None, analysis_version: str = None,
                scanned_title: str = None, canonical_url: str = None,
-               source_info: dict = None, og_image: str = None):
+               source_info: dict = None, og_image: str = None,
+               content_signature: str = None):
     """Store an analysis result."""
     try:
         conn = _get_conn()
@@ -479,6 +482,7 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
             "canonical_url": canonical_url,
             "source_info": json.dumps(source_info) if source_info else None,
             "og_image": og_image,
+            "content_signature": content_signature,
         }
 
         if isinstance(result, dict):
@@ -494,14 +498,16 @@ def store_scan(doc_type: str, source, result, fingerprint: str = None,
             """INSERT INTO scans
                (doc_type, source, url, fingerprint, trust_score, verdict,
                 explanation, evidence, judgement, user_id, timestamp,
-                analysis_version, scanned_title, canonical_url, source_info, og_image)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                analysis_version, scanned_title, canonical_url, source_info, og_image,
+                content_signature)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc["doc_type"], doc["source"], doc["url"], doc["fingerprint"],
                 doc["trust_score"], doc["verdict"], doc["explanation"],
                 doc["evidence"], doc["judgement"], doc["user_id"],
                 doc["timestamp"], doc["analysis_version"], doc["scanned_title"],
                 doc["canonical_url"], doc["source_info"], doc["og_image"],
+                doc["content_signature"],
             ),
         )
         _commit_and_sync()
@@ -567,6 +573,50 @@ def find_cached_scan(fingerprint: str, analysis_version: str, max_age_hours: int
         logger.warning("Analysis cache lookup failed: %s", type(exc).__name__)
         return None
 
+
+def find_cached_scan_by_url(canonical_url: str, analysis_version: str,
+                            content_signature: str, max_age_hours: int,
+                            max_signature_distance: int = 10) -> dict | None:
+    """Return a recent same-URL result only when article content is near-identical."""
+    if not canonical_url or not analysis_version or not content_signature:
+        return None
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            """SELECT * FROM scans
+               WHERE canonical_url = ? AND analysis_version = ?
+                 AND content_signature IS NOT NULL
+               ORDER BY timestamp DESC LIMIT 5""",
+            (canonical_url, analysis_version),
+        ).fetchall()
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            doc = dict(row)
+            scan_time = datetime.fromisoformat(doc["timestamp"])
+            if scan_time.tzinfo is None:
+                scan_time = scan_time.replace(tzinfo=timezone.utc)
+            age_hours = (now - scan_time).total_seconds() / 3600
+            if age_hours > max_age_hours:
+                continue
+            stored_signature = doc.get("content_signature")
+            try:
+                if len(stored_signature or "") != 16 or len(content_signature) != 16:
+                    continue
+                distance = (int(stored_signature, 16) ^ int(content_signature, 16)).bit_count()
+            except (TypeError, ValueError):
+                continue
+            if distance > max_signature_distance:
+                continue
+            doc["evidence"] = json.loads(doc["evidence"]) if doc.get("evidence") else []
+            doc["source_info"] = json.loads(doc["source_info"]) if doc.get("source_info") else None
+            logger.info(
+                "Analysis URL cache hit: %s version=%s signature_distance=%d",
+                str(doc.get("fingerprint", ""))[:16], analysis_version, distance,
+            )
+            return doc
+    except Exception as exc:
+        logger.warning("Analysis URL cache lookup failed: %s", type(exc).__name__)
+    return None
 
 def record_scan_access(fingerprint: str, user_id: str, result_type: str) -> bool:
     """Record metadata-only access without storing scanned content or URLs."""
