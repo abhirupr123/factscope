@@ -3,12 +3,12 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from functools import wraps
 from threading import Lock
 
-from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Path as ApiPath, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Annotated, Optional, Literal
 from analyzers import text_analyzer, image_analyzer, pdf_analyzer, video_analyzer, url_analyzer
 from elastic_utils import store_analysis_result, find_by_fingerprint, get_domain_profile
 from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprint, find_cached_scan, find_cached_scan_by_url, add_community_flag,
@@ -94,7 +94,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.7.1",
+    version="0.8.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -514,6 +514,177 @@ class AnalyzeResponse(BaseModel):
     fingerprint: Optional[str] = None
     claims_pending: Optional[bool] = None
     scans_remaining: Optional[int] = None
+
+
+class V1EvidenceSource(BaseModel):
+    title: str
+    publisher: Optional[str] = None
+    url: Optional[str] = None
+
+
+class V1ClaimResult(BaseModel):
+    claim: str
+    status: Literal["supported", "contradicted", "mixed", "insufficient_evidence"]
+    confidence: Literal["low", "medium", "high"]
+    supporting_sources: list[V1EvidenceSource] = Field(default_factory=list)
+    contradicting_sources: list[V1EvidenceSource] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class V1AnalyzeResponse(AnalyzeResponse):
+    schema_version: Literal["1.0"] = "1.0"
+    analysis_id: str
+    processing_state: Literal["processing", "partial", "complete", "failed"]
+    retryable: bool = False
+    overall_evidence_summary: str
+    confidence: Literal["low", "medium", "high"]
+    claims: list[V1ClaimResult] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    legacy_score: int
+    legacy_verdict: str
+
+
+class V1ClaimsResponse(BaseModel):
+    schema_version: Literal["1.0"] = "1.0"
+    analysis_id: str
+    processing_state: Literal["processing", "complete", "failed"]
+    claims: list[V1ClaimResult] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+def _deduplicate_v1_sources(sources: list[V1EvidenceSource]) -> list[V1EvidenceSource]:
+    unique = []
+    seen = set()
+    for source in sources:
+        key = (source.url or "", source.publisher or "", source.title)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(source)
+    return unique
+
+
+def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
+    """Conservatively map legacy corroboration data into the v1 claim model."""
+    direct_source = []
+    if fact_check.source_url:
+        direct_source.append(V1EvidenceSource(
+            title=fact_check.rating or fact_check.claim[:160],
+            publisher=fact_check.source,
+            url=fact_check.source_url,
+        ))
+    related_sources = [
+        V1EvidenceSource(title=article.title, publisher=article.source, url=article.url)
+        for article in (fact_check.related_articles or [])
+        if article.url
+    ]
+    limitations = []
+    supporting = []
+    contradicting = []
+
+    if fact_check.status == "verified":
+        status = "supported"
+        confidence = "high" if direct_source else "medium"
+        supporting = direct_source
+        if related_sources:
+            limitations.append(
+                "Related coverage was found but was not classified as direct supporting evidence."
+            )
+    elif fact_check.status == "disputed":
+        status = "contradicted"
+        confidence = "high" if direct_source else "medium"
+        contradicting = direct_source
+        if related_sources:
+            limitations.append(
+                "Related coverage was found but was not classified as contradicting evidence."
+            )
+    elif fact_check.status == "mixed":
+        status = "mixed"
+        confidence = "medium" if direct_source else "low"
+        limitations.append("The available fact-check rating was mixed or context-dependent.")
+    else:
+        status = "insufficient_evidence"
+        confidence = "low"
+        if fact_check.status == "opinion":
+            limitations.append("This statement appears to be opinion or rhetoric rather than a checkable fact.")
+        elif related_sources:
+            limitations.append(
+                "Related reporting was found but was not classified as supporting evidence."
+            )
+        else:
+            limitations.append("No direct supporting or contradicting evidence was found.")
+
+    return V1ClaimResult(
+        claim=fact_check.claim,
+        status=status,
+        confidence=confidence,
+        supporting_sources=_deduplicate_v1_sources(supporting),
+        contradicting_sources=_deduplicate_v1_sources(contradicting),
+        limitations=limitations,
+    )
+
+
+def _provider_failed(legacy: AnalyzeResponse) -> bool:
+    explanation = (legacy.explanation or "").lower()
+    return legacy.verdict == "unknown" and any(marker in explanation for marker in (
+        "provider was unavailable", "analysis timed out", "could not complete the analysis",
+    ))
+
+
+def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1AnalyzeResponse:
+    claims = [_map_v1_claim(item) for item in (legacy.fact_checks or [])]
+    provider_failed = _provider_failed(legacy)
+    limitations = [
+        "The legacy score includes model judgment and structural website signals; it is not a probability that the content is true."
+    ]
+
+    if legacy.claims_pending:
+        processing_state = "processing"
+        retryable = provider_failed
+        limitations.append("Claim-level evidence is still being processed.")
+        if provider_failed:
+            limitations.append("The main analysis provider failed; retry after claim processing completes.")
+    elif provider_failed and claims:
+        processing_state = "partial"
+        retryable = True
+        limitations.append("The main analysis provider failed, but some claim evidence was available.")
+    elif provider_failed:
+        processing_state = "failed"
+        retryable = True
+        limitations.append("The analysis provider was unavailable; no factual verdict should be inferred.")
+    elif legacy.fact_checks is None:
+        processing_state = "partial"
+        retryable = False
+        limitations.append("Claim-level verification was unavailable for this response.")
+    else:
+        processing_state = "complete"
+        retryable = False
+        if not claims:
+            limitations.append("No checkable claims were identified in the extracted content.")
+
+    if processing_state != "complete" or not claims:
+        confidence = "low"
+    elif all(claim.confidence == "high" for claim in claims):
+        confidence = "high"
+    else:
+        confidence = "medium"
+
+    if any(claim.status == "insufficient_evidence" for claim in claims):
+        limitations.append("At least one claim lacks enough evidence for a supported or contradicted status.")
+
+    analysis_id = legacy.fingerprint or fallback_analysis_id
+    return V1AnalyzeResponse(
+        **legacy.model_dump(),
+        analysis_id=analysis_id,
+        processing_state=processing_state,
+        retryable=retryable,
+        overall_evidence_summary=legacy.explanation or "No evidence summary is available.",
+        confidence=confidence,
+        claims=claims,
+        limitations=limitations,
+        legacy_score=legacy.trust_score,
+        legacy_verdict=legacy.verdict,
+    )
 
 
 class FlagRequest(BaseModel):
@@ -1385,6 +1556,48 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
     )
 
 
+@app.post("/v1/analyze", response_model=V1AnalyzeResponse)
+async def analyze_page_v1(request: AnalyzeRequest, http_request: Request):
+    """Return the additive v1 evidence contract while preserving legacy fields."""
+    legacy = await analyze_page(request, http_request)
+    if not isinstance(legacy, AnalyzeResponse):
+        return legacy
+    return _to_v1_analysis(legacy, _request_id(http_request))
+
+
+@app.get("/v1/analyses/{analysis_id}/claims", response_model=V1ClaimsResponse)
+async def get_v1_claims(
+    request: Request,
+    analysis_id: Annotated[str, ApiPath(min_length=16, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")],
+):
+    """Poll normalized claim processing state for a v1 analysis."""
+    _require_session(request)
+    raw = get_scan_claims(analysis_id)
+    if raw is None:
+        return V1ClaimsResponse(
+            analysis_id=analysis_id,
+            processing_state="processing",
+            limitations=["Claim-level evidence is still being processed."],
+        )
+    try:
+        parsed = json.loads(raw)
+        fact_checks = [FactCheckResult(**item) for item in parsed]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return V1ClaimsResponse(
+            analysis_id=analysis_id,
+            processing_state="failed",
+            limitations=["Stored claim results could not be read. Retry the analysis."],
+        )
+    limitations = []
+    if not fact_checks:
+        limitations.append("No checkable claims were identified in the extracted content.")
+    return V1ClaimsResponse(
+        analysis_id=analysis_id,
+        processing_state="complete",
+        claims=[_map_v1_claim(item) for item in fact_checks],
+        limitations=limitations,
+    )
+
 @app.get("/claims/{fingerprint}")
 async def get_claims(fingerprint: str, request: Request):
     """Fetch claim analysis for a previously scanned page (used for progressive loading)."""
@@ -1629,7 +1842,7 @@ async def view_shared_result(share_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.7.1"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 @app.get("/debug/db-status")

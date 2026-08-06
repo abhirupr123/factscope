@@ -1,6 +1,7 @@
 """Security regression tests for the production hotfix."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import uuid
 
 
@@ -825,6 +826,112 @@ class ChunkFourFoundationTests(unittest.TestCase):
         self.assertIn('class="main no-preview-image"', html)
         self.assertIn("Stored article", html)
         self.assertIn("Page scanned", html)
+
+class ChunkFourV1ContractTests(unittest.TestCase):
+    @staticmethod
+    def _request():
+        request = main.Request({"type": "http", "headers": []})
+        request.state.request_id = "v1-contract-request"
+        return request
+
+    def test_v1_claim_statuses_require_direct_fact_check_evidence(self):
+        supported = main._map_v1_claim(main.FactCheckResult(
+            claim="The event occurred.", status="verified", source="Fact Checker",
+            source_url="https://facts.example/check", rating="True",
+            related_articles=[main.RelatedArticle(
+                title="Related report", source="News", url="https://news.example/report"
+            )],
+        ))
+        contradicted = main._map_v1_claim(main.FactCheckResult(
+            claim="The event did not occur.", status="disputed", source="Fact Checker",
+            source_url="https://facts.example/false", rating="False",
+        ))
+        insufficient = main._map_v1_claim(main.FactCheckResult(
+            claim="A related claim.", status="no_fact_check_found",
+            corroboration="multiple_sources", source_count=8,
+            related_articles=[main.RelatedArticle(
+                title="Related topic", source="News", url="https://news.example/topic"
+            )],
+        ))
+
+        self.assertEqual(supported.status, "supported")
+        self.assertEqual(supported.confidence, "high")
+        self.assertEqual([s.url for s in supported.supporting_sources], ["https://facts.example/check"])
+        self.assertEqual(contradicted.status, "contradicted")
+        self.assertEqual([s.url for s in contradicted.contradicting_sources], ["https://facts.example/false"])
+        self.assertEqual(insufficient.status, "insufficient_evidence")
+        self.assertEqual(insufficient.confidence, "low")
+        self.assertEqual(insufficient.supporting_sources, [])
+        self.assertTrue(any("not classified" in item for item in insufficient.limitations))
+
+    def test_v1_provider_failure_is_retryable_and_never_zero_confidence_score(self):
+        legacy = main.AnalyzeResponse(
+            trust_score=50,
+            verdict="unknown",
+            explanation="Analysis could not be completed because the provider was unavailable. Please try again.",
+            evidence=[],
+            fact_checks=None,
+            fingerprint="b" * 64,
+        )
+        result = main._to_v1_analysis(legacy, "fallback")
+        self.assertEqual(result.processing_state, "failed")
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.confidence, "low")
+        self.assertEqual(result.trust_score, 50)
+        self.assertEqual(result.legacy_score, 50)
+        self.assertTrue(any("no factual verdict" in item for item in result.limitations))
+
+    def test_v1_pending_response_preserves_legacy_fields(self):
+        legacy = main.AnalyzeResponse(
+            trust_score=64,
+            verdict="suspicious",
+            explanation="Some signals require more evidence.",
+            evidence=["Named author"],
+            fact_checks=None,
+            fingerprint="c" * 64,
+            claims_pending=True,
+            scans_remaining=8,
+        )
+        result = main._to_v1_analysis(legacy, "fallback")
+        payload = result.model_dump()
+        self.assertEqual(result.processing_state, "processing")
+        self.assertEqual(result.analysis_id, "c" * 64)
+        self.assertEqual(result.confidence, "low")
+        self.assertEqual(payload["trust_score"], 64)
+        self.assertEqual(payload["verdict"], "suspicious")
+        self.assertEqual(payload["legacy_score"], 64)
+        self.assertEqual(payload["schema_version"], "1.0")
+
+    def test_v1_analyze_route_adapts_legacy_endpoint_without_changing_it(self):
+        legacy = main.AnalyzeResponse(
+            trust_score=72, verdict="authentic", explanation="Direct evidence found.",
+            evidence=["Evidence"], fact_checks=[], fingerprint="d" * 64,
+        )
+        with patch.object(main, "analyze_page", new=AsyncMock(return_value=legacy)):
+            result = asyncio.run(main.analyze_page_v1(main.AnalyzeRequest(text="Article text"), self._request()))
+        self.assertIsInstance(result, main.V1AnalyzeResponse)
+        self.assertEqual(result.trust_score, legacy.trust_score)
+        self.assertEqual(result.processing_state, "complete")
+        self.assertIn("/analyze", main.app.openapi()["paths"])
+        self.assertIn("/v1/analyze", main.app.openapi()["paths"])
+
+    def test_v1_claim_polling_has_explicit_processing_and_complete_states(self):
+        request = self._request()
+        with patch.object(main, "_require_session"), \
+             patch.object(main, "get_scan_claims", return_value=None):
+            pending = asyncio.run(main.get_v1_claims(request, "e" * 64))
+        self.assertEqual(pending.processing_state, "processing")
+
+        stored = json.dumps([{
+            "claim": "The event occurred.", "status": "verified",
+            "source": "Fact Checker", "source_url": "https://facts.example/check",
+            "rating": "True",
+        }])
+        with patch.object(main, "_require_session"), \
+             patch.object(main, "get_scan_claims", return_value=stored):
+            complete = asyncio.run(main.get_v1_claims(request, "e" * 64))
+        self.assertEqual(complete.processing_state, "complete")
+        self.assertEqual(complete.claims[0].status, "supported")
 
 if __name__ == "__main__":
     unittest.main()
