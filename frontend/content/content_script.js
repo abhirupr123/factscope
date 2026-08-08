@@ -438,6 +438,128 @@
     return `<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div>${items}</div>`;
   }
 
+  const V1_STATUS_PRESENTATION = {
+    supported: { label: 'Supported', icon: '\u2714', color: '#059669' },
+    contradicted: { label: 'Contradicted', icon: '\u2716', color: '#dc2626' },
+    mixed: { label: 'Mixed evidence', icon: '\u26A0', color: '#d97706' },
+    insufficient_evidence: { label: 'Insufficient evidence', icon: '\u2139', color: '#64748b' },
+    processing: { label: 'Evidence processing', icon: '\u2026', color: '#4f46e5' },
+    not_applicable: { label: 'Not applicable', icon: '\u2139', color: '#64748b' },
+    no_indicators_detected: { label: 'No clear manipulation indicators', icon: '\u2714', color: '#059669' },
+    possible_manipulation: { label: 'Possible manipulation', icon: '\u26A0', color: '#d97706' },
+    likely_manipulated: { label: 'Likely manipulated', icon: '\u2716', color: '#dc2626' },
+    likely_ai_generated: { label: 'Likely AI-generated', icon: '\u2716', color: '#dc2626' },
+    uncertain: { label: 'Uncertain', icon: '?', color: '#64748b' },
+    consistent: { label: 'Caption appears consistent', icon: '\u2714', color: '#059669' },
+    inconsistent: { label: 'Caption appears inconsistent', icon: '\u2716', color: '#dc2626' },
+    not_provided: { label: 'No caption provided', icon: '\u2139', color: '#64748b' },
+    visible_source_indicator: { label: 'Visible source indicator', icon: '\u2714', color: '#059669' },
+    no_visible_source_indicator: { label: 'No visible source indicator', icon: '\u2139', color: '#64748b' },
+    unknown: { label: 'Unknown', icon: '?', color: '#64748b' },
+  };
+
+  function v1StatusPresentation(status) {
+    return V1_STATUS_PRESENTATION[status] || V1_STATUS_PRESENTATION.unknown;
+  }
+
+  function buildLimitationsHTML(limitations) {
+    if (!Array.isArray(limitations) || limitations.length === 0) return '';
+    return `<div class="fs-limitations"><div class="fs-limitations-title">Limitations</div><ul>${limitations.map((item) => `<li>${item}</li>`).join('')}</ul></div>`;
+  }
+
+  function buildV1SourcesHTML(sources, heading) {
+    if (!Array.isArray(sources) || sources.length === 0) return '';
+    const items = sources.slice(0, 4).map((source) => {
+      const title = source.title || source.publisher || 'Evidence source';
+      const publisher = source.publisher ? `<span class="fs-article-source">${source.publisher}</span>` : '';
+      const link = source.url
+        ? `<a class="fs-article-link" href="${source.url}" target="_blank" rel="noopener">${title}</a>`
+        : `<span>${title}</span>`;
+      return `<li>${link} ${publisher}</li>`;
+    }).join('');
+    return `<div class="fs-v1-source-group"><div class="fs-v1-source-heading">${heading}</div><ul class="fs-related-articles">${items}</ul></div>`;
+  }
+
+  function buildV1ClaimsHTML(claims, limitations = [], title = 'Claim evidence') {
+    const safe = sanitizeForHTML({ claims: claims || [], limitations: limitations || [] });
+    if (!Array.isArray(safe.claims) || safe.claims.length === 0) {
+      const message = safe.limitations[0] || 'No checkable factual claims were identified in the extracted content.';
+      return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div><div class="fs-body">${message}</div></div>`;
+    }
+    const items = safe.claims.map((claim) => {
+      const presentation = v1StatusPresentation(claim.status);
+      const statusClass = V1_STATUS_PRESENTATION[claim.status] ? claim.status.replace(/_/g, '-') : 'unknown';
+      return `<div class="fs-factcheck-item fs-v1-claim-${statusClass}">
+        <span class="fs-claim-icon" style="color:${presentation.color}">${presentation.icon}</span>
+        <div class="fs-claim-body">
+          <span class="fs-claim-text">${claim.claim}</span>
+          <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${presentation.color}">${presentation.label}</span><span class="fs-confidence">${claim.confidence || 'low'} confidence</span></div>
+          ${buildV1SourcesHTML(claim.supporting_sources, 'Supporting sources')}
+          ${buildV1SourcesHTML(claim.contradicting_sources, 'Contradicting sources')}
+          ${buildLimitationsHTML(claim.limitations)}
+        </div>
+      </div>`;
+    }).join('');
+    return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div>${items}${buildLimitationsHTML(safe.limitations)}</div>`;
+  }
+
+  function buildV1ArticleSummaryHTML(result) {
+    const factual = result.factual_evidence || {};
+    const presentation = factual.status === 'not_applicable'
+      ? { ...v1StatusPresentation(factual.status), label: 'No factual verdict' }
+      : v1StatusPresentation(factual.status);
+    const quality = result.source_quality || {};
+    const classification = result.content_classification || {};
+    const classificationLabel = classification.content_type
+      ? classification.content_type.replace(/_/g, ' ')
+      : '';
+    const classificationDetails = classificationLabel
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content type: ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">${classification.confidence || 'low'} confidence · ${classification.checkability || 'unknown'} checkability</div></details>`
+      : '';
+    const qualitySignals = (quality.signals || []).map((signal) => `<li>${signal.detail}</li>`).join('');
+    const qualityDetails = quality.summary || qualitySignals || (quality.limitations || []).length
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Source quality: ${quality.level || 'unknown'} (${Number.isFinite(quality.score) ? quality.score : result.legacy_score || 0}/100)</summary><div class="fs-body">${quality.summary || ''}</div>${qualitySignals ? `<ul class="fs-details-list">${qualitySignals}</ul>` : ''}${buildLimitationsHTML(quality.limitations)}</details>`
+      : '';
+    return `<div class="fs-assessment-card">
+      <div class="fs-assessment-kicker">Evidence assessment</div>
+      <div class="fs-assessment-status" style="color:${presentation.color}"><span>${presentation.icon}</span>${presentation.label}</div>
+      <div class="fs-confidence">${factual.confidence || result.confidence || 'low'} confidence</div>
+      <div class="fs-body">${result.overall_evidence_summary || factual.summary || 'No evidence summary is available.'}</div>
+      ${buildLimitationsHTML(result.limitations)}
+    </div>${classificationDetails}${qualityDetails}`;
+  }
+
+  function buildV1ImageAssessmentHTML(result) {
+    const assessment = result.assessment || {};
+    const manipulation = assessment.manipulation || {};
+    const caption = assessment.caption_consistency || {};
+    const provenance = assessment.provenance || {};
+    const manipulationView = v1StatusPresentation(manipulation.status);
+    const captionView = v1StatusPresentation(caption.status);
+    const provenanceView = v1StatusPresentation(provenance.status);
+    const indicatorList = (items) => Array.isArray(items) && items.length
+      ? `<ul class="fs-details-list">${items.map((item) => `<li>${item}</li>`).join('')}</ul>` : '';
+    return `<div class="fs-assessment-card">
+      <div class="fs-assessment-kicker">Visual manipulation assessment</div>
+      <div class="fs-assessment-status" style="color:${manipulationView.color}"><span>${manipulationView.icon}</span>${manipulationView.label}</div>
+      <div class="fs-confidence">${manipulation.confidence || 'low'} confidence</div>
+      <div class="fs-body">${manipulation.summary || 'No visual assessment is available.'}</div>
+      ${indicatorList(manipulation.indicators)}${buildLimitationsHTML(manipulation.limitations)}
+    </div>
+    <div class="fs-assessment-grid">
+      <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Caption consistency</div><div class="fs-mini-status" style="color:${captionView.color}">${captionView.icon} ${captionView.label}</div><div class="fs-body">${caption.summary || ''}</div>${buildLimitationsHTML(caption.limitations)}</div>
+      <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Visible provenance</div><div class="fs-mini-status" style="color:${provenanceView.color}">${provenanceView.icon} ${provenanceView.label}</div><div class="fs-body">${provenance.summary || ''}</div>${indicatorList(provenance.indicators)}${buildLimitationsHTML(provenance.limitations)}<div class="fs-caveat">Visible credits are clues, not proof of origin.</div></div>
+    </div>
+    <details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Legacy authenticity score: ${Number.isFinite(result.legacy_score) ? result.legacy_score : result.authenticity_score || 0}/100</summary><div class="fs-body">Kept temporarily for compatibility; use the separated assessments above when interpreting this result.</div></details>
+    ${buildLimitationsHTML(result.limitations)}`;
+  }
+
+  if (globalThis.__FACTSCOPE_SECURITY_TEST__) {
+    Object.assign(globalThis.__FACTSCOPE_SECURITY__, {
+      buildV1ClaimsHTML, buildV1ArticleSummaryHTML, buildV1ImageAssessmentHTML,
+    });
+  }
+
   /* ── Community section builders ──────────────────────────────────── */
 
   const FLAG_CATEGORIES = {
@@ -680,20 +802,24 @@
     });
   }
 
-  function pollForClaims(fingerprint, attempts) {
+  function pollForClaims(fingerprint, analysisId, attempts) {
     if (attempts <= 0) {
       const slot = document.getElementById('fs-claims-slot');
-      if (slot) slot.innerHTML = '<div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div><div class="fs-body">Claims could not be loaded.</div></div>';
+      if (slot) slot.innerHTML = '<div class="fs-factchecks"><div class="fs-factchecks-title">Claim evidence</div><div class="fs-body">Claim evidence is taking longer than expected. The overall result remains limited until it is available.</div></div>';
       return;
     }
     if (!chrome.runtime?.id) return;
-    chrome.runtime.sendMessage({ type: 'get-claims', fingerprint }, (resp) => {
+    chrome.runtime.sendMessage({ type: 'get-claims', fingerprint, analysisId }, (resp) => {
       if (chrome.runtime.lastError) return;
-      if (resp && !resp.pending && Array.isArray(resp.fact_checks)) {
-        const slot = document.getElementById('fs-claims-slot');
+      const slot = document.getElementById('fs-claims-slot');
+      if (resp?.processing_state === 'failed') {
+        if (slot) slot.innerHTML = buildV1ClaimsHTML([], resp.limitations || ['Claim evidence could not be loaded.']);
+      } else if (resp?.processing_state === 'complete' && Array.isArray(resp.claims)) {
+        if (slot) slot.innerHTML = buildV1ClaimsHTML(resp.claims, resp.limitations);
+      } else if (resp && !resp.pending && Array.isArray(resp.fact_checks)) {
         if (slot) slot.innerHTML = buildFactChecksHTML(resp.fact_checks);
       } else {
-        setTimeout(() => pollForClaims(fingerprint, attempts - 1), 3000);
+        setTimeout(() => pollForClaims(fingerprint, analysisId, attempts - 1), 3000);
       }
     });
   }
@@ -803,6 +929,10 @@
     const color = scoreColor(score);
     const label = verdictLabel(result.verdict);
     const icon = verdictIcon(result.verdict);
+    const isV1 = result.schema_version === '1.0' && result.factual_evidence && result.source_quality;
+    const primaryAssessmentHTML = isV1
+      ? buildV1ArticleSummaryHTML(result)
+      : `<div class="fs-verdict-row"><span class="fs-verdict-icon">${icon}</span><span class="fs-verdict-label" style="color:${color}">${label}</span></div><div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div><div class="fs-score-text"><strong style="color:${color}">${score}%</strong> trust score</div>`;
 
     const evidenceItems = (result.evidence || [])
       .filter((e) => e && !e.includes('unstructured'))
@@ -816,7 +946,9 @@
 
     let claimsSlotHTML;
     if (result.claims_pending && result.fingerprint) {
-      claimsSlotHTML = '<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">Claim analysis</div><div class="fs-loader"><div class="fs-loader-bar"></div></div><div class="fs-body fs-scanning-text">Checking claims&hellip;</div></div></div>';
+      claimsSlotHTML = `<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">${isV1 ? 'Claim evidence' : 'Claim analysis'}</div><div class="fs-loader"><div class="fs-loader-bar"></div></div><div class="fs-body fs-scanning-text">Checking claims&hellip;</div></div></div>`;
+    } else if (isV1) {
+      claimsSlotHTML = `<div id="fs-claims-slot">${buildV1ClaimsHTML(result.claims, result.limitations)}</div>`;
     } else {
       claimsSlotHTML = `<div id="fs-claims-slot">${buildFactChecksHTML(result.fact_checks)}</div>`;
     }
@@ -828,7 +960,7 @@
       })
       .join('');
 
-    const signalsHTML = notableSignals
+    const signalsHTML = !isV1 && notableSignals
       ? `<details class="fs-details"><summary class="fs-details-summary">Why this score?</summary><ul class="fs-details-list">${notableSignals}</ul></details>`
       : '';
 
@@ -849,12 +981,7 @@
           <button class="fs-close" aria-label="Close">&times;</button>
         </div>
       </div>
-      <div class="fs-verdict-row">
-        <span class="fs-verdict-icon">${icon}</span>
-        <span class="fs-verdict-label" style="color:${color}">${label}</span>
-      </div>
-      <div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div>
-      <div class="fs-score-text"><strong style="color:${color}">${score}%</strong> trust score</div>
+      ${primaryAssessmentHTML}
       ${sourceHTML}
       ${buildDomainProfileHTML(result.domain_profile)}
       ${scansHTML}
@@ -862,8 +989,8 @@
       ${buildKBMatchHTML(result.kb_matches)}
       ${buildCommunitySection(result)}
       <div class="fs-divider"></div>
-      <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
-      ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">Supporting evidence</div><ul>${evidenceItems}</ul></div>` : ''}
+      ${isV1 ? '' : `<div class="fs-body">${result.explanation || 'No explanation available.'}</div>`}
+      ${!isV1 && evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">Supporting evidence</div><ul>${evidenceItems}</ul></div>` : ''}
       ${claimsSlotHTML}
       ${signalsHTML}
       <div class="fs-footer">Scanned by FactScope</div>
@@ -890,7 +1017,7 @@
     }
 
     if (result.claims_pending && result.fingerprint) {
-      pollForClaims(result.fingerprint, 10);
+      pollForClaims(result.fingerprint, result.analysis_id || result.fingerprint, 10);
     }
   }
 
@@ -1097,12 +1224,22 @@
     const color = imgScoreColor(score);
     const label = IMG_VERDICT_LABELS[result.verdict] || result.verdict;
     const icon = IMG_VERDICT_ICONS[result.verdict] || '';
+    const isV1 = result.schema_version === '1.0' && result.assessment;
+    const primaryAssessmentHTML = isV1
+      ? buildV1ImageAssessmentHTML(result)
+      : `<div class="fs-verdict-row"><span class="fs-verdict-icon">${icon}</span><span class="fs-verdict-label" style="color:${color}">${label}</span></div><div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div><div class="fs-score-text"><strong style="color:${color}">${score}%</strong> authenticity score</div>`;
 
     const evidenceItems = (result.evidence || [])
       .map((e) => `<li>${e}</li>`)
       .join('');
 
-    const claimHTML = result.claim_analysis ? buildFactChecksHTML(result.claim_analysis) : '';
+    const claimHTML = isV1
+      ? buildV1ClaimsHTML(
+          result.assessment.caption_consistency?.claims,
+          result.assessment.caption_consistency?.limitations,
+          'Caption claim evidence',
+        )
+      : (result.claim_analysis ? buildFactChecksHTML(result.claim_analysis) : '');
 
     const imgDomain = (() => { try { return new URL(location.href).hostname; } catch { return ''; } })();
 
@@ -1118,17 +1255,12 @@
           <button class="fs-close" aria-label="Close">&times;</button>
         </div>
       </div>
-      <div class="fs-verdict-row">
-        <span class="fs-verdict-icon">${icon}</span>
-        <span class="fs-verdict-label" style="color:${color}">${label}</span>
-      </div>
-      <div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div>
-      <div class="fs-score-text"><strong style="color:${color}">${score}%</strong> authenticity score</div>
+      ${primaryAssessmentHTML}
       ${buildVoteHTML(result.vote_stats, result.fingerprint)}
       ${buildCommunitySection(result)}
       <div class="fs-divider"></div>
-      <div class="fs-body">${result.explanation || 'No explanation available.'}</div>
-      ${evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">What we found</div><ul>${evidenceItems}</ul></div>` : ''}
+      ${isV1 ? '' : `<div class="fs-body">${result.explanation || 'No explanation available.'}</div>`}
+      ${!isV1 && evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">What we found</div><ul>${evidenceItems}</ul></div>` : ''}
       ${claimHTML}
       <div class="fs-footer">Scanned by FactScope</div>
     `);

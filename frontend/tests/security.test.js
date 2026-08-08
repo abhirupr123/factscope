@@ -39,4 +39,19 @@ assert.match(source, /function showResultPanel\(result\) \{\s*result = sanitizeF
 assert.match(source, /function buildNoteCardHTML\(note\) \{\s*note = sanitizeForHTML\(note\);/);
 assert.match(source, /function buildFactChecksHTML\(factChecks\)[\s\S]*?factChecks = sanitizeForHTML\(factChecks\);/);
 
+assert.match(source, /function showImageResultPanel\(result, resolvedPageUrl\)[\s\S]*?result = sanitizeForHTML\(result\);/);
+
+const v1ClaimHTML = security.buildV1ClaimsHTML([{
+  claim: '<img src=x onerror=alert(1)>',
+  status: 'supported',
+  confidence: 'high',
+  supporting_sources: [{ title: '<script>bad()</script>', url: 'javascript:alert(1)' }],
+  contradicting_sources: [],
+  limitations: ['<b>unsafe</b>'],
+}]);
+assert.match(v1ClaimHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
+assert.match(v1ClaimHTML, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+assert.match(v1ClaimHTML, /&lt;b&gt;unsafe&lt;\/b&gt;/);
+assert.doesNotMatch(v1ClaimHTML, /javascript:/);
+
 console.log('frontend security tests passed');

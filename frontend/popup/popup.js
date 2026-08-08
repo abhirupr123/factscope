@@ -7,6 +7,20 @@ const telemetryToggle = document.getElementById('telemetry-enabled');
 const deleteServerDataBtn = document.getElementById('delete-server-data');
 const privacyStatus = document.getElementById('privacy-status');
 
+const V1_RESULT_LABELS = {
+  supported: 'Evidence supports claims',
+  contradicted: 'Evidence contradicts claims',
+  mixed: 'Mixed evidence',
+  insufficient_evidence: 'Insufficient evidence',
+  processing: 'Evidence processing',
+  not_applicable: 'No factual verdict',
+  no_indicators_detected: 'No clear manipulation indicators',
+  possible_manipulation: 'Possible manipulation',
+  likely_manipulated: 'Likely manipulated',
+  likely_ai_generated: 'Likely AI-generated',
+  uncertain: 'Uncertain',
+};
+
 const VERDICT_LABELS = {
   authentic: 'Authentic',
   likely_authentic: 'Likely Authentic',
@@ -68,14 +82,17 @@ function renderHistory(history) {
   historySection.style.display = 'block';
   historyList.innerHTML = history.map((entry) => {
     const color = scoreColor(entry.score);
-    const label = escapeHTML(VERDICT_LABELS[entry.verdict] || entry.verdict);
+    const status = entry.type === 'image' ? entry.manipulation_status : entry.evidence_status;
+    const statusLabel = status ? (V1_RESULT_LABELS[status] || status.replace(/_/g, ' ')) : null;
+    const confidence = status && entry.confidence ? ` (${entry.confidence} confidence)` : '';
+    const label = escapeHTML(statusLabel ? `${statusLabel}${confidence}` : (VERDICT_LABELS[entry.verdict] || entry.verdict));
     const typeIcon = entry.type === 'image' ? '\uD83D\uDDBC' : '\uD83D\uDCC4';
     const title = escapeHTML(truncate(entry.title || entry.domain || 'Unknown', 38));
     const domain = escapeHTML(entry.domain || '');
     const url = safeHistoryURL(entry.url);
 
     return `<div class="history-item" data-url="${url}">
-      <div class="history-score" style="border-color:${color};color:${color}">${Math.round(entry.score)}</div>
+      <div class="history-score" title="Legacy score" style="border-color:${color};color:${color}">${Math.round(entry.score)}</div>
       <div class="history-info">
         <span class="history-item-title">${typeIcon} ${title}</span>
         <span class="history-meta">${label} \u00b7 ${domain ? domain + ' \u00b7 ' : ''}${relativeTime(entry.timestamp)}</span>

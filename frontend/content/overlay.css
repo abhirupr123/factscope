@@ -1079,3 +1079,130 @@
   margin-top: 12px;
   text-decoration: underline;
 }
+
+/* ── Versioned evidence assessments ─────────────────────────────────── */
+
+.factscope-popup .fs-assessment-card {
+  padding: 11px 12px;
+  margin-bottom: 8px;
+  border: 1px solid #dbeafe;
+  border-left: 4px solid #6366f1;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.factscope-popup .fs-assessment-kicker {
+  margin-bottom: 4px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.factscope-popup .fs-assessment-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 2px;
+  font-size: 16px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.factscope-popup .fs-confidence {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.factscope-popup .fs-assessment-card > .fs-body,
+.factscope-popup .fs-mini-assessment > .fs-body {
+  margin: 6px 0 0;
+}
+
+.factscope-popup .fs-assessment-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+
+.factscope-popup .fs-mini-assessment {
+  padding: 9px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.factscope-popup .fs-mini-status {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.factscope-popup .fs-secondary-assessment {
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.factscope-popup .fs-limitations {
+  margin-top: 7px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.factscope-popup .fs-limitations-title,
+.factscope-popup .fs-v1-source-heading {
+  margin-bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.factscope-popup .fs-limitations ul {
+  margin: 0;
+  padding-left: 15px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.factscope-popup .fs-v1-status {
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.factscope-popup .fs-v1-source-group {
+  margin-top: 5px;
+}
+
+.factscope-popup .fs-v1-source-heading {
+  color: #64748b;
+}
+
+.factscope-popup .fs-caveat {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-assessment-card { background: #172135; border-color: #3730a3; }
+  .factscope-popup .fs-assessment-kicker,
+  .factscope-popup .fs-confidence,
+  .factscope-popup .fs-v1-source-heading,
+  .factscope-popup .fs-caveat { color: #94a3b8; }
+  .factscope-popup .fs-mini-assessment,
+  .factscope-popup .fs-secondary-assessment { background: #1e293b; border-color: #334155; }
+  .factscope-popup .fs-limitations { background: #431407; color: #fdba74; }
+}

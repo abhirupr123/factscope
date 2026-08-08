@@ -4,6 +4,8 @@ const SESSION_TOKEN_KEY = 'factscope_session_token';
 const SESSION_EXPIRY_KEY = 'factscope_session_expires_at';
 const TELEMETRY_ENABLED_KEY = 'factscope_telemetry_enabled';
 const HISTORY_KEY = 'factscope_history';
+const V1_API_ENABLED_KEY = 'factscope_use_v1_api';
+const V1_FALLBACK_STATUSES = new Set([404, 405, 501]);
 let _sessionPromise = null;
 
 function storageGet(keys) {
@@ -64,6 +66,27 @@ async function apiFetch(path, options = {}, retryAuth = true) {
     return apiFetch(path, options, false);
   }
   return response;
+}
+
+async function isV1ApiEnabled() {
+  const stored = await storageGet([V1_API_ENABLED_KEY]);
+  return stored[V1_API_ENABLED_KEY] !== false;
+}
+
+async function apiFetchVersioned(v1Path, legacyPath, options = {}) {
+  if (!(await isV1ApiEnabled())) {
+    return { response: await apiFetch(legacyPath, options), contract: 'legacy' };
+  }
+
+  const response = await apiFetch(v1Path, options);
+  if (!V1_FALLBACK_STATUSES.has(response.status)) {
+    return { response, contract: 'v1' };
+  }
+
+  // Only route-level failures are replayed. Provider errors, timeouts, quota
+  // responses, and other 5xx statuses must never cause a duplicate analysis.
+  console.warn(`FactScope v1 route unavailable (${response.status}); using legacy contract.`);
+  return { response: await apiFetch(legacyPath, options), contract: 'legacy' };
 }
 
 async function recordTelemetry(event) {
@@ -196,7 +219,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const payload = { ...message.payload };
       try {
-        const r = await apiFetch('/analyze', {
+        const { response: r, contract } = await apiFetchVersioned('/v1/analyze', '/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -214,6 +237,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
+        data.api_contract = contract;
         if (data.verdict !== 'error') {
           const url = payload.url || sender.tab?.url || '';
           let domain = '';
@@ -224,6 +248,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             domain,
             score: data.trust_score,
             verdict: data.verdict,
+            evidence_status: data.factual_evidence?.status || null,
+            confidence: data.factual_evidence?.confidence || null,
+            api_contract: contract,
             type: 'page',
             timestamp: Date.now(),
           });
@@ -248,11 +275,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const payload = { ...message.payload };
       try {
-        const r = await apiFetch('/analyze/verify-image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
+        const { response: r, contract } = await apiFetchVersioned(
+          '/v1/analyze/verify-image',
+          '/analyze/verify-image',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+        );
         if (r.status === 429) {
           const rl = await r.json();
           sendResponse({
@@ -266,6 +297,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
+        data.api_contract = contract;
         if (data.verdict !== 'error') {
           const pageUrl = payload.page_url || sender.tab?.url || '';
           let domain = '';
@@ -276,6 +308,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             domain,
             score: data.authenticity_score,
             verdict: data.verdict,
+            manipulation_status: data.assessment?.manipulation?.status || null,
+            caption_status: data.assessment?.caption_consistency?.status || null,
+            confidence: data.assessment?.manipulation?.confidence || null,
+            api_contract: contract,
             type: 'image',
             timestamp: Date.now(),
           });
@@ -299,11 +335,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'get-claims') {
     (async () => {
       try {
-        const r = await apiFetch(`/claims/${encodeURIComponent(message.fingerprint)}`);
+        const analysisId = message.analysisId || message.fingerprint;
+        const { response: r, contract } = await apiFetchVersioned(
+          `/v1/analyses/${encodeURIComponent(analysisId)}/claims`,
+          `/claims/${encodeURIComponent(message.fingerprint)}`,
+        );
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
-        sendResponse(await r.json());
+        const data = await r.json();
+        data.api_contract = contract;
+        sendResponse(data);
       } catch (err) {
-        sendResponse({ pending: true, fact_checks: null });
+        sendResponse({ pending: true, processing_state: 'processing', fact_checks: null, claims: null });
       }
     })();
     return true;
@@ -438,5 +480,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 if (globalThis.__FACTSCOPE_SESSION_TEST__) {
-  globalThis.__FACTSCOPE_SESSION__ = { apiFetch, getSessionToken };
+  globalThis.__FACTSCOPE_SESSION__ = {
+    apiFetch, apiFetchVersioned, getSessionToken, isV1ApiEnabled,
+  };
 }
