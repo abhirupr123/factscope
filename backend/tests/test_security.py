@@ -28,6 +28,8 @@ from safe_fetch import (  # noqa: E402
     ResponseTooLargeError,
     UnsafeURLError,
     safe_get,
+    safe_probe,
+    SafeFetchResult,
     validate_public_url,
 )
 import main  # noqa: E402
@@ -35,6 +37,7 @@ import llm_utils  # noqa: E402
 import db  # noqa: E402
 import fingerprinting  # noqa: E402
 import content_classifier  # noqa: E402
+import fact_checker  # noqa: E402
 
 
 def tearDownModule():
@@ -1493,6 +1496,98 @@ class ChunkFourContentClassificationTests(unittest.TestCase):
         self.assertEqual(result.processing_state, "complete")
         self.assertEqual(result.confidence, "low")
         self.assertTrue(any("Viewpoints are not factual verdicts" in item for item in result.limitations))
+
+class ChunkFiveEvidenceValidationTests(unittest.TestCase):
+    def test_safe_probe_validates_peer_without_downloading_body(self):
+        public_answer = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ]
+        response = FakeResponse(headers={"content-type": "text/html"}, chunks=[b"unused body"])
+        with patch("safe_fetch.socket.getaddrinfo", return_value=public_answer), \
+             patch("safe_fetch.requests.Session", return_value=FakeSession(response)):
+            result = safe_probe("https://example.com/report", allowed_content_prefixes=("text/html",))
+        self.assertEqual(result.content, b"")
+        self.assertEqual(result.final_url, "https://example.com/report")
+
+    def test_matcher_excludes_self_corroboration_and_non_independent_copies(self):
+        claim = "India standardised 27 Arunachal Pradesh locations on official maps"
+        articles = [
+            {"title": "India standardised 27 Arunachal Pradesh locations on official maps",
+             "url": "https://example.com/copy", "source": {"name": "Example News"}},
+            {"title": "India standardised 27 Arunachal Pradesh locations on official maps",
+             "url": "https://a.example/report", "source": {"name": "Outlet A"}},
+            {"title": "India standardised 27 Arunachal Pradesh locations on official maps",
+             "url": "https://b.example/report", "source": {"name": "Outlet B"}},
+            {"title": "Official maps now use 27 standard Arunachal Pradesh location names",
+             "url": "https://c.example/report", "source": {"name": "Outlet C"}},
+        ]
+        matched = fact_checker._match_claims_to_articles(
+            [claim], articles, source_url="https://example.com/original"
+        )[0]
+        reasons = {item["reason"] for item in matched["rejected_articles"]}
+        self.assertIn("self_corroboration", reasons)
+        self.assertIn("syndicated_duplicate", reasons)
+        self.assertEqual(matched["source_count"], 2)
+        self.assertTrue(all(item["independent"] for item in matched["related_articles"]))
+
+    def test_recency_metadata_is_explicit_without_rejecting_historical_sources(self):
+        now = datetime.now(timezone.utc)
+        self.assertEqual(fact_checker._recency_label(now.isoformat()), "current")
+        self.assertEqual(
+            fact_checker._recency_label((now - timedelta(days=30)).isoformat()), "recent"
+        )
+        self.assertEqual(
+            fact_checker._recency_label((now - timedelta(days=365)).isoformat()), "older"
+        )
+        self.assertEqual(fact_checker._recency_label(None), "unknown")
+    def test_link_validation_keeps_only_reachable_non_self_sources(self):
+        results = [{
+            "claim": "A claim", "status": "verified", "source": "Fact Checker",
+            "source_url": "https://fact.example/check", "rating": "True",
+            "related_articles": [
+                {"title": "Good", "source": "Outlet", "url": "https://news.google/good", "relevance_score": 0.8},
+                {"title": "Broken", "source": "Broken", "url": "https://news.google/bad", "relevance_score": 0.7},
+                {"title": "Self", "source": "Example", "url": "https://news.google/self", "relevance_score": 0.9},
+                {"title": "Same publisher", "source": "Different label", "url": "https://news.google/copy", "relevance_score": 0.75},
+            ],
+            "rejected_articles": [],
+        }]
+
+        def probe(url, **_kwargs):
+            if url.endswith("/bad"):
+                raise fact_checker.requests.ConnectionError("offline")
+            final = {
+                "https://fact.example/check": "https://fact.example/check",
+                "https://news.google/good": "https://outlet.example/report",
+                "https://news.google/self": "https://news.example.com/reprint",
+                "https://news.google/copy": "https://outlet.example/another-report",
+            }[url]
+            return SafeFetchResult(b"", "text/html", final, 200, {})
+
+        with patch.object(fact_checker, "safe_probe", side_effect=probe):
+            validated = fact_checker._validate_evidence_links(
+                results, source_url="https://example.com/original"
+            )[0]
+        self.assertTrue(validated["source_reachable"])
+        self.assertEqual(validated["source_url"], "https://fact.example/check")
+        self.assertEqual([item["url"] for item in validated["related_articles"]], ["https://outlet.example/report"])
+        reasons = {item["reason"] for item in validated["rejected_articles"]}
+        self.assertEqual(reasons, {"unreachable", "self_corroboration", "duplicate_publisher"})
+        self.assertEqual(validated["validation_summary"], {"shown": 2, "rejected": 3})
+
+    def test_unreachable_direct_fact_check_cannot_create_supported_status(self):
+        result = [{
+            "claim": "A claim", "status": "verified", "source": "Fact Checker",
+            "source_url": "https://fact.example/check", "rating": "True",
+            "related_articles": [], "rejected_articles": [],
+        }]
+        with patch.object(fact_checker, "safe_probe", side_effect=fact_checker.requests.ConnectionError("offline")):
+            validated = fact_checker._validate_evidence_links(result)[0]
+        self.assertEqual(validated["status"], "no_fact_check_found")
+        self.assertIsNone(validated["source_url"])
+        mapped = main._map_v1_claim(main.FactCheckResult(**validated))
+        self.assertEqual(mapped.status, "insufficient_evidence")
+        self.assertEqual(mapped.supporting_sources, [])
 
 if __name__ == "__main__":
     unittest.main()

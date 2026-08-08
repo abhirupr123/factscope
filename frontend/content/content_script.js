@@ -514,11 +514,14 @@
         contextualPresentation = { ...presentation, label: 'No corroborating evidence found' };
       }
       (claim.limitations || []).forEach((item) => sharedLimitations.push(item));
+      const confidenceHTML = claim.status === 'insufficient_evidence' && (claim.confidence || 'low') === 'low'
+        ? ''
+        : `<span class="fs-confidence">${claim.confidence || 'low'} evidence confidence</span>`;
       return `<div class="fs-factcheck-item fs-v1-claim-${statusClass}">
         <span class="fs-claim-icon" style="color:${contextualPresentation.color}">${contextualPresentation.icon}</span>
         <div class="fs-claim-body">
           <span class="fs-claim-text">${claim.claim}</span>
-          <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${contextualPresentation.color}">${contextualPresentation.label}</span><span class="fs-confidence">${claim.confidence || 'low'} confidence</span></div>
+          <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${contextualPresentation.color}">${contextualPresentation.label}</span>${confidenceHTML}</div>
           ${buildV1SourcesHTML(claim.supporting_sources, 'Supporting sources')}
           ${buildV1SourcesHTML(claim.contradicting_sources, 'Contradicting sources')}
           ${buildV1SourcesHTML(claim.related_sources, 'Related coverage — not verified as supporting evidence')}
@@ -563,7 +566,7 @@
     return `<div class="fs-assessment-card">
       <div class="fs-assessment-kicker">Evidence assessment</div>
       <div class="fs-assessment-status" style="color:${presentation.color}"><span>${presentation.icon}</span>${presentation.label}</div>
-      <div class="fs-confidence">${factual.confidence || result.confidence || 'low'} confidence</div>
+      <div class="fs-confidence">Evidence confidence: ${factual.confidence || result.confidence || 'low'}</div>
       <div class="fs-body">${result.overall_evidence_summary || factual.summary || 'No evidence summary is available.'}</div>
     </div>${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(result.limitations, 'About this assessment', true)}`;
   }

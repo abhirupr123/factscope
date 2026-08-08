@@ -1166,6 +1166,30 @@
   text-transform: uppercase;
 }
 
+.factscope-popup .fs-limitations-compact > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.factscope-popup .fs-limitations-compact > summary::before {
+  content: '\25B6';
+  display: inline-block;
+  font-size: 8px;
+  transition: transform 0.2s;
+}
+
+.factscope-popup .fs-limitations-compact[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.factscope-popup .fs-limitations-compact > summary::-webkit-details-marker {
+  display: none;
+}
+
 .factscope-popup .fs-limitations ul {
   margin: 0;
   padding-left: 15px;

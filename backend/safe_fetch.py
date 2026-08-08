@@ -165,3 +165,55 @@ def safe_get(
                 )
 
     raise UnsafeURLError("Unable to fetch URL")
+
+def safe_probe(
+    url: str,
+    *,
+    timeout: float = 5,
+    max_redirects: int = 3,
+    allowed_content_prefixes: tuple[str, ...] | None = None,
+    headers: dict[str, str] | None = None,
+) -> SafeFetchResult:
+    """Probe a bounded public URL without downloading its response body."""
+    current_url = validate_public_url(url)
+    request_headers = {
+        "User-Agent": "FactScope/1.0",
+        "Accept-Encoding": "identity",
+        **(headers or {}),
+    }
+
+    with requests.Session() as session:
+        for redirect_count in range(max_redirects + 1):
+            validate_public_url(current_url)
+            with session.get(
+                current_url,
+                headers=request_headers,
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            ) as response:
+                _validate_connected_peer(response)
+                if response.is_redirect or response.is_permanent_redirect:
+                    if redirect_count >= max_redirects:
+                        raise UnsafeURLError("Too many redirects")
+                    location = response.headers.get("location")
+                    if not location:
+                        raise UnsafeURLError("Redirect response has no location")
+                    current_url = validate_public_url(urljoin(current_url, location))
+                    continue
+
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+                if allowed_content_prefixes and not any(
+                    content_type.startswith(prefix) for prefix in allowed_content_prefixes
+                ):
+                    raise UnsafeURLError("Remote content type is not allowed")
+                return SafeFetchResult(
+                    content=b"",
+                    content_type=content_type,
+                    final_url=current_url,
+                    status_code=response.status_code,
+                    headers={str(k).lower(): str(v) for k, v in response.headers.items()},
+                )
+
+    raise UnsafeURLError("Unable to probe URL")

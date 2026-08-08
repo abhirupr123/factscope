@@ -5,6 +5,7 @@ const vm = require('node:vm');
 
 const contentScriptPath = path.join(__dirname, '..', 'content', 'content_script.js');
 const source = fs.readFileSync(contentScriptPath, 'utf8');
+const overlayCSS = fs.readFileSync(path.join(__dirname, '..', 'content', 'overlay.css'), 'utf8');
 const context = {
   __FACTSCOPE_SECURITY_TEST__: true,
   chrome: {
@@ -68,6 +69,8 @@ assert.match(relatedClaimHTML, /Related coverage — not verified as supporting 
 assert.match(relatedClaimHTML, /https:\/\/a\.example\/report/);
 assert.equal((relatedClaimHTML.match(/Evidence is indirect\./g) || []).length, 1);
 assert.match(relatedClaimHTML, /Why these results\?/);
+assert.doesNotMatch(relatedClaimHTML, /low evidence confidence/i);
+assert.match(overlayCSS, /fs-limitations-compact > summary[\s\S]*?cursor:\s*pointer/);
 
 const imageAssessmentHTML = security.buildV1ImageAssessmentHTML({
   authenticity_score: 35,
@@ -107,6 +110,7 @@ const articleAssessmentHTML = security.buildV1ArticleSummaryHTML({
   limitations: ['Evidence may change.'],
 });
 assert.match(articleAssessmentHTML, /Evidence still developing/);
+assert.match(articleAssessmentHTML, /Evidence confidence: low/);
 assert.match(articleAssessmentHTML, /Content and source assessment/);
 assert.match(articleAssessmentHTML, /Professional article presentation/);
 assert.match(articleAssessmentHTML, /does not verify individual factual claims/);

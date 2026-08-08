@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.13.0",
+    version="0.14.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -457,6 +457,11 @@ class RelatedArticle(BaseModel):
     title: str
     source: Optional[str] = None
     url: Optional[str] = None
+    relevance_score: Optional[float] = None
+    published_at: Optional[str] = None
+    recency: Optional[Literal["current", "recent", "older", "unknown"]] = None
+    reachable: Optional[bool] = None
+    independent: Optional[bool] = None
 
 
 class FactCheckResult(BaseModel):
@@ -467,7 +472,11 @@ class FactCheckResult(BaseModel):
     rating: Optional[str] = None
     source_count: Optional[int] = None
     corroboration: Optional[str] = None
+    average_relevance: Optional[float] = None
+    source_reachable: Optional[bool] = None
     related_articles: Optional[list[RelatedArticle]] = None
+    rejected_articles: Optional[list[dict]] = None
+    validation_summary: Optional[dict] = None
 
 
 class CommunityNote(BaseModel):
@@ -546,6 +555,11 @@ class V1EvidenceSource(BaseModel):
     title: str
     publisher: Optional[str] = None
     url: Optional[str] = None
+    relevance_score: Optional[float] = None
+    published_at: Optional[str] = None
+    recency: Optional[Literal["current", "recent", "older", "unknown"]] = None
+    reachable: Optional[bool] = None
+    independent: Optional[bool] = None
 
 
 class V1ClaimResult(BaseModel):
@@ -615,9 +629,16 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
             title=fact_check.rating or fact_check.claim[:160],
             publisher=fact_check.source,
             url=fact_check.source_url,
+            reachable=fact_check.source_reachable,
+            independent=True,
         ))
     related_sources = [
-        V1EvidenceSource(title=article.title, publisher=article.source, url=article.url)
+        V1EvidenceSource(
+            title=article.title, publisher=article.source, url=article.url,
+            relevance_score=article.relevance_score, published_at=article.published_at,
+            recency=article.recency, reachable=article.reachable,
+            independent=article.independent,
+        )
         for article in (fact_check.related_articles or [])
         if article.url
     ]
@@ -657,6 +678,15 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         else:
             limitations.append("No direct supporting or contradicting evidence was found.")
 
+    if fact_check.rejected_articles:
+        reasons = sorted({
+            str(item.get("reason") or "validation_failed").replace("_", " ")
+            for item in fact_check.rejected_articles if isinstance(item, dict)
+        })
+        limitations.append(
+            f"{len(fact_check.rejected_articles)} candidate source(s) were excluded after validation: "
+            + ", ".join(reasons[:4]) + "."
+        )
     return V1ClaimResult(
         claim=fact_check.claim,
         status=status,
@@ -2342,9 +2372,14 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             + sources_html(claim.get("contradicting_sources"), "Contradicting sources")
             + sources_html(related, "Related coverage — not verified as supporting evidence")
         )
+        claim_confidence = esc(claim.get("confidence", "low"))
+        confidence_html = (
+            "" if claim_status == "insufficient_evidence" and claim_confidence == "low"
+            else f"<span>{claim_confidence.title()} evidence confidence</span>"
+        )
         claim_items.append(
             f'<article class="claim"><div class="claim-text">{esc(claim.get("claim"), 600)}</div>'
-            f'<div class="claim-meta"><strong>{esc(claim_label)}</strong><span>{esc(claim.get("confidence", "low"))} confidence</span></div>'
+            f'<div class="claim-meta"><strong>{esc(claim_label)}</strong>{confidence_html}</div>'
             f'{source_sections}</article>'
         )
     claims_html = (
@@ -2422,7 +2457,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     snapshot_html = (
         '<main class="result"><section class="assessment">'
         '<div class="eyebrow">AI-assisted verification snapshot</div>'
-        f'<div class="status">{esc(status_label)}</div><div class="confidence">{esc(confidence).title()} confidence</div>'
+        f'<div class="status">{esc(status_label)}</div><div class="confidence">Evidence confidence: {esc(confidence).title()}</div>'
         f'<p class="summary">{esc(summary, 1600)}</p>{counts_html}<div class="metadata">{metadata_html}</div>'
         f'</section>{claims_html}{model_html}{limitations_html}{compatibility_html}</main>'
     )

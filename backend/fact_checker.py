@@ -13,13 +13,18 @@ import json
 import re
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from urllib.parse import urlencode, quote_plus
 
 import requests
 import feedparser
 
-from urllib.parse import urlparse
-from config import GOOGLE_FACTCHECK_API_KEY
+from urllib.parse import urlparse, urljoin
+from config import (
+    GOOGLE_FACTCHECK_API_KEY, EVIDENCE_PROBE_TIMEOUT_SECONDS,
+    EVIDENCE_MAX_LINKS, EVIDENCE_MAX_WORKERS,
+)
+from safe_fetch import safe_probe, UnsafeURLError
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +156,18 @@ def _extract_keywords(text: str, max_words: int = 8) -> str:
     return " ".join(words[:max_words])
 
 
-def _parse_summary_articles(summary_html: str) -> list[dict]:
-    """Extract individual article titles and URLs from Google News RSS summary HTML."""
+def _entry_published_at(entry) -> str | None:
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not parsed:
+        return None
+    try:
+        return datetime(*parsed[:6], tzinfo=timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_summary_articles(summary_html: str, published_at: str | None = None) -> list[dict]:
+    """Extract individual article candidates from Google News summary HTML."""
     results = []
     if not summary_html:
         return results
@@ -161,29 +176,25 @@ def _parse_summary_articles(summary_html: str) -> list[dict]:
         url, title, source = match.group(1), match.group(2).strip(), (match.group(3) or "").strip()
         if not title or not url:
             continue
-        # Strip embedded source suffixes like "Title | India News" or "Title - Source"
         for sep in (" | ", " - "):
             if sep in title:
                 title = title.rsplit(sep, 1)[0].strip()
-        results.append({"title": title, "url": url, "source": {"name": source}})
+        resolved_url = urljoin("https://news.google.com/", url)
+        results.append({
+            "title": title, "url": resolved_url, "source": {"name": source},
+            "published_at": published_at,
+        })
     return results
 
 
 def _search_news(query: str) -> list[dict]:
-    """Search Google News RSS for recent articles matching query.
-
-    Returns a list of dicts with 'title', 'source', 'url' keys
-    to match the interface expected by _match_claims_to_articles.
-    Parses individual articles from RSS summary HTML for accurate titles.
-    """
+    """Search Google News RSS for recent article candidates."""
     if not query:
         return []
 
     try:
         url = GOOGLE_NEWS_RSS.format(query=quote_plus(query))
-        resp = requests.get(url, timeout=6, headers={
-            "User-Agent": "FactScope/1.0",
-        })
+        resp = requests.get(url, timeout=6, headers={"User-Agent": "FactScope/1.0"})
         if resp.status_code != 200:
             logger.warning("Google News RSS returned %d", resp.status_code)
             return []
@@ -193,103 +204,166 @@ def _search_news(query: str) -> list[dict]:
         seen_titles = set()
         for entry in feed.entries[:20]:
             summary = entry.get("summary", "")
-            sub_articles = _parse_summary_articles(summary)
+            published_at = _entry_published_at(entry)
+            sub_articles = _parse_summary_articles(summary, published_at=published_at)
             if sub_articles:
-                for sa in sub_articles:
-                    t = sa["title"]
-                    if t not in seen_titles:
-                        seen_titles.add(t)
+                for article in sub_articles:
+                    title = article["title"]
+                    title_key = title.casefold()
+                    if title_key not in seen_titles:
+                        seen_titles.add(title_key)
                         articles.append({
-                            "title": t,
+                            "title": title,
                             "description": "",
-                            "url": sa["url"],
-                            "source": sa["source"],
+                            "url": article["url"],
+                            "source": article["source"],
+                            "published_at": article.get("published_at"),
                         })
             else:
                 title = entry.get("title", "")
-                source_name = entry.get("source", {}).get("title", "") if hasattr(entry.get("source", {}), "get") else ""
+                source_data = entry.get("source", {})
+                source_name = source_data.get("title", "") if hasattr(source_data, "get") else ""
                 if not source_name and " - " in title:
                     source_name = title.rsplit(" - ", 1)[-1].strip()
                     title = title.rsplit(" - ", 1)[0].strip()
-                if title and title not in seen_titles:
-                    seen_titles.add(title)
+                title_key = title.casefold()
+                if title and title_key not in seen_titles:
+                    seen_titles.add(title_key)
                     articles.append({
                         "title": title,
                         "description": summary,
                         "url": entry.get("link", ""),
                         "source": {"name": source_name},
+                        "published_at": published_at,
                     })
 
-        logger.info("Google News RSS: %d articles for query '%s'", len(articles), query[:50])
+        logger.info("Google News RSS returned %d candidate articles", len(articles))
         return articles
-
     except requests.RequestException as exc:
         logger.warning("Google News RSS request failed: %s", exc)
     except Exception as exc:
         logger.warning("Google News RSS parse error: %s", exc)
-
     return []
 
 
+def _publisher_identity(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").casefold())
+
+
+def _title_tokens(value: str) -> set[str]:
+    return set(_extract_keywords(value or "", max_words=20).split())
+
+
+def _recency_label(published_at: str | None) -> str:
+    if not published_at:
+        return "unknown"
+    try:
+        published = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        age_days = max(0, (datetime.now(timezone.utc) - published).days)
+    except (TypeError, ValueError):
+        return "unknown"
+    if age_days <= 7:
+        return "current"
+    if age_days <= 90:
+        return "recent"
+    return "older"
+
+def _titles_are_syndicated(left: str, right: str) -> bool:
+    left_tokens, right_tokens = _title_tokens(left), _title_tokens(right)
+    if not left_tokens or not right_tokens:
+        return False
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens) >= 0.82
+
 def _match_claims_to_articles(claims: list[str], articles: list[dict],
                               source_url: str = "") -> dict[int, dict]:
-    """Match each claim to articles by keyword overlap with relevance scoring.
-
-    For each claim, count how many articles have meaningful keyword overlap
-    with the claim text. Returns {claim_index: {source_count, corroboration, related_articles}}.
-    Filters out articles from the same domain as source_url (self-dedup).
-    """
+    """Match claims to independent candidates and retain validation metadata."""
     source_domain = _extract_domain(source_url)
-
-    filtered = []
-    for a in articles:
-        a_url = a.get("url") or ""
-        source = (a.get("source") or {}).get("name") or ""
+    candidates = []
+    for article in articles:
+        article_url = article.get("url") or ""
+        source = (article.get("source") or {}).get("name") or ""
         if not source:
-            try:
-                source = urlparse(a_url).netloc
-            except Exception:
-                pass
-        if source_domain and _source_matches_domain(source, source_domain):
-            continue
-        combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
-        filtered.append({"title": a.get("title") or "", "combined": combined,
-                         "url": a_url, "source": source})
+            source = _extract_domain(article_url)
+        candidates.append({
+            "title": article.get("title") or "",
+            "combined": ((article.get("title") or "") + " " + (article.get("description") or "")).lower(),
+            "url": article_url,
+            "source": source,
+            "publisher_id": _publisher_identity(source),
+            "published_at": article.get("published_at"),
+            "self_source": bool(source_domain and _source_matches_domain(source, source_domain)),
+        })
 
     results = {}
-    for i, claim in enumerate(claims):
+    for index, claim in enumerate(claims):
         claim_keywords = set(_extract_keywords(claim, max_words=10).split())
         if len(claim_keywords) < 2:
-            results[i] = {"source_count": 0, "corroboration": "not_corroborated", "related_articles": []}
+            results[index] = {
+                "source_count": 0, "corroboration": "not_corroborated",
+                "average_relevance": 0.0, "related_articles": [], "rejected_articles": [],
+            }
             continue
 
-        matching_sources = set()
+        matching_publishers = set()
         matched_articles = []
+        rejection_items = []
         relevance_scores = []
-        for fa in filtered:
-            overlap = sum(1 for kw in claim_keywords if kw in fa["combined"])
-            if overlap >= min(3, len(claim_keywords)):
-                src = fa["source"] or "unknown"
-                if src not in matching_sources:
-                    matching_sources.add(src)
-                    relevance = overlap / len(claim_keywords) if claim_keywords else 0
-                    relevance_scores.append(relevance)
-                    matched_articles.append({
-                        "title": fa["title"],
-                        "source": src,
-                        "url": fa["url"],
+        threshold = min(3, len(claim_keywords))
+        for candidate in candidates:
+            overlap = sum(1 for keyword in claim_keywords if keyword in candidate["combined"])
+            relevance = overlap / len(claim_keywords) if claim_keywords else 0.0
+            if overlap < threshold:
+                if overlap >= 2 and len(rejection_items) < 5:
+                    rejection_items.append({
+                        "title": candidate["title"], "source": candidate["source"],
+                        "url": candidate["url"], "reason": "low_relevance",
+                        "relevance_score": round(relevance, 3),
                     })
+                continue
+            if candidate["self_source"]:
+                rejection_items.append({
+                    "title": candidate["title"], "source": candidate["source"],
+                    "url": candidate["url"], "reason": "self_corroboration",
+                    "relevance_score": round(relevance, 3),
+                })
+                continue
+            publisher_id = candidate["publisher_id"] or "unknown"
+            if publisher_id in matching_publishers:
+                rejection_items.append({
+                    "title": candidate["title"], "source": candidate["source"],
+                    "url": candidate["url"], "reason": "duplicate_publisher",
+                    "relevance_score": round(relevance, 3),
+                })
+                continue
+            if any(_titles_are_syndicated(candidate["title"], item["title"]) for item in matched_articles):
+                rejection_items.append({
+                    "title": candidate["title"], "source": candidate["source"],
+                    "url": candidate["url"], "reason": "syndicated_duplicate",
+                    "relevance_score": round(relevance, 3),
+                })
+                continue
+            matching_publishers.add(publisher_id)
+            relevance_scores.append(relevance)
+            matched_articles.append({
+                "title": candidate["title"], "source": candidate["source"],
+                "url": candidate["url"], "relevance_score": round(relevance, 3),
+                "published_at": candidate["published_at"],
+                "recency": _recency_label(candidate["published_at"]),
+                "independent": True, "reachable": None,
+            })
 
-        source_count = len(matching_sources)
-        avg_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0
-        results[i] = {
+        source_count = len(matched_articles)
+        average_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
+        results[index] = {
             "source_count": source_count,
-            "corroboration": _classify_corroboration(source_count, avg_relevance),
+            "corroboration": _classify_corroboration(source_count, average_relevance),
+            "average_relevance": round(average_relevance, 3),
             "related_articles": matched_articles[:5],
+            "rejected_articles": rejection_items[:8],
         }
-
     return results
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Claim extraction
@@ -379,7 +453,7 @@ def search_factcheck_api(claim: str) -> dict:
             timeout=5,
         )
         if resp.status_code != 200:
-            logger.warning("Fact Check API returned %d for claim: %s", resp.status_code, claim[:60])
+            logger.warning("Fact Check API returned status=%d", resp.status_code)
             return result
 
         data = resp.json()
@@ -420,64 +494,155 @@ def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
         return []
 
     claim = caption.strip()[:200]
-    logger.info("Verifying image claim directly: %s", claim[:60])
+    logger.info("Verifying one image-caption claim")
 
     fc_result = search_factcheck_api(claim)
 
     search_query = _extract_keywords(claim, max_words=10)
     articles = _search_news(search_query)
 
-    source_domain = _extract_domain(source_url)
-    matching_articles = []
-    relevance_scores = []
-    claim_keywords = set(_extract_keywords(claim, max_words=10).split())
-    for a in articles:
-        a_url = a.get("url") or ""
-        source = (a.get("source") or {}).get("name") or ""
-        if source_domain and _source_matches_domain(source, source_domain):
-            continue
-        combined = ((a.get("title") or "") + " " + (a.get("description") or "")).lower()
-        overlap = sum(1 for kw in claim_keywords if kw in combined)
-        if overlap >= min(2, len(claim_keywords)):
-            title = a.get("title") or ""
-            if title:
-                relevance = overlap / len(claim_keywords) if claim_keywords else 0
-                relevance_scores.append(relevance)
-                matching_articles.append({"title": title, "source": source, "url": a_url})
-
-    seen_sources = set()
-    unique_articles = []
-    unique_relevances = []
-    for idx, ma in enumerate(matching_articles):
-        if ma["source"] not in seen_sources:
-            seen_sources.add(ma["source"])
-            unique_articles.append(ma)
-            if idx < len(relevance_scores):
-                unique_relevances.append(relevance_scores[idx])
-
-    source_count = len(unique_articles)
-    avg_relevance = sum(unique_relevances) / len(unique_relevances) if unique_relevances else 0
-    corr = _classify_corroboration(source_count, avg_relevance)
-
+    news_result = _match_claims_to_articles([claim], articles, source_url=source_url).get(0, {})
     result = {
         "claim": claim,
         "status": fc_result.get("status", "no_fact_check_found"),
         "source": fc_result.get("source"),
         "source_url": fc_result.get("source_url"),
         "rating": fc_result.get("rating"),
-        "source_count": source_count,
-        "corroboration": corr,
-        "related_articles": unique_articles[:5],
+        "source_count": news_result.get("source_count", 0),
+        "corroboration": news_result.get("corroboration", "not_corroborated"),
+        "average_relevance": news_result.get("average_relevance", 0.0),
+        "related_articles": news_result.get("related_articles", []),
+        "rejected_articles": news_result.get("rejected_articles", []),
     }
-
-    logger.info("Image claim result: corr=%s sources=%d avg_rel=%.2f fc=%s",
-                corr, source_count, avg_relevance, result["status"])
-    return [result]
-
+    logger.info(
+        "Image claim evidence corr=%s sources=%d fc=%s",
+        result["corroboration"], result["source_count"], result["status"],
+    )
+    return _validate_evidence_links([result], source_url=source_url)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main pipeline (article-length text)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[dict]:
+    """Resolve and validate only evidence links selected by claim matching."""
+    urls = []
+    for result in results:
+        direct_url = result.get("source_url")
+        if direct_url:
+            urls.append(direct_url)
+        for article in result.get("related_articles") or []:
+            if article.get("url"):
+                urls.append(article["url"])
+    unique_urls = list(dict.fromkeys(urls))[:EVIDENCE_MAX_LINKS]
+    probes: dict[str, tuple[bool, str, str | None]] = {}
+
+    def probe(url: str) -> tuple[bool, str, str | None]:
+        try:
+            response = safe_probe(
+                url, timeout=EVIDENCE_PROBE_TIMEOUT_SECONDS, max_redirects=5,
+                allowed_content_prefixes=("text/html", "application/xhtml+xml", "text/plain", "application/pdf"),
+            )
+            return True, response.final_url, None
+        except UnsafeURLError:
+            return False, "", "unsafe_or_invalid_url"
+        except requests.RequestException:
+            return False, "", "unreachable"
+        except Exception:
+            return False, "", "unreachable"
+
+    if unique_urls:
+        with ThreadPoolExecutor(max_workers=min(EVIDENCE_MAX_WORKERS, len(unique_urls))) as pool:
+            future_urls = {pool.submit(probe, url): url for url in unique_urls}
+            for future in as_completed(future_urls):
+                url = future_urls[future]
+                try:
+                    probes[url] = future.result()
+                except Exception:
+                    probes[url] = (False, "", "unreachable")
+
+    scanned_domain = _extract_domain(source_url)
+
+    def is_scanned_domain(candidate_domain: str) -> bool:
+        return bool(scanned_domain and candidate_domain and (
+            candidate_domain == scanned_domain
+            or candidate_domain.endswith("." + scanned_domain)
+            or scanned_domain.endswith("." + candidate_domain)
+        ))
+
+    for result in results:
+        rejections = list(result.get("rejected_articles") or [])
+        direct_url = result.get("source_url")
+        if result.get("status") in {"verified", "disputed", "mixed"}:
+            if not direct_url:
+                rejections.append({
+                    "title": result.get("rating") or result.get("claim", ""),
+                    "source": result.get("source"), "url": "", "reason": "missing_url",
+                })
+                result["status"] = "no_fact_check_found"
+                result["source_reachable"] = False
+            else:
+                reachable, final_url, reason = probes.get(direct_url, (False, "", "unreachable"))
+                final_domain = _extract_domain(final_url)
+                if reachable and is_scanned_domain(final_domain):
+                    reachable, reason = False, "self_corroboration"
+                if reachable:
+                    result["source_url"] = final_url
+                    result["source_reachable"] = True
+                else:
+                    rejections.append({
+                        "title": result.get("rating") or result.get("claim", ""),
+                        "source": result.get("source"), "url": direct_url,
+                        "reason": reason or "unreachable",
+                    })
+                    result["status"] = "no_fact_check_found"
+                    result["source_url"] = None
+                    result["source_reachable"] = False
+
+        accepted = []
+        seen_final_urls = set()
+        seen_final_domains = set()
+        for article in result.get("related_articles") or []:
+            candidate_url = article.get("url") or ""
+            reachable, final_url, reason = probes.get(candidate_url, (False, "", "unreachable"))
+            final_domain = _extract_domain(final_url)
+            if reachable and is_scanned_domain(final_domain):
+                reachable, reason = False, "self_corroboration"
+            normalized_final = _normalize_url(final_url)
+            if reachable and normalized_final in seen_final_urls:
+                reachable, reason = False, "duplicate_url"
+            elif reachable and final_domain and final_domain in seen_final_domains:
+                reachable, reason = False, "duplicate_publisher"
+            if not reachable:
+                rejections.append({
+                    "title": article.get("title", ""), "source": article.get("source"),
+                    "url": candidate_url, "reason": reason or "unreachable",
+                    "relevance_score": article.get("relevance_score"),
+                })
+                continue
+            seen_final_urls.add(normalized_final)
+            if final_domain:
+                seen_final_domains.add(final_domain)
+            accepted.append({**article, "url": final_url, "reachable": True})
+
+        result["related_articles"] = accepted[:5]
+        result["source_count"] = len(accepted)
+        relevance_scores = [
+            float(article.get("relevance_score") or 0) for article in accepted
+        ]
+        average_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
+        result["average_relevance"] = round(average_relevance, 3)
+        result["corroboration"] = _classify_corroboration(len(accepted), average_relevance)
+        result["rejected_articles"] = rejections[:12]
+        result["validation_summary"] = {
+            "shown": len(accepted) + int(bool(result.get("source_url"))),
+            "rejected": len(rejections),
+        }
+        logger.info(
+            "Evidence validation shown=%d rejected=%d average_relevance=%.3f",
+            result["validation_summary"]["shown"], len(rejections), average_relevance,
+        )
+    return results
 
 _EMPTY_RESULT = {
     "status": "no_fact_check_found",
@@ -558,9 +723,9 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
         fc["source_count"] = nr["source_count"]
         fc["corroboration"] = nr["corroboration"]
         fc["related_articles"] = nr.get("related_articles", [])
-        logger.info("Claim %d: corr=%s sources=%d fc=%s | %s",
+        logger.info("Claim evidence result index=%d corr=%s sources=%d fc=%s",
                     i + 1, fc.get("corroboration"), fc.get("source_count", 0),
-                    fc.get("status"), claim[:50])
+                    fc.get("status"))
         results.append(fc)
 
-    return results
+    return _validate_evidence_links(results, source_url=source_url)
