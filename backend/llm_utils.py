@@ -4,7 +4,7 @@ import base64
 import logging
 from config import (
     LLM_PROVIDER, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
-    GEMINI_API_KEY, GEMINI_MODEL,
+    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL,
     OPENAI_API_KEY, OPENAI_MODEL,
     AWS_REGION, AWS_ACCESS_KEY, AWS_SECRET_KEY,
     TEXT_MODEL_ID, MULTIMODAL_MODEL_ID,
@@ -181,38 +181,41 @@ def _call_llm(
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
 def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens, model_override=None, extra_images=None):
-    import requests, time
+    import requests
 
-    model_name = model_override or GEMINI_MODEL
-    is_gemma = "gemma" in model_name.lower()
-
-    if is_gemma and system_prompt:
-        user_content = f"[INSTRUCTIONS]\n{system_prompt}\n\n[CONTENT]\n{user_content}"
-
-    parts = [{"text": user_content}]
-    if media_data and media_type and media_type.startswith("image/"):
-        parts.append({"inline_data": {"mime_type": media_type, "data": base64.b64encode(media_data).decode()}})
-    if extra_images:
-        for emime, edata in extra_images:
-            parts.append({"inline_data": {"mime_type": emime, "data": base64.b64encode(edata).decode()}})
-
-    body = {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {
-            "temperature": DEFAULT_TEMPERATURE,
-            "maxOutputTokens": max_tokens,
-            "thinkingConfig": {"thinkingLevel": "MINIMAL"},
-        },
-    }
-
-    if not is_gemma and system_prompt:
-        body["system_instruction"] = {"parts": [{"text": system_prompt}]}
-        body["generationConfig"].pop("thinkingConfig", None)
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    primary_model = model_override or GEMINI_MODEL
+    fallback_model = GEMINI_FALLBACK_MODEL or primary_model
+    # Main 31B requests fail over to 26B. Callers already using 26B retain one
+    # same-model transient retry because no smaller configured fallback exists.
+    model_attempts = [primary_model, fallback_model]
 
     last_err = None
-    for attempt in range(2):
+    for attempt, model_name in enumerate(model_attempts, start=1):
+        is_gemma = "gemma" in model_name.lower()
+        effective_user_content = user_content
+        if is_gemma and system_prompt:
+            effective_user_content = f"[INSTRUCTIONS]\n{system_prompt}\n\n[CONTENT]\n{user_content}"
+
+        parts = [{"text": effective_user_content}]
+        if media_data and media_type and media_type.startswith("image/"):
+            parts.append({"inline_data": {"mime_type": media_type, "data": base64.b64encode(media_data).decode()}})
+        if extra_images:
+            for emime, edata in extra_images:
+                parts.append({"inline_data": {"mime_type": emime, "data": base64.b64encode(edata).decode()}})
+
+        body = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "temperature": DEFAULT_TEMPERATURE,
+                "maxOutputTokens": max_tokens,
+                "thinkingConfig": {"thinkingLevel": "MINIMAL"},
+            },
+        }
+        if not is_gemma and system_prompt:
+            body["system_instruction"] = {"parts": [{"text": system_prompt}]}
+            body["generationConfig"].pop("thinkingConfig", None)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         try:
             resp = requests.post(url, json=body, timeout=PROVIDER_HTTP_TIMEOUT_SECONDS)
             if resp.status_code != 200:
@@ -231,24 +234,32 @@ def _call_gemini(system_prompt, user_content, media_data, media_type, max_tokens
             if text_parts:
                 return "\n".join(text_parts)
             raise RuntimeError("No text in response parts")
-        except Exception as e:
-            last_err = e
-            status_code = getattr(e, "status_code", None)
-            retryable = status_code in {500, 502, 503, 504}
+        except Exception as exc:
+            last_err = exc
+            status_code = getattr(exc, "status_code", None)
+            availability_failure = status_code in {404, 500, 502, 503, 504} or isinstance(
+                exc, (requests.Timeout, requests.ConnectionError)
+            )
             logger.warning(
-                "Gemini provider failure model=%s status=%s attempt=%d/2 retryable=%s error_type=%s",
+                "Gemini provider failure model=%s status=%s attempt=%d/%d failover_eligible=%s error_type=%s",
                 model_name,
                 status_code if status_code is not None else "transport",
-                attempt + 1,
-                retryable,
-                type(e).__name__,
+                attempt,
+                len(model_attempts),
+                availability_failure,
+                type(exc).__name__,
             )
-            if retryable and attempt < 1:
-                time.sleep(2 * (attempt + 1))
-                continue
-            raise
-    raise last_err
+            if not availability_failure or attempt >= len(model_attempts):
+                raise
+            next_model = model_attempts[attempt]
+            logger.warning(
+                "Gemini model failover from_model=%s to_model=%s status=%s",
+                model_name,
+                next_model,
+                status_code if status_code is not None else "transport",
+            )
 
+    raise last_err
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 

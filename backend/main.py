@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.11.0",
+    version="0.12.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -801,9 +801,21 @@ def _build_factual_evidence_assessment(
 
 
 def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1AnalyzeResponse:
-    claims = [_map_v1_claim(item) for item in (legacy.fact_checks or [])]
-    provider_failed = _provider_failed(legacy)
     classification = legacy.content_classification
+    # Correct older cached classifications created before checkable breaking
+    # news was eligible for an evidence status.
+    if classification and (
+        classification.content_type == "breaking_news"
+        and classification.checkability != "no_checkable_claims"
+        and not classification.factual_verdict_allowed
+    ):
+        classification = classification.model_copy(update={"factual_verdict_allowed": True})
+    # Satire statements are not presented as failed literal fact checks, even
+    # when an older cached analysis contains extracted claims.
+    claims = [] if classification and classification.content_type == "satire" else [
+        _map_v1_claim(item) for item in (legacy.fact_checks or [])
+    ]
+    provider_failed = _provider_failed(legacy)
     classification_complete = bool(classification and (
         classification.content_type == "unsupported_page"
         or classification.checkability == "no_checkable_claims"
@@ -844,10 +856,26 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
         limitations.append("At least one claim lacks enough evidence for a supported or contradicted status.")
 
     if classification:
-        if not classification.factual_verdict_allowed:
+        if classification.content_type == "breaking_news":
+            limitations.append(
+                "Breaking-news evidence may be incomplete or change as reporting develops."
+            )
+        elif classification.content_type == "satire":
+            limitations.append(
+                "Satire is not assessed as literal factual reporting."
+            )
+        elif classification.content_type == "opinion":
+            limitations.append(
+                "Viewpoints are not factual verdicts; specific checkable statements may still be assessed."
+            )
+        elif classification.content_type == "prediction":
+            limitations.append(
+                "Predicted future outcomes cannot yet be verified as true or false."
+            )
+        elif not classification.factual_verdict_allowed:
             label = classification.content_type.replace("_", " ")
             limitations.append(
-                f"The page is classified as {label}; that classification does not mean it is false."
+                f"The page is classified as {label}; no literal factual verdict was assigned."
             )
         if classification.checkability == "no_checkable_claims":
             limitations.append("The extracted content did not provide claims suitable for factual verification.")
@@ -859,6 +887,9 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
         legacy.trust_score, legacy.structural_signals
     )
     legacy_payload = legacy.model_dump()
+    legacy_payload["content_classification"] = (
+        classification.model_dump() if classification else None
+    )
     legacy_payload.pop("source_quality", None)
     analysis_id = legacy.fingerprint or fallback_analysis_id
     return V1AnalyzeResponse(
@@ -1743,7 +1774,7 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
             scans_remaining = _increment_and_get_remaining(subject_id)
             llm_future = _bg_pool.submit(get_structured_analysis, combined)
             fc_future = None
-            if factcheck_available() and request.text:
+            if factcheck_available() and request.text and pre_classification.content_type != "satire":
                 fc_future = _bg_pool.submit(
                     _verify_claims, request.text, request.title or "", request.url or ""
                 )
@@ -1800,7 +1831,20 @@ async def analyze_page(request: AnalyzeRequest, http_request: Request):
         _finish_page_analysis(inflight_key, inflight_ready)
         raise
 
-    if fc_future is not None:
+    pre_claim_classification = classify_page_content(
+        title=request.title,
+        text=request.text,
+        url=request.url,
+        metadata=meta_dict,
+        llm_result=llm_result,
+    )
+    suppress_literal_claims = pre_claim_classification.get("content_type") == "satire"
+    if suppress_literal_claims:
+        if fc_future is not None:
+            fc_future.cancel()
+        claims_completed = True
+        fact_checks = []
+    elif fc_future is not None:
         if fc_future.done():
             try:
                 fact_checks = fc_future.result()

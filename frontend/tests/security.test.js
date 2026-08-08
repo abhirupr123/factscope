@@ -54,4 +54,44 @@ assert.match(v1ClaimHTML, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
 assert.match(v1ClaimHTML, /&lt;b&gt;unsafe&lt;\/b&gt;/);
 assert.doesNotMatch(v1ClaimHTML, /javascript:/);
 
+const imageAssessmentHTML = security.buildV1ImageAssessmentHTML({
+  authenticity_score: 35,
+  legacy_score: 35,
+  assessment: {
+    manipulation: {
+      status: 'likely_manipulated', confidence: 'medium', summary: 'A composite was detected.',
+      indicators: ['Portrait composited onto background'], limitations: ['Low resolution'],
+    },
+    caption_consistency: {
+      status: 'insufficient_evidence', confidence: 'low', summary: 'Not enough reporting.',
+      claims: [], limitations: [],
+    },
+    provenance: {
+      status: 'no_visible_source_indicator', confidence: 'low', summary: 'No credit visible.',
+      indicators: [], limitations: ['Credits do not prove origin'],
+    },
+  },
+  limitations: ['Low resolution', 'Credits do not prove origin', 'Technical result was partial'],
+});
+assert.match(imageAssessmentHTML, /Edited or composited image detected/);
+assert.match(imageAssessmentHTML, /does not establish deceptive use/);
+assert.equal((imageAssessmentHTML.match(/Low resolution/g) || []).length, 1);
+assert.equal((imageAssessmentHTML.match(/Credits do not prove origin/g) || []).length, 1);
+assert.match(imageAssessmentHTML, /Technical result was partial/);
+
+const articleAssessmentHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: { status: 'insufficient_evidence', confidence: 'low', summary: 'Evidence is incomplete.' },
+  overall_evidence_summary: 'Evidence is incomplete.',
+  content_classification: {
+    content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable',
+    rationale: 'Reporting is recent.',
+  },
+  source_quality: { level: 'high', score: 82, summary: 'Strong page signals.', signals: [], limitations: [] },
+  limitations: ['Evidence may change.'],
+});
+assert.match(articleAssessmentHTML, /Classification confidence: Medium/);
+assert.match(articleAssessmentHTML, /Checkability: Checkable/);
+assert.doesNotMatch(articleAssessmentHTML, /checkable checkability/);
+assert.match(source, /identified as satire, so its statements were not evaluated as literal factual claims/);
+
 console.log('frontend security tests passed');

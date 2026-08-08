@@ -349,14 +349,14 @@ class ChunkTwoProtectionTests(unittest.TestCase):
         self.assertIn(b'"request_id":"request-123"', response.body)
 
 
-    def test_gemini_retries_transient_503_and_returns_success(self):
+    def test_gemini_fails_over_from_31b_to_26b_on_transient_503(self):
         unavailable = Mock(status_code=503)
         success = Mock(status_code=200)
         success.json.return_value = {
             "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
         }
 
-        with patch("requests.post", side_effect=[unavailable, success]) as post, patch("time.sleep"):
+        with patch("requests.post", side_effect=[unavailable, success]) as post:
             result = llm_utils._call_gemini(
                 "system", "content", None, None, 100,
                 model_override="gemma-4-31b-it",
@@ -364,7 +364,20 @@ class ChunkTwoProtectionTests(unittest.TestCase):
 
         self.assertEqual(result, "ok")
         self.assertEqual(post.call_count, 2)
+        self.assertIn("/gemma-4-31b-it:generateContent", post.call_args_list[0].args[0])
+        self.assertIn("/gemma-4-26b-a4b-it:generateContent", post.call_args_list[1].args[0])
 
+    def test_gemini_does_not_fail_over_for_quota_or_auth_errors(self):
+        for status in (400, 401, 403, 429):
+            with self.subTest(status=status):
+                failure = Mock(status_code=status)
+                with patch("requests.post", return_value=failure) as post:
+                    with self.assertRaises(llm_utils.ProviderHTTPError):
+                        llm_utils._call_gemini(
+                            "system", "content", None, None, 100,
+                            model_override="gemma-4-31b-it",
+                        )
+                self.assertEqual(post.call_count, 1)
 
 class ChunkThreePrivacyTests(unittest.TestCase):
     def test_telemetry_accepts_only_allowlisted_event_names(self):
@@ -1185,7 +1198,7 @@ class ChunkFourContentClassificationTests(unittest.TestCase):
                 result = content_classifier.classify_page_content(**payload)
                 self.assertEqual(result["content_type"], expected)
                 self.assertEqual(result["confidence"], "high")
-                self.assertFalse(result["factual_verdict_allowed"])
+                self.assertEqual(result["factual_verdict_allowed"], expected == "breaking_news")
 
         opinion_poll = content_classifier.classify_page_content(
             title="Public opinion shifts after the debate",
@@ -1195,6 +1208,47 @@ class ChunkFourContentClassificationTests(unittest.TestCase):
         )
         self.assertEqual(opinion_poll["content_type"], "factual_report")
 
+    def test_checkable_breaking_news_receives_insufficient_evidence_status(self):
+        classification = main.ContentClassification(
+            content_type="breaking_news", checkability="checkable",
+            confidence="medium", rationale="Recent government action",
+            factual_verdict_allowed=False,
+        )
+        legacy = main.AnalyzeResponse(
+            trust_score=82, verdict="unknown", explanation="Recent report.", evidence=[],
+            fact_checks=[main.FactCheckResult(
+                claim="The government announced the proposal.",
+                status="no_fact_check_found", corroboration="lightly_reported",
+                source_count=1,
+            )],
+            fingerprint="7" * 64,
+            content_classification=classification,
+        )
+        result = main._to_v1_analysis(legacy, "fallback")
+        self.assertTrue(result.content_classification.factual_verdict_allowed)
+        self.assertEqual(result.factual_evidence.status, "insufficient_evidence")
+        self.assertEqual(result.factual_evidence.confidence, "low")
+        self.assertTrue(any("reporting develops" in item for item in result.limitations))
+
+    def test_satire_claims_are_not_presented_as_failed_literal_fact_checks(self):
+        classification = main.ContentClassification(
+            content_type="satire", checkability="checkable",
+            confidence="medium", rationale="Uses absurdity and irony",
+            factual_verdict_allowed=False,
+        )
+        legacy = main.AnalyzeResponse(
+            trust_score=70, verdict="unknown", explanation="Satirical article.", evidence=[],
+            fact_checks=[main.FactCheckResult(
+                claim="An intentionally absurd statement.", status="no_fact_check_found",
+            )],
+            fingerprint="8" * 64,
+            content_classification=classification,
+        )
+        result = main._to_v1_analysis(legacy, "fallback")
+        self.assertEqual(result.factual_evidence.status, "not_applicable")
+        self.assertEqual(result.claims, [])
+        self.assertFalse(any("At least one claim" in item for item in result.limitations))
+        self.assertTrue(any("not assessed as literal" in item for item in result.limitations))
     def test_ambiguous_model_classification_is_capped_at_medium_confidence(self):
         result = content_classifier.classify_page_content(
             title="A personal view of the policy",
@@ -1293,6 +1347,43 @@ class ChunkFourContentClassificationTests(unittest.TestCase):
         conn.execute("DELETE FROM scans WHERE fingerprint = ?", (fingerprint,))
         conn.commit()
 
+    def test_explicit_satire_skips_claim_corroboration(self):
+        payload = main.AnalyzeRequest(
+            title="Satire: Parliament moves to the moon",
+            text=("An intentionally absurd satirical story. " * 30),
+            url="https://example.com/satire/moon",
+            metadata=main.PageMetadata(og_type="article", site_name="Example"),
+        )
+        auth = Mock(subject_id="satire-subject")
+        llm_result = {
+            "trust_score": 72, "verdict": "authentic",
+            "explanation": "The page is explicitly satirical.", "evidence": [],
+            "content_type": "satire", "checkability": "no_checkable_claims",
+            "classification_reason": "The page uses absurdity and labels itself satire.",
+        }
+        with patch.object(main, "_require_session", return_value=auth), \
+             patch.object(main, "_record_scan_access_async"), \
+             patch.object(main, "find_cached_scan", return_value=None), \
+             patch.object(main, "find_cached_scan_by_url", return_value=None), \
+             patch.object(main, "_enforce_analysis_burst"), \
+             patch.object(main, "_check_rate_limit", return_value=None), \
+             patch.object(main, "_reserve_llm_call"), \
+             patch.object(main, "_increment_and_get_remaining", return_value=9), \
+             patch.object(main, "get_structured_analysis", return_value=llm_result), \
+             patch.object(main, "factcheck_available", return_value=True), \
+             patch.object(main, "_verify_claims") as verify_claims, \
+             patch.object(main, "compute_structural_score", return_value=(80, [])), \
+             patch.object(main, "store_analysis_result"), \
+             patch.object(main, "update_domain_stats"), \
+             patch.object(main, "get_flag_count", return_value=0), \
+             patch.object(main, "count_scans_for_fingerprint", return_value=1), \
+             patch.object(main, "get_community_notes", return_value=[]), \
+             patch.object(main, "get_vote_stats", return_value={"likes": 0, "dislikes": 0}):
+            result = asyncio.run(main.analyze_page.__wrapped__(payload, self._request()))
+        verify_claims.assert_not_called()
+        self.assertEqual(result.fact_checks, [])
+        self.assertEqual(result.content_classification.content_type, "satire")
+        self.assertEqual(result.content_classification.checkability, "no_checkable_claims")
     def test_opinion_endpoint_result_cannot_present_confident_factual_verdict(self):
         payload = main.AnalyzeRequest(
             title="Opinion: Why the city should change course",
@@ -1349,7 +1440,7 @@ class ChunkFourContentClassificationTests(unittest.TestCase):
         result = main._to_v1_analysis(legacy, "fallback")
         self.assertEqual(result.processing_state, "complete")
         self.assertEqual(result.confidence, "low")
-        self.assertTrue(any("does not mean it is false" in item for item in result.limitations))
+        self.assertTrue(any("Viewpoints are not factual verdicts" in item for item in result.limitations))
 
 if __name__ == "__main__":
     unittest.main()

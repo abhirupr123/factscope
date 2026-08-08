@@ -446,8 +446,8 @@
     processing: { label: 'Evidence processing', icon: '\u2026', color: '#4f46e5' },
     not_applicable: { label: 'Not applicable', icon: '\u2139', color: '#64748b' },
     no_indicators_detected: { label: 'No clear manipulation indicators', icon: '\u2714', color: '#059669' },
-    possible_manipulation: { label: 'Possible manipulation', icon: '\u26A0', color: '#d97706' },
-    likely_manipulated: { label: 'Likely manipulated', icon: '\u2716', color: '#dc2626' },
+    possible_manipulation: { label: 'Possible editing or compositing', icon: '\u26A0', color: '#d97706' },
+    likely_manipulated: { label: 'Edited or composited image detected', icon: '\u26A0', color: '#d97706' },
     likely_ai_generated: { label: 'Likely AI-generated', icon: '\u2716', color: '#dc2626' },
     uncertain: { label: 'Uncertain', icon: '?', color: '#64748b' },
     consistent: { label: 'Caption appears consistent', icon: '\u2714', color: '#059669' },
@@ -460,6 +460,11 @@
 
   function v1StatusPresentation(status) {
     return V1_STATUS_PRESENTATION[status] || V1_STATUS_PRESENTATION.unknown;
+  }
+
+  function formatV1Label(value) {
+    const label = String(value || 'unknown').replace(/_/g, ' ');
+    return label.charAt(0).toUpperCase() + label.slice(1);
   }
 
   function buildLimitationsHTML(limitations) {
@@ -511,10 +516,10 @@
     const quality = result.source_quality || {};
     const classification = result.content_classification || {};
     const classificationLabel = classification.content_type
-      ? classification.content_type.replace(/_/g, ' ')
+      ? formatV1Label(classification.content_type)
       : '';
     const classificationDetails = classificationLabel
-      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content type: ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">${classification.confidence || 'low'} confidence · ${classification.checkability || 'unknown'} checkability</div></details>`
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content type: ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">Classification confidence: ${formatV1Label(classification.confidence)} &middot; Checkability: ${formatV1Label(classification.checkability)}</div></details>`
       : '';
     const qualitySignals = (quality.signals || []).map((signal) => `<li>${signal.detail}</li>`).join('');
     const qualityDetails = quality.summary || qualitySignals || (quality.limitations || []).length
@@ -537,6 +542,17 @@
     const manipulationView = v1StatusPresentation(manipulation.status);
     const captionView = v1StatusPresentation(caption.status);
     const provenanceView = v1StatusPresentation(provenance.status);
+    const sectionLimitations = [
+      ...(manipulation.limitations || []),
+      ...(caption.limitations || []),
+      ...(provenance.limitations || []),
+    ];
+    const remainingLimitations = (result.limitations || []).filter(
+      (item) => !sectionLimitations.includes(item),
+    );
+    const editingCaveat = ['possible_manipulation', 'likely_manipulated'].includes(manipulation.status)
+      ? '<div class="fs-caveat">Editing or compositing alone does not establish deceptive use.</div>'
+      : '';
     const indicatorList = (items) => Array.isArray(items) && items.length
       ? `<ul class="fs-details-list">${items.map((item) => `<li>${item}</li>`).join('')}</ul>` : '';
     return `<div class="fs-assessment-card">
@@ -544,14 +560,14 @@
       <div class="fs-assessment-status" style="color:${manipulationView.color}"><span>${manipulationView.icon}</span>${manipulationView.label}</div>
       <div class="fs-confidence">${manipulation.confidence || 'low'} confidence</div>
       <div class="fs-body">${manipulation.summary || 'No visual assessment is available.'}</div>
-      ${indicatorList(manipulation.indicators)}${buildLimitationsHTML(manipulation.limitations)}
+      ${indicatorList(manipulation.indicators)}${editingCaveat}${buildLimitationsHTML(manipulation.limitations)}
     </div>
     <div class="fs-assessment-grid">
       <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Caption consistency</div><div class="fs-mini-status" style="color:${captionView.color}">${captionView.icon} ${captionView.label}</div><div class="fs-body">${caption.summary || ''}</div>${buildLimitationsHTML(caption.limitations)}</div>
       <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Visible provenance</div><div class="fs-mini-status" style="color:${provenanceView.color}">${provenanceView.icon} ${provenanceView.label}</div><div class="fs-body">${provenance.summary || ''}</div>${indicatorList(provenance.indicators)}${buildLimitationsHTML(provenance.limitations)}<div class="fs-caveat">Visible credits are clues, not proof of origin.</div></div>
     </div>
     <details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Legacy authenticity score: ${Number.isFinite(result.legacy_score) ? result.legacy_score : result.authenticity_score || 0}/100</summary><div class="fs-body">Kept temporarily for compatibility; use the separated assessments above when interpreting this result.</div></details>
-    ${buildLimitationsHTML(result.limitations)}`;
+    ${buildLimitationsHTML(remainingLimitations)}`;
   }
 
   if (globalThis.__FACTSCOPE_SECURITY_TEST__) {
@@ -620,10 +636,11 @@
     let notesHTML;
     if (notes.length > 0) {
       notesHTML = notes.map(buildNoteCardHTML).join('');
+    } else if (flagCount > 0) {
+      notesHTML = `<p class="fs-no-notes">${flagCount} user report${flagCount !== 1 ? 's were' : ' was'} received; none has been approved as a community insight.</p>`;
     } else {
-      notesHTML = '<p class="fs-no-notes">No crowd insights yet — be the first to weigh in</p>';
+      notesHTML = '<p class="fs-no-notes">No crowd insights yet &mdash; be the first to weigh in</p>';
     }
-
     const countBadge = flagCount >= 3 ? ` <span class="fs-flag-count-badge">${flagCount}</span>` : '';
 
     return `<div class="fs-community-section">
@@ -945,14 +962,15 @@
       : '';
 
     let claimsSlotHTML;
-    if (result.claims_pending && result.fingerprint) {
+    if (isV1 && result.content_classification?.content_type === 'satire') {
+      claimsSlotHTML = '<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">Claim evidence</div><div class="fs-body">This page was identified as satire, so its statements were not evaluated as literal factual claims.</div></div></div>';
+    } else if (result.claims_pending && result.fingerprint) {
       claimsSlotHTML = `<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">${isV1 ? 'Claim evidence' : 'Claim analysis'}</div><div class="fs-loader"><div class="fs-loader-bar"></div></div><div class="fs-body fs-scanning-text">Checking claims&hellip;</div></div></div>`;
     } else if (isV1) {
-      claimsSlotHTML = `<div id="fs-claims-slot">${buildV1ClaimsHTML(result.claims, result.limitations)}</div>`;
+      claimsSlotHTML = `<div id="fs-claims-slot">${buildV1ClaimsHTML(result.claims)}</div>`;
     } else {
       claimsSlotHTML = `<div id="fs-claims-slot">${buildFactChecksHTML(result.fact_checks)}</div>`;
     }
-
     const notableSignals = (result.structural_signals || [])
       .map((s) => {
         const sIcon = s.delta > 0 ? '\u2714' : '\u26A0';
@@ -983,8 +1001,8 @@
       </div>
       ${primaryAssessmentHTML}
       ${sourceHTML}
-      ${buildDomainProfileHTML(result.domain_profile)}
-      ${scansHTML}
+      ${isV1 ? '' : buildDomainProfileHTML(result.domain_profile)}
+      ${isV1 ? '' : scansHTML}
       ${buildVoteHTML(result.vote_stats, result.fingerprint)}
       ${buildKBMatchHTML(result.kb_matches)}
       ${buildCommunitySection(result)}

@@ -10,7 +10,7 @@ const popup = fs.readFileSync(path.join(frontend, 'popup', 'popup.js'), 'utf8');
 const popupHtml = fs.readFileSync(path.join(frontend, 'popup', 'popup.html'), 'utf8');
 const policy = fs.readFileSync(path.join(frontend, 'site', 'privacy.html'), 'utf8');
 
-assert.equal(manifest.version, '1.3.0');
+assert.equal(manifest.version, '1.3.1');
 assert.equal(manifest.content_scripts, undefined, 'content scripts must not run on every page');
 assert.deepEqual(manifest.host_permissions, [
   'https://factscope-api.onrender.com/*',

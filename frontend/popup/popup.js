@@ -15,8 +15,8 @@ const V1_RESULT_LABELS = {
   processing: 'Evidence processing',
   not_applicable: 'No factual verdict',
   no_indicators_detected: 'No clear manipulation indicators',
-  possible_manipulation: 'Possible manipulation',
-  likely_manipulated: 'Likely manipulated',
+  possible_manipulation: 'Possible editing or compositing',
+  likely_manipulated: 'Edited or composited image detected',
   likely_ai_generated: 'Likely AI-generated',
   uncertain: 'Uncertain',
 };

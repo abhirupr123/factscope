@@ -128,7 +128,7 @@ def classify_page_content(
         checkability = "unknown"
 
     factual_verdict_allowed = (
-        content_type in {"factual_report", "other"}
+        content_type in {"factual_report", "breaking_news", "other"}
         and checkability != "no_checkable_claims"
     )
     return {
