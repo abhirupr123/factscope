@@ -6,7 +6,7 @@ from threading import Lock
 from fastapi import FastAPI, Path as ApiPath, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from typing import Annotated, Optional, Literal
 from elastic_utils import store_analysis_result, find_by_fingerprint, get_domain_profile
@@ -15,7 +15,7 @@ from db import (store_image_scan, find_image_scan, find_image_scan_by_fingerprin
                 update_scan_claims, get_scan_claims, url_hash,
                 get_community_notes, store_vote, get_vote_stats,
                 VALID_FLAG_CATEGORIES,
-                store_shared_result, get_shared_result,
+                store_shared_result, get_shared_result, update_shared_card, get_shared_card,
                 get_user_tier, get_daily_scan_count,
                 increment_daily_scan, redeem_license_key,
                 reserve_service_usage, store_telemetry_event,
@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.12.0",
+    version="0.13.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -554,6 +554,7 @@ class V1ClaimResult(BaseModel):
     confidence: Literal["low", "medium", "high"]
     supporting_sources: list[V1EvidenceSource] = Field(default_factory=list)
     contradicting_sources: list[V1EvidenceSource] = Field(default_factory=list)
+    related_sources: list[V1EvidenceSource] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
 
@@ -662,6 +663,7 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         confidence=confidence,
         supporting_sources=_deduplicate_v1_sources(supporting),
         contradicting_sources=_deduplicate_v1_sources(contradicting),
+        related_sources=_deduplicate_v1_sources(related_sources),
         limitations=limitations,
     )
 
@@ -2084,7 +2086,7 @@ class ShareRequest(BaseModel):
 
 @app.post("/share")
 async def create_share(request: ShareRequest, http_request: Request):
-    """Create a share only from a result already stored by FactScope."""
+    """Create a public snapshot only from an analysis stored by FactScope."""
     auth_context = _require_session(http_request)
     fingerprint = request.fingerprint
     if fingerprint.startswith("img:"):
@@ -2092,16 +2094,41 @@ async def create_share(request: ShareRequest, http_request: Request):
         if not stored:
             raise HTTPException(status_code=404, detail="Stored analysis not found")
         scanned_url = stored.get("page_url", "") or stored.get("image_url", "")
+        raw_claims = stored.get("claim_analysis")
+        if isinstance(raw_claims, str):
+            try:
+                raw_claims = json.loads(raw_claims)
+            except (json.JSONDecodeError, TypeError):
+                raw_claims = None
+        claims = [FactCheckResult(**item) for item in raw_claims] if raw_claims else None
+        raw_assessment = stored.get("image_assessment")
+        assessment = V1ImageAssessment(**raw_assessment) if raw_assessment else None
+        legacy = ImageVerifyResponse(
+            authenticity_score=stored.get("authenticity_score", 50),
+            verdict=stored.get("verdict", "uncertain"),
+            explanation=stored.get("explanation", ""),
+            evidence=stored.get("evidence", []),
+            claim_analysis=claims,
+            fingerprint=fingerprint,
+            analysis_version=stored.get("analysis_version"),
+            image_assessment=assessment,
+        )
+        snapshot = _to_v1_image_analysis(
+            legacy, fingerprint, caption_present=bool(claims)
+        ).model_dump()
         data = {
             "result_type": "image",
-            "score": stored.get("authenticity_score", 50),
-            "verdict": stored.get("verdict", "uncertain"),
-            "explanation": stored.get("explanation", ""),
-            "evidence": stored.get("evidence", []),
+            "score": legacy.authenticity_score,
+            "verdict": legacy.verdict,
+            "explanation": legacy.explanation,
+            "evidence": legacy.evidence,
             "scanned_url": scanned_url,
             "scanned_title": stored.get("scanned_title", ""),
             "og_image": stored.get("og_image", "") or stored.get("image_url", ""),
             "fingerprint": fingerprint,
+            "analysis_version": stored.get("analysis_version", ""),
+            "scan_timestamp": stored.get("timestamp", ""),
+            "snapshot": snapshot,
         }
     else:
         stored = find_by_fingerprint(fingerprint)
@@ -2113,34 +2140,113 @@ async def create_share(request: ShareRequest, http_request: Request):
             domain = urlsplit(scanned_url).hostname or ""
         except ValueError:
             domain = ""
+        raw_claims = stored.get("judgement")
+        if isinstance(raw_claims, str):
+            try:
+                raw_claims = json.loads(raw_claims)
+            except (json.JSONDecodeError, TypeError):
+                raw_claims = None
+        claims = [FactCheckResult(**item) for item in raw_claims] if raw_claims is not None else None
+        source_info = SourceInfo(**stored["source_info"]) if stored.get("source_info") else None
+        classification = (
+            ContentClassification(**stored["content_classification"])
+            if stored.get("content_classification") else None
+        )
+        source_quality = (
+            V1SourceQualityAssessment(**stored["source_quality"])
+            if stored.get("source_quality") else None
+        )
+        legacy = AnalyzeResponse(
+            trust_score=stored.get("trust_score", 50),
+            verdict=stored.get("verdict", "uncertain"),
+            explanation=stored.get("explanation", ""),
+            evidence=stored.get("evidence", []),
+            source_info=source_info,
+            fact_checks=claims,
+            fingerprint=fingerprint,
+            claims_pending=raw_claims is None,
+            analysis_version=stored.get("analysis_version"),
+            content_classification=classification,
+            source_quality=source_quality,
+        )
+        snapshot = _to_v1_analysis(legacy, fingerprint).model_dump()
         data = {
             "result_type": "page",
-            "score": stored.get("trust_score", 50),
-            "verdict": stored.get("verdict", "uncertain"),
-            "explanation": stored.get("explanation", ""),
-            "evidence": stored.get("evidence", []),
+            "score": legacy.trust_score,
+            "verdict": legacy.verdict,
+            "explanation": legacy.explanation,
+            "evidence": legacy.evidence,
             "domain": domain,
             "source_info": stored.get("source_info"),
             "scanned_url": scanned_url,
             "scanned_title": stored.get("scanned_title", ""),
             "og_image": stored.get("og_image", ""),
             "fingerprint": fingerprint,
+            "analysis_version": stored.get("analysis_version", ""),
+            "scan_timestamp": stored.get("timestamp", ""),
+            "snapshot": snapshot,
         }
     data["owner_subject_id"] = auth_context.subject_id
     share_id = store_shared_result(data)
     base = "http://localhost:8000" if ENVIRONMENT == "development" else "https://factscope-api.onrender.com"
     return {"share_url": f"{base}/s/{share_id}", "share_id": share_id}
 
-
 _SHARE_TEMPLATE = (Path(__file__).parent / "templates" / "share.html").read_text(encoding="utf-8")
+
+
+def _share_status_view(snapshot: dict, result_type: str, fallback_verdict: str) -> tuple[str, str, str]:
+    """Return a cautious public label, confidence, and summary."""
+    if result_type == "image":
+        manipulation = ((snapshot.get("assessment") or {}).get("manipulation") or {})
+        labels = {
+            "no_indicators_detected": "No visible manipulation indicators",
+            "possible_manipulation": "Possible editing indicators",
+            "likely_manipulated": "Edited or composited image detected",
+            "likely_ai_generated": "Likely AI-generated",
+            "uncertain": "Visual assessment uncertain",
+        }
+        status = manipulation.get("status", "uncertain")
+        return (
+            labels.get(status, "Visual assessment uncertain"),
+            manipulation.get("confidence", "low"),
+            manipulation.get("summary") or "No visual assessment summary is available.",
+        )
+
+    factual = snapshot.get("factual_evidence") or {}
+    classification = snapshot.get("content_classification") or {}
+    status = factual.get("status", "insufficient_evidence")
+    if status == "not_applicable":
+        labels = {
+            "satire": "Satire identified",
+            "opinion": "Opinion and context assessment",
+            "prediction": "Forward-looking claim",
+            "unsupported_page": "Unable to assess this page",
+        }
+        label = labels.get(classification.get("content_type"), "Context-only assessment")
+    elif status == "insufficient_evidence" and classification.get("content_type") == "breaking_news":
+        label = "Evidence still developing"
+    else:
+        label = {
+            "supported": "Supported by direct evidence",
+            "contradicted": "Contradicted by direct evidence",
+            "mixed": "Mixed evidence",
+            "insufficient_evidence": "No direct conclusion",
+            "processing": "Evidence check in progress",
+        }.get(status, "Evidence assessment")
+    return label, factual.get("confidence", snapshot.get("confidence", "low")), (
+        snapshot.get("overall_evidence_summary") or factual.get("summary")
+        or "No evidence summary is available."
+    )
 
 
 def _render_share_page(data: dict, share_url: str = "") -> str:
     import html as _html
-    import math
     from urllib.parse import quote
 
-    def _safe_http_url(value: object) -> str:
+    def esc(value: object, limit: int = 2000) -> str:
+        return _html.escape(str(value or "")[:limit], quote=True)
+
+    def safe_http_url(value: object) -> str:
         from urllib.parse import urlsplit
         raw = str(value or "")
         try:
@@ -2153,139 +2259,247 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             return ""
         return raw
 
-    try:
-        score = max(0, min(100, int(data.get("score", 50))))
-    except (TypeError, ValueError):
-        score = 50
-    verdict = str(data.get("verdict", "uncertain"))[:50]
+    def sources_html(sources: object, heading: str) -> str:
+        if not isinstance(sources, list) or not sources:
+            return ""
+        items = []
+        for source in sources[:4]:
+            if not isinstance(source, dict):
+                continue
+            title = esc(source.get("title") or source.get("publisher") or "Evidence source", 240)
+            publisher = esc(source.get("publisher"), 120)
+            url = safe_http_url(source.get("url"))
+            link = f'<a href="{esc(url)}" target="_blank" rel="noopener">{title}</a>' if url else title
+            publisher_html = f'<span>{publisher}</span>' if publisher else ""
+            items.append(f"<li>{link}{publisher_html}</li>")
+        if not items:
+            return ""
+        return f'<div class="source-group"><div class="source-heading">{esc(heading)}</div><ul>{"".join(items)}</ul></div>'
+
     result_type = "image" if data.get("result_type") == "image" else "page"
-
-    is_image = result_type == "image"
-    score_label = "authenticity score" if is_image else "trust score"
-    type_label = "Image Verification" if is_image else "Content Analysis"
-
-    verdict_map = {
-        "authentic": ("Authentic", "\u2705"),
-        "likely_authentic": ("Likely Authentic", "\u2705"),
-        "uncertain": ("Uncertain", "\u2753"),
-        "suspicious": ("Suspicious", "\u26A0\uFE0F"),
-        "ai_generated": ("AI Generated", "\U0001F916"),
-        "likely_ai_generated": ("Likely AI-Generated", "\U0001F916"),
-        "possibly_manipulated": ("Possibly Manipulated", "\u26A0\uFE0F"),
-        "manipulated": ("Manipulated", "\u26A0\uFE0F"),
-        "phishing": ("Phishing Alert", "\U0001F6A8"),
-    }
-    verdict_label, verdict_icon = verdict_map.get(verdict, (_html.escape(verdict.replace("_", " ").title()), "\u2753"))
-    color = "#22c55e" if score >= 70 else "#f59e0b" if score >= 40 else "#ef4444"
-
-    # Full-circle gauge geometry (SVG circle r=78, circumference = 2*pi*78)
-    circumference = 2 * math.pi * 78  # ~490.1
-    dash_offset = circumference * (1 - score / 100)
-
-    domain = _html.escape(str(data.get("domain", "") or "")[:253], quote=True)
-    scanned_url = _safe_http_url(data.get("scanned_url", ""))
-    scanned_title = _html.escape(data.get("scanned_title", "") or "")
-    og_image = _safe_http_url(data.get("og_image", ""))
-
-    # OG image: use article's own image for rich social previews
-    if og_image:
-        og_image_meta = (
-            f'<meta property="og:image" content="{_html.escape(og_image, quote=True)}">'
-            f'\n<meta name="twitter:image" content="{_html.escape(og_image, quote=True)}">'
-        )
-    else:
-        og_image_meta = ""
-
-    # Build the left-column preview HTML
-    preview_label = "Image scanned on" if is_image else "Page scanned"
-    favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else ""
-
-    if og_image:
-        image_block = f'<img class="preview-image" src="{_html.escape(og_image, quote=True)}" alt="Article preview" onerror="this.style.display=\'none\';document.querySelector(\'.main\').classList.add(\'no-preview-image\')">'
-    else:
-        image_block = ""
-
-    source_line = ""
-    if domain:
-        fav = f'<img class="preview-favicon" src="{favicon_url}" alt="" onerror="this.style.display=\'none\'">' if favicon_url else ""
-        source_line = f'<div class="preview-source">{fav}<span class="preview-domain">{domain}</span></div>'
-
-    url_line = ""
-    if scanned_url:
-        url_line = f'<a class="preview-url" href="{_html.escape(scanned_url)}" target="_blank" rel="noopener">{_html.escape(scanned_url[:100])}</a>'
-
-    title_block = f'<div class="preview-title">{scanned_title}</div>' if scanned_title else ""
-
-    if scanned_title or scanned_url or og_image:
-        preview_html = (
-            f'<div class="preview">'
-            f'{image_block}'
-            f'<div class="preview-body">'
-            f'<div class="preview-label">{preview_label}</div>'
-            f'{title_block}{source_line}{url_line}'
-            f'</div></div>'
-        )
-    else:
-        preview_html = (
-            '<div class="preview"><div class="preview-placeholder">'
-            '<div class="placeholder-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M9 12h6M12 9v6M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>'
-            '<div style="color:var(--text-muted);font-size:13px">Content preview unavailable</div>'
-            '</div></div>'
-        )
-
-    explanation = _html.escape(data.get("explanation", "") or "")
-    explanation_short = explanation[:160] + "\u2026" if len(explanation) > 160 else explanation
-
-    evidence = data.get("evidence", []) or []
-    evidence_items = "".join(f"<li>{_html.escape(str(e))}</li>" for e in evidence[:5])
-    evidence_html = (
-        f'<div class="analysis-card"><div class="analysis-heading">'
-        f'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>'
-        f'Key findings</div><ul class="evidence-list">{evidence_items}</ul></div>'
-        if evidence_items else ""
+    snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+    is_legacy = not bool(snapshot)
+    if is_legacy:
+        snapshot = {
+            "explanation": data.get("explanation", ""),
+            "evidence": data.get("evidence", []),
+        }
+    status_label, confidence, summary = _share_status_view(
+        snapshot, result_type, str(data.get("verdict", "uncertain"))
+    ) if not is_legacy else (
+        "Legacy analysis snapshot", "unknown",
+        data.get("explanation") or "This older link contains a limited compatibility snapshot.",
     )
 
-    # Platform share buttons — conversational tone
-    emoji = "\u2705" if score >= 70 else "\u26A0\uFE0F" if score >= 40 else "\U0001F6A8"
-    source_bit = f" from {domain}" if domain else ""
-    share_text = f"{emoji} I just ran this{source_bit} through FactScope \u2014 scored {score}% ({verdict_label}). See the full breakdown:"
-    encoded_text = quote(share_text)
-    encoded_url = quote(share_url)
-    full_msg = quote(f"{share_text}\n{share_url}")
+    domain_raw = str(data.get("domain", "") or "")[:253]
+    domain = esc(domain_raw, 253)
+    scanned_url = safe_http_url(data.get("scanned_url", ""))
+    scanned_title = esc(data.get("scanned_title", ""), 500)
+    preview_image = safe_http_url(data.get("og_image", ""))
+    analysis_version = esc(data.get("analysis_version", "") or snapshot.get("analysis_version", ""), 80)
+    scan_timestamp = esc(data.get("scan_timestamp", ""), 80)
+    processing_state = esc(snapshot.get("processing_state", "complete" if not is_legacy else "legacy"), 40)
 
-    x_svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>'
-    wa_svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>'
-    tg_svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0a12 12 0 00-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 01.171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.479.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>'
+    image_html = ""
+    if preview_image:
+        image_html = f'<img id="previewImage" class="preview-image" src="{esc(preview_image)}" alt="Scanned content preview">'
+    source_mark = esc((domain_raw[:1] or "F").upper(), 1)
+    title_html = f'<h1 class="preview-title">{scanned_title}</h1>' if scanned_title else ""
+    domain_html = f'<div class="preview-source"><span class="source-mark">{source_mark}</span><span>{domain}</span></div>' if domain else ""
+    url_html = f'<a class="preview-url" href="{esc(scanned_url)}" target="_blank" rel="noopener">Open original content</a>' if scanned_url else ""
+    unavailable_class = " hidden" if preview_image else ""
+    preview_html = (
+        f'<section class="preview" aria-label="Scanned content context">{image_html}'
+        f'<div class="preview-body"><div class="eyebrow">Scanned content</div>{title_html}{domain_html}{url_html}'
+        f'<div id="previewUnavailable" class="preview-unavailable{unavailable_class}">Preview image unavailable</div></div></section>'
+    )
 
-    share_buttons_html = (
-        '<div class="share-section"><div class="share-bar">'
-        '<span class="share-label">Share this result</span>'
-        f'<a class="share-btn twitter" href="https://twitter.com/intent/tweet?text={encoded_text}&url={encoded_url}" target="_blank" rel="noopener">{x_svg} Twitter</a>'
-        f'<a class="share-btn whatsapp" href="https://api.whatsapp.com/send?text={full_msg}" target="_blank" rel="noopener">{wa_svg} WhatsApp</a>'
-        f'<a class="share-btn telegram" href="https://t.me/share/url?url={encoded_url}&text={encoded_text}" target="_blank" rel="noopener">{tg_svg} Telegram</a>'
-        f'<button class="share-btn copy" onclick="navigator.clipboard.writeText(\'{_html.escape(share_url)}\').then(()=>this.textContent=\'Copied!\')">&#128279; Copy link</button>'
-        '</div></div>'
-    ) if share_url else ""
+    claims = []
+    if result_type == "image":
+        claims = ((((snapshot.get("assessment") or {}).get("caption_consistency") or {}).get("claims")) or [])
+    else:
+        claims = snapshot.get("claims") or []
+    claim_items = []
+    for claim in claims[:4]:
+        if not isinstance(claim, dict):
+            continue
+        related = claim.get("related_sources") or []
+        claim_status = str(claim.get("status") or "insufficient_evidence")
+        if claim_status == "insufficient_evidence" and len(related) > 1:
+            claim_label = "Multiple related reports found"
+        elif claim_status == "insufficient_evidence" and len(related) == 1:
+            claim_label = "Related coverage found"
+        elif claim_status == "insufficient_evidence":
+            claim_label = "No corroborating evidence found"
+        else:
+            claim_label = {
+                "supported": "Supported by direct evidence",
+                "contradicted": "Contradicted by direct evidence",
+                "mixed": "Mixed evidence",
+            }.get(claim_status, claim_status.replace("_", " ").title())
+        source_sections = (
+            sources_html(claim.get("supporting_sources"), "Supporting sources")
+            + sources_html(claim.get("contradicting_sources"), "Contradicting sources")
+            + sources_html(related, "Related coverage — not verified as supporting evidence")
+        )
+        claim_items.append(
+            f'<article class="claim"><div class="claim-text">{esc(claim.get("claim"), 600)}</div>'
+            f'<div class="claim-meta"><strong>{esc(claim_label)}</strong><span>{esc(claim.get("confidence", "low"))} confidence</span></div>'
+            f'{source_sections}</article>'
+        )
+    claims_html = (
+        f'<section class="card"><div class="card-heading">Claim evidence</div>{"".join(claim_items)}</section>'
+        if claim_items else ""
+    )
 
+    factual = snapshot.get("factual_evidence") or {}
+    counts_html = ""
+    if result_type == "page" and factual:
+        counts = [
+            ("Claims", factual.get("claim_count", 0)),
+            ("Supported", factual.get("supported_count", 0)),
+            ("Contradicted", factual.get("contradicted_count", 0)),
+            ("Insufficient", factual.get("insufficient_count", 0)),
+        ]
+        counts_html = '<div class="counts">' + "".join(
+            f'<div><strong>{int(value or 0)}</strong><span>{esc(label)}</span></div>' for label, value in counts
+        ) + '</div>'
+
+    model_evidence = snapshot.get("evidence") or data.get("evidence") or []
+    model_items = "".join(f'<li>{esc(item, 500)}</li>' for item in model_evidence[:5])
+    model_html = ""
+    if snapshot.get("explanation") or model_items:
+        model_html = (
+            '<details class="card details"><summary>Content and source assessment</summary>'
+            f'<p>{esc(snapshot.get("explanation"), 1600)}</p>'
+            f'{f"<ul>{model_items}</ul>" if model_items else ""}'
+            '<div class="caveat">AI-assisted review of presentation, attribution, and risk signals. It does not verify individual factual claims.</div></details>'
+        )
+
+    limitations = []
+    for item in snapshot.get("limitations") or []:
+        if item and item not in limitations:
+            limitations.append(item)
+    limitations_html = ""
+    if limitations:
+        items = "".join(f"<li>{esc(item, 500)}</li>" for item in limitations[:8])
+        limitations_html = f'<details class="card details"><summary>About this assessment</summary><ul>{items}</ul></details>'
+
+    metadata_parts = [f"State: {processing_state}"]
+    if scan_timestamp:
+        metadata_parts.append(f"Scanned: {scan_timestamp}")
+    if analysis_version:
+        metadata_parts.append(f"Analysis: {analysis_version}")
+    metadata_html = "".join(f"<span>{part}</span>" for part in metadata_parts)
+    legacy_score = max(0, min(100, int(data.get("score", 50))))
+    compatibility_html = (
+        f'<details class="compat"><summary>Compatibility score: {legacy_score}/100</summary>'
+        '<p>This legacy score combines model judgment and page signals. It is not the probability that the content is true.</p></details>'
+    )
+
+    card_url = f"{share_url}/card.png" if share_url else ""
+    og_image_meta = (
+        f'<meta property="og:image" content="{esc(card_url)}"><meta property="og:image:width" content="1200">'
+        f'<meta property="og:image:height" content="630"><meta name="twitter:image" content="{esc(card_url)}">'
+        if card_url else ""
+    )
+    meta_description = esc(summary, 200)
+    page_title = esc(f"FactScope verification snapshot — {status_label}", 160)
+
+    share_buttons_html = ""
+    if share_url:
+        share_text = f"FactScope AI-assisted verification snapshot for {domain_raw or 'shared content'}: {status_label}."
+        encoded_text = quote(share_text)
+        encoded_url = quote(share_url)
+        full_msg = quote(f"{share_text}\n{share_url}")
+        share_buttons_html = (
+            '<div class="share-bar"><span>Share this snapshot</span>'
+            f'<a href="https://twitter.com/intent/tweet?text={encoded_text}&url={encoded_url}" target="_blank" rel="noopener">X / Twitter</a>'
+            f'<a href="https://api.whatsapp.com/send?text={full_msg}" target="_blank" rel="noopener">WhatsApp</a>'
+            f'<button id="copyLink" data-url="{esc(share_url)}">Copy link</button></div>'
+        )
+
+    snapshot_html = (
+        '<main class="result"><section class="assessment">'
+        '<div class="eyebrow">AI-assisted verification snapshot</div>'
+        f'<div class="status">{esc(status_label)}</div><div class="confidence">{esc(confidence).title()} confidence</div>'
+        f'<p class="summary">{esc(summary, 1600)}</p>{counts_html}<div class="metadata">{metadata_html}</div>'
+        f'</section>{claims_html}{model_html}{limitations_html}{compatibility_html}</main>'
+    )
     return _SHARE_TEMPLATE.format(
-        score=score,
-        score_label=score_label,
-        type_label=type_label,
-        verdict_label=verdict_label,
-        verdict_icon=verdict_icon,
-        color=color,
-        circumference=f"{circumference:.1f}",
-        dash_offset=f"{dash_offset:.1f}",
-        domain=domain,
+        page_title=page_title,
+        meta_description=meta_description,
         og_image_meta=og_image_meta,
+        layout_class="" if preview_image else "no-preview-image",
         preview_html=preview_html,
-        layout_class="" if og_image else "no-preview-image",
-        explanation=explanation,
-        explanation_short=explanation_short,
-        evidence_html=evidence_html,
+        snapshot_html=snapshot_html,
         share_buttons_html=share_buttons_html,
     )
 
+
+def _share_card_png(data: dict) -> bytes:
+    """Generate a deterministic branded card without publisher-hosted imagery."""
+    from io import BytesIO
+    from textwrap import wrap
+    from PIL import Image, ImageDraw, ImageFont
+
+    snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+    result_type = "image" if data.get("result_type") == "image" else "page"
+    label, confidence, summary = _share_status_view(
+        snapshot, result_type, str(data.get("verdict", "uncertain"))
+    ) if snapshot else ("Legacy analysis snapshot", "unknown", data.get("explanation", ""))
+    domain = str(data.get("domain") or "Shared content")[:70]
+
+    image = Image.new("RGB", (1200, 630), "#0f172a")
+    draw = ImageDraw.Draw(image)
+    fallback_font = False
+    try:
+        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 52)
+        body_font = ImageFont.truetype("DejaVuSans.ttf", 30)
+        small_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+        brand_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 32)
+    except OSError:
+        fallback_font = True
+        title_font = body_font = small_font = brand_font = ImageFont.load_default()
+
+    def card_text(value: object) -> str:
+        rendered = str(value or "")
+        return rendered.encode("latin-1", "replace").decode("latin-1") if fallback_font else rendered
+
+    label = card_text(label)
+    summary = card_text(summary)
+    domain = card_text(domain)
+    draw.rounded_rectangle((55, 45, 1145, 585), radius=32, fill="#ffffff")
+    draw.ellipse((95, 85, 155, 145), fill="#4f46e5")
+    draw.line((112, 116, 125, 129, 144, 101), fill="#ffffff", width=7, joint="curve")
+    draw.text((175, 91), "FactScope", font=brand_font, fill="#111827")
+    draw.text((95, 172), domain, font=small_font, fill="#64748b")
+    y = 225
+    for line in wrap(label, width=32)[:2]:
+        draw.text((95, y), line, font=title_font, fill="#111827")
+        y += 64
+    draw.text((95, y + 4), f"{str(confidence).title()} confidence", font=small_font, fill="#4f46e5")
+    y += 62
+    for line in wrap(str(summary or "No summary available."), width=67)[:3]:
+        draw.text((95, y), line, font=body_font, fill="#334155")
+        y += 42
+    draw.text((95, 535), card_text("AI-assisted verification snapshot - not a conclusive determination"), font=small_font, fill="#64748b")
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+@app.get("/s/{share_id}/card.png")
+async def view_shared_card(share_id: str):
+    data = get_shared_result(share_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Shared result not found")
+    cached = get_shared_card(share_id)
+    if cached:
+        return Response(cached, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+    card = _share_card_png(data)
+    update_shared_card(share_id, card)
+    return Response(card, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 @app.get("/s/{share_id}", response_class=HTMLResponse)
 async def view_shared_result(share_id: str):

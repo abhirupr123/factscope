@@ -54,6 +54,21 @@ assert.match(v1ClaimHTML, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
 assert.match(v1ClaimHTML, /&lt;b&gt;unsafe&lt;\/b&gt;/);
 assert.doesNotMatch(v1ClaimHTML, /javascript:/);
 
+const relatedClaimHTML = security.buildV1ClaimsHTML([{
+  claim: 'A developing claim', status: 'insufficient_evidence', confidence: 'low',
+  supporting_sources: [], contradicting_sources: [],
+  related_sources: [
+    { title: 'Report one', publisher: 'Outlet A', url: 'https://a.example/report' },
+    { title: 'Report two', publisher: 'Outlet B', url: 'https://b.example/report' },
+  ],
+  limitations: ['Evidence is indirect.'],
+}], ['Evidence is indirect.']);
+assert.match(relatedClaimHTML, /Multiple related reports found/);
+assert.match(relatedClaimHTML, /Related coverage — not verified as supporting evidence/);
+assert.match(relatedClaimHTML, /https:\/\/a\.example\/report/);
+assert.equal((relatedClaimHTML.match(/Evidence is indirect\./g) || []).length, 1);
+assert.match(relatedClaimHTML, /Why these results\?/);
+
 const imageAssessmentHTML = security.buildV1ImageAssessmentHTML({
   authenticity_score: 35,
   legacy_score: 35,
@@ -87,8 +102,15 @@ const articleAssessmentHTML = security.buildV1ArticleSummaryHTML({
     rationale: 'Reporting is recent.',
   },
   source_quality: { level: 'high', score: 82, summary: 'Strong page signals.', signals: [], limitations: [] },
+  explanation: 'Professional article presentation with a named author.',
+  evidence: ['Published by a recognized outlet'],
   limitations: ['Evidence may change.'],
 });
+assert.match(articleAssessmentHTML, /Evidence still developing/);
+assert.match(articleAssessmentHTML, /Content and source assessment/);
+assert.match(articleAssessmentHTML, /Professional article presentation/);
+assert.match(articleAssessmentHTML, /does not verify individual factual claims/);
+assert.match(articleAssessmentHTML, /About this assessment/);
 assert.match(articleAssessmentHTML, /Classification confidence: Medium/);
 assert.match(articleAssessmentHTML, /Checkability: Checkable/);
 assert.doesNotMatch(articleAssessmentHTML, /checkable checkability/);

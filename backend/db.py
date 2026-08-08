@@ -401,6 +401,9 @@ _SCHEMA_STATEMENTS = [
         card_png      BLOB,
         server_verified INTEGER NOT NULL DEFAULT 0,
         owner_subject_id TEXT,
+        analysis_version TEXT,
+        scan_timestamp TEXT,
+        snapshot_json TEXT,
         created_at    TEXT NOT NULL
     )""",
 ]
@@ -417,6 +420,9 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE shared_results ADD COLUMN card_png BLOB",
     "ALTER TABLE shared_results ADD COLUMN server_verified INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE shared_results ADD COLUMN owner_subject_id TEXT",
+    "ALTER TABLE shared_results ADD COLUMN analysis_version TEXT",
+    "ALTER TABLE shared_results ADD COLUMN scan_timestamp TEXT",
+    "ALTER TABLE shared_results ADD COLUMN snapshot_json TEXT",
     "ALTER TABLE scans ADD COLUMN analysis_version TEXT",
     "ALTER TABLE scans ADD COLUMN scanned_title TEXT",
     "ALTER TABLE scans ADD COLUMN canonical_url TEXT",
@@ -1313,16 +1319,15 @@ def get_scan_claims(fingerprint: str) -> str | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def store_shared_result(data: dict) -> str:
-    """Store a result snapshot and return an 8-char short ID.
-
-    If a fingerprint is provided and a share link already exists for it,
-    returns the existing ID instead of creating a duplicate.
-    """
+    """Store a server-verified snapshot and return a stable 8-char short ID."""
     import string
     import secrets as _secrets
 
     fp = data.get("fingerprint") or ""
     owner_subject_id = data.get("owner_subject_id") or None
+    source_info_json = json.dumps(data.get("source_info")) if data.get("source_info") else None
+    snapshot_json = json.dumps(data.get("snapshot")) if data.get("snapshot") else None
+    evidence_json = json.dumps(data.get("evidence", []))
     try:
         conn = _get_conn()
         if fp and owner_subject_id:
@@ -1333,18 +1338,27 @@ def store_shared_result(data: dict) -> str:
             if row:
                 conn.execute(
                     """UPDATE shared_results
-                       SET result_type = ?, score = ?, verdict = ?, explanation = ?,
-                           evidence = ?, domain = ?, source_info = ?, scanned_url = ?,
+                       SET result_type = ?, score = ?,
+                           verdict = COALESCE(NULLIF(?, ''), verdict),
+                           explanation = COALESCE(NULLIF(?, ''), explanation),
+                           evidence = COALESCE(NULLIF(?, '[]'), evidence),
+                           domain = COALESCE(NULLIF(?, ''), domain),
+                           source_info = COALESCE(?, source_info),
+                           scanned_url = COALESCE(NULLIF(?, ''), scanned_url),
                            scanned_title = COALESCE(NULLIF(?, ''), scanned_title),
                            og_image = COALESCE(NULLIF(?, ''), og_image),
-                           server_verified = 1 WHERE id = ?""",
+                           analysis_version = COALESCE(NULLIF(?, ''), analysis_version),
+                           scan_timestamp = COALESCE(NULLIF(?, ''), scan_timestamp),
+                           snapshot_json = COALESCE(?, snapshot_json),
+                           card_png = NULL, server_verified = 1
+                       WHERE id = ?""",
                     (
                         data.get("result_type", "page"), int(data.get("score", 50)),
-                        data.get("verdict", "uncertain"), data.get("explanation", ""),
-                        json.dumps(data.get("evidence", [])), data.get("domain", ""),
-                        json.dumps(data.get("source_info")) if data.get("source_info") else None,
+                        data.get("verdict", ""), data.get("explanation", ""),
+                        evidence_json, data.get("domain", ""), source_info_json,
                         data.get("scanned_url", ""), data.get("scanned_title", ""),
-                        data.get("og_image", ""), row[0],
+                        data.get("og_image", ""), data.get("analysis_version", ""),
+                        data.get("scan_timestamp", ""), snapshot_json, row[0],
                     ),
                 )
                 _commit_and_sync()
@@ -1355,23 +1369,15 @@ def store_shared_result(data: dict) -> str:
             """INSERT INTO shared_results
                (id, result_type, score, verdict, explanation, evidence, domain, source_info,
                 scanned_url, scanned_title, fingerprint, og_image, server_verified,
-                owner_subject_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                owner_subject_id, analysis_version, scan_timestamp, snapshot_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                short_id,
-                data.get("result_type", "page"),
-                int(data.get("score", 50)),
-                data.get("verdict", "uncertain"),
-                data.get("explanation", ""),
-                json.dumps(data.get("evidence", [])),
-                data.get("domain", ""),
-                json.dumps(data.get("source_info")) if data.get("source_info") else None,
-                data.get("scanned_url", ""),
-                data.get("scanned_title", ""),
-                fp or None,
-                data.get("og_image", ""),
-                1,
-                owner_subject_id,
+                short_id, data.get("result_type", "page"), int(data.get("score", 50)),
+                data.get("verdict", "uncertain"), data.get("explanation", ""), evidence_json,
+                data.get("domain", ""), source_info_json, data.get("scanned_url", ""),
+                data.get("scanned_title", ""), fp or None, data.get("og_image", ""), 1,
+                owner_subject_id, data.get("analysis_version", ""),
+                data.get("scan_timestamp", ""), snapshot_json,
                 datetime.utcnow().isoformat(),
             ),
         )
@@ -1380,7 +1386,6 @@ def store_shared_result(data: dict) -> str:
     except Exception as exc:
         logger.error("Failed to store shared result: %s", exc)
         raise
-
 
 def update_shared_card(share_id: str, card_png: bytes) -> None:
     """Store pre-generated card PNG for a shared result."""
@@ -1425,6 +1430,7 @@ def get_shared_result(share_id: str) -> dict | None:
         d = dict(row)
         d["evidence"] = json.loads(d["evidence"]) if d.get("evidence") else []
         d["source_info"] = json.loads(d["source_info"]) if d.get("source_info") else None
+        d["snapshot"] = json.loads(d["snapshot_json"]) if d.get("snapshot_json") else None
         return d
     except Exception as exc:
         logger.debug("Shared result lookup failed: %s", exc)

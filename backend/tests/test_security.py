@@ -235,6 +235,9 @@ class ProductionBoundaryTests(unittest.TestCase):
             "scanned_title": "Stored report title",
             "og_image": "https://example.com/report.jpg",
             "source_info": {"site_name": "Example News"},
+            "analysis_version": "4h-test",
+            "timestamp": "2026-08-08T10:00:00+00:00",
+            "judgement": "[]",
         }
         token, _ = main.issue_installation_session()
         http_request = main.Request({
@@ -251,6 +254,9 @@ class ProductionBoundaryTests(unittest.TestCase):
         self.assertEqual(captured["scanned_title"], "Stored report title")
         self.assertEqual(captured["og_image"], "https://example.com/report.jpg")
         self.assertEqual(captured["source_info"]["site_name"], "Example News")
+        self.assertEqual(captured["analysis_version"], "4h-test")
+        self.assertEqual(captured["scan_timestamp"], "2026-08-08T10:00:00+00:00")
+        self.assertEqual(captured["snapshot"]["schema_version"], "1.0")
 
     def test_share_html_escapes_text_and_rejects_javascript_urls(self):
         html = main._render_share_page({
@@ -822,16 +828,27 @@ class ChunkFourFoundationTests(unittest.TestCase):
         share_id = db.store_shared_result({
             "fingerprint": fingerprint, "owner_subject_id": owner,
             "score": 50, "verdict": "uncertain", "scanned_title": "Original title",
-            "og_image": "https://example.com/original.jpg",
+            "og_image": "https://example.com/original.jpg", "domain": "example.com",
+            "scanned_url": "https://example.com/original", "source_info": {"site_name": "Example"},
+            "analysis_version": "4h-test", "scan_timestamp": "2026-08-08T10:00:00+00:00",
+            "snapshot": {"schema_version": "1.0", "processing_state": "complete"},
         })
         same_id = db.store_shared_result({
             "fingerprint": fingerprint, "owner_subject_id": owner,
-            "score": 55, "verdict": "uncertain", "scanned_title": "", "og_image": "",
+            "score": 55, "verdict": "", "explanation": "", "evidence": [],
+            "domain": "", "source_info": None, "scanned_url": "", "scanned_title": "",
+            "og_image": "", "analysis_version": "", "scan_timestamp": "", "snapshot": None,
         })
         stored = db.get_shared_result(share_id)
         self.assertEqual(same_id, share_id)
         self.assertEqual(stored["scanned_title"], "Original title")
         self.assertEqual(stored["og_image"], "https://example.com/original.jpg")
+        self.assertEqual(stored["domain"], "example.com")
+        self.assertEqual(stored["scanned_url"], "https://example.com/original")
+        self.assertEqual(stored["source_info"]["site_name"], "Example")
+        self.assertEqual(stored["analysis_version"], "4h-test")
+        self.assertEqual(stored["scan_timestamp"], "2026-08-08T10:00:00+00:00")
+        self.assertEqual(stored["snapshot"]["schema_version"], "1.0")
         conn = db._get_conn()
         conn.execute("DELETE FROM shared_results WHERE id = ?", (share_id,))
         conn.commit()
@@ -842,9 +859,43 @@ class ChunkFourFoundationTests(unittest.TestCase):
             "scanned_title": "Stored article", "scanned_url": "https://example.com/report",
             "domain": "example.com", "og_image": "",
         })
-        self.assertIn('class="main no-preview-image"', html)
+        self.assertIn('class="shell no-preview-image"', html)
         self.assertIn("Stored article", html)
-        self.assertIn("Page scanned", html)
+        self.assertIn("Scanned content", html)
+        self.assertIn("Preview image unavailable", html)
+        self.assertNotIn("Verified by AI analysis", html)
+
+    def test_share_page_uses_branded_card_and_v1_snapshot_language(self):
+        snapshot = {
+            "schema_version": "1.0", "processing_state": "complete",
+            "overall_evidence_summary": "Direct evidence remains limited.",
+            "confidence": "low", "explanation": "Professional article presentation.",
+            "evidence": ["Named author"], "limitations": ["Evidence may change."],
+            "content_classification": {"content_type": "breaking_news"},
+            "factual_evidence": {
+                "status": "insufficient_evidence", "confidence": "low", "claim_count": 1,
+                "supported_count": 0, "contradicted_count": 0, "insufficient_count": 1,
+            },
+            "claims": [{
+                "claim": "A checkable claim", "status": "insufficient_evidence", "confidence": "low",
+                "supporting_sources": [], "contradicting_sources": [],
+                "related_sources": [{"title": "Related report", "publisher": "News", "url": "https://news.example/report"}],
+            }],
+        }
+        html = main._render_share_page({
+            "result_type": "page", "score": 82, "verdict": "authentic",
+            "domain": "example.com", "scanned_title": "Article", "scanned_url": "https://example.com/a",
+            "og_image": "https://publisher.example/image.jpg", "snapshot": snapshot,
+            "analysis_version": "4h-test", "scan_timestamp": "2026-08-08T10:00:00+00:00",
+        }, "https://factscope.example/s/share123")
+        self.assertIn("Evidence still developing", html)
+        self.assertIn("Related coverage", html)
+        self.assertIn("Content and source assessment", html)
+        self.assertIn("https://factscope.example/s/share123/card.png", html)
+        self.assertNotIn('property="og:image" content="https://publisher.example/image.jpg"', html)
+        self.assertIn('rel="icon"', html)
+        self.assertIn("FactScope assists verification", html)
+        self.assertTrue(main._share_card_png({"domain": "example.com", "snapshot": snapshot}).startswith(b"\x89PNG"))
 
 class ChunkFourV1ContractTests(unittest.TestCase):
     @staticmethod
@@ -881,6 +932,7 @@ class ChunkFourV1ContractTests(unittest.TestCase):
         self.assertEqual(insufficient.status, "insufficient_evidence")
         self.assertEqual(insufficient.confidence, "low")
         self.assertEqual(insufficient.supporting_sources, [])
+        self.assertEqual([s.url for s in insufficient.related_sources], ["https://news.example/topic"])
         self.assertTrue(any("not classified" in item for item in insufficient.limitations))
 
     def test_v1_provider_failure_is_retryable_and_never_zero_confidence_score(self):

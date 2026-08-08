@@ -467,9 +467,15 @@
     return label.charAt(0).toUpperCase() + label.slice(1);
   }
 
-  function buildLimitationsHTML(limitations) {
+  function buildLimitationsHTML(limitations, title = 'Limitations', collapsible = false) {
     if (!Array.isArray(limitations) || limitations.length === 0) return '';
-    return `<div class="fs-limitations"><div class="fs-limitations-title">Limitations</div><ul>${limitations.map((item) => `<li>${item}</li>`).join('')}</ul></div>`;
+    const unique = [...new Set(limitations.filter(Boolean))];
+    if (unique.length === 0) return '';
+    const content = `<ul>${unique.map((item) => `<li>${item}</li>`).join('')}</ul>`;
+    if (collapsible) {
+      return `<details class="fs-limitations fs-limitations-compact"><summary class="fs-limitations-title">${title}</summary>${content}</details>`;
+    }
+    return `<div class="fs-limitations"><div class="fs-limitations-title">${title}</div>${content}</div>`;
   }
 
   function buildV1SourcesHTML(sources, heading) {
@@ -489,32 +495,57 @@
     const safe = sanitizeForHTML({ claims: claims || [], limitations: limitations || [] });
     if (!Array.isArray(safe.claims) || safe.claims.length === 0) {
       const message = safe.limitations[0] || 'No checkable factual claims were identified in the extracted content.';
-      return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div><div class="fs-body">${message}</div></div>`;
+      return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div><div class="fs-body">${message}</div>${buildLimitationsHTML(safe.limitations.slice(1), 'More context', true)}</div>`;
     }
+    const sharedLimitations = [...safe.limitations];
     const items = safe.claims.map((claim) => {
       const presentation = v1StatusPresentation(claim.status);
       const statusClass = V1_STATUS_PRESENTATION[claim.status] ? claim.status.replace(/_/g, '-') : 'unknown';
+      const relatedCount = Array.isArray(claim.related_sources) ? claim.related_sources.length : 0;
+      let contextualPresentation = presentation;
+      let contextNote = '';
+      if (claim.status === 'insufficient_evidence' && relatedCount > 1) {
+        contextualPresentation = { ...presentation, label: 'Multiple related reports found' };
+        contextNote = 'These reports discuss the claim but are not classified as direct confirmation.';
+      } else if (claim.status === 'insufficient_evidence' && relatedCount === 1) {
+        contextualPresentation = { ...presentation, label: 'Related coverage found' };
+        contextNote = 'This report is related to the claim but is not classified as direct confirmation.';
+      } else if (claim.status === 'insufficient_evidence') {
+        contextualPresentation = { ...presentation, label: 'No corroborating evidence found' };
+      }
+      (claim.limitations || []).forEach((item) => sharedLimitations.push(item));
       return `<div class="fs-factcheck-item fs-v1-claim-${statusClass}">
-        <span class="fs-claim-icon" style="color:${presentation.color}">${presentation.icon}</span>
+        <span class="fs-claim-icon" style="color:${contextualPresentation.color}">${contextualPresentation.icon}</span>
         <div class="fs-claim-body">
           <span class="fs-claim-text">${claim.claim}</span>
-          <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${presentation.color}">${presentation.label}</span><span class="fs-confidence">${claim.confidence || 'low'} confidence</span></div>
+          <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${contextualPresentation.color}">${contextualPresentation.label}</span><span class="fs-confidence">${claim.confidence || 'low'} confidence</span></div>
           ${buildV1SourcesHTML(claim.supporting_sources, 'Supporting sources')}
           ${buildV1SourcesHTML(claim.contradicting_sources, 'Contradicting sources')}
-          ${buildLimitationsHTML(claim.limitations)}
+          ${buildV1SourcesHTML(claim.related_sources, 'Related coverage — not verified as supporting evidence')}
+          ${contextNote ? `<div class="fs-caveat">${contextNote}</div>` : ''}
         </div>
       </div>`;
     }).join('');
-    return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div>${items}${buildLimitationsHTML(safe.limitations)}</div>`;
+    return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div>${items}${buildLimitationsHTML(sharedLimitations, 'Why these results?', true)}</div>`;
   }
 
   function buildV1ArticleSummaryHTML(result) {
+    result = sanitizeForHTML(result || {});
     const factual = result.factual_evidence || {};
-    const presentation = factual.status === 'not_applicable'
-      ? { ...v1StatusPresentation(factual.status), label: 'No factual verdict' }
-      : v1StatusPresentation(factual.status);
-    const quality = result.source_quality || {};
     const classification = result.content_classification || {};
+    let presentation = v1StatusPresentation(factual.status);
+    if (factual.status === 'not_applicable') {
+      const labels = {
+        satire: 'Satire identified',
+        opinion: 'Opinion and context assessment',
+        prediction: 'Forward-looking claim',
+        unsupported_page: 'Unable to assess this page',
+      };
+      presentation = { ...presentation, label: labels[classification.content_type] || 'Context-only assessment' };
+    } else if (factual.status === 'insufficient_evidence' && classification.content_type === 'breaking_news') {
+      presentation = { ...presentation, label: 'Evidence still developing' };
+    }
+    const quality = result.source_quality || {};
     const classificationLabel = classification.content_type
       ? formatV1Label(classification.content_type)
       : '';
@@ -522,18 +553,20 @@
       ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content type: ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">Classification confidence: ${formatV1Label(classification.confidence)} &middot; Checkability: ${formatV1Label(classification.checkability)}</div></details>`
       : '';
     const qualitySignals = (quality.signals || []).map((signal) => `<li>${signal.detail}</li>`).join('');
+    const modelEvidence = (result.evidence || []).filter(Boolean).map((item) => `<li>${item}</li>`).join('');
+    const modelAssessment = result.explanation || modelEvidence
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content and source assessment</summary><div class="fs-body">${result.explanation || ''}</div>${modelEvidence ? `<ul class="fs-details-list">${modelEvidence}</ul>` : ''}<div class="fs-caveat">AI-assisted review of presentation, attribution, and risk signals. It does not verify individual factual claims.</div></details>`
+      : '';
     const qualityDetails = quality.summary || qualitySignals || (quality.limitations || []).length
-      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Source quality: ${quality.level || 'unknown'} (${Number.isFinite(quality.score) ? quality.score : result.legacy_score || 0}/100)</summary><div class="fs-body">${quality.summary || ''}</div>${qualitySignals ? `<ul class="fs-details-list">${qualitySignals}</ul>` : ''}${buildLimitationsHTML(quality.limitations)}</details>`
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Source quality: ${quality.level || 'unknown'} (${Number.isFinite(quality.score) ? quality.score : result.legacy_score || 0}/100)</summary><div class="fs-body">${quality.summary || ''}</div>${qualitySignals ? `<ul class="fs-details-list">${qualitySignals}</ul>` : ''}${buildLimitationsHTML(quality.limitations, 'About source quality', true)}</details>`
       : '';
     return `<div class="fs-assessment-card">
       <div class="fs-assessment-kicker">Evidence assessment</div>
       <div class="fs-assessment-status" style="color:${presentation.color}"><span>${presentation.icon}</span>${presentation.label}</div>
       <div class="fs-confidence">${factual.confidence || result.confidence || 'low'} confidence</div>
       <div class="fs-body">${result.overall_evidence_summary || factual.summary || 'No evidence summary is available.'}</div>
-      ${buildLimitationsHTML(result.limitations)}
-    </div>${classificationDetails}${qualityDetails}`;
+    </div>${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(result.limitations, 'About this assessment', true)}`;
   }
-
   function buildV1ImageAssessmentHTML(result) {
     const assessment = result.assessment || {};
     const manipulation = assessment.manipulation || {};
