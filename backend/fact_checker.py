@@ -10,6 +10,7 @@ Gracefully degrades when APIs are unavailable.
 """
 
 import json
+import math
 import re
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -316,7 +317,8 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
         matched_articles = []
         rejection_items = []
         relevance_scores = []
-        threshold = min(3, len(claim_keywords))
+        threshold = min(len(claim_keywords), max(3, math.ceil(len(claim_keywords) * 0.5)))
+        ranked_candidates = []
         for candidate in candidates:
             overlap = sum(1 for keyword in claim_keywords if keyword in candidate["combined"])
             relevance = overlap / len(claim_keywords) if claim_keywords else 0.0
@@ -328,6 +330,14 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
                         "relevance_score": round(relevance, 3),
                     })
                 continue
+            ranked_candidates.append((relevance, candidate))
+
+        ranked_candidates.sort(key=lambda item: (
+            -item[0],
+            0 if _recency_label(item[1]["published_at"]) in {"current", "recent"} else 1,
+            item[1]["title"].casefold(),
+        ))
+        for relevance, candidate in ranked_candidates:
             if candidate["self_source"]:
                 rejection_items.append({
                     "title": candidate["title"], "source": candidate["source"],
@@ -366,8 +376,9 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
             "source_count": source_count,
             "corroboration": _classify_corroboration(source_count, average_relevance),
             "average_relevance": round(average_relevance, 3),
-            "related_articles": matched_articles[:5],
+            "related_articles": matched_articles[:10],
             "rejected_articles": rejection_items[:8],
+            "discovered_count": len(ranked_candidates),
         }
     return results
 
@@ -595,9 +606,11 @@ def _probe_evidence_url(url: str) -> tuple[bool, str, str | None]:
                     location = response.headers.get("location")
                     if not location:
                         return False, "", "invalid_redirect"
-                    # Never fetch the destination here. DNS/IP validation prevents
-                    # private targets; the browser follows the trusted Google URL.
-                    validate_public_url(urljoin(url, location))
+                    # Validate but do not fetch the destination here. Full content
+                    # retrieval later uses safe_get with peer-IP checks.
+                    destination = validate_public_url(urljoin(url, location))
+                    if not _is_trusted_google_news_article_url(destination):
+                        return True, destination, None
                 return True, url, None
 
         response = safe_probe(
@@ -616,24 +629,33 @@ def _probe_evidence_url(url: str) -> tuple[bool, str, str | None]:
         return False, "", "unreachable"
 
 def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[dict]:
-    """Resolve and validate only evidence links selected by claim matching."""
-    urls = []
-    for result in results:
-        direct_url = result.get("source_url")
-        if direct_url:
-            urls.append(direct_url)
-        for article in result.get("related_articles") or []:
-            if article.get("url"):
-                urls.append(article["url"])
-    unique_urls = list(dict.fromkeys(urls))[:EVIDENCE_MAX_LINKS]
+    """Resolve and validate evidence fairly across claims."""
+    direct_urls = list(dict.fromkeys(
+        result.get("source_url") for result in results if result.get("source_url")
+    ))
+    article_queues = [
+        list(dict.fromkeys(
+            article.get("url") for article in (result.get("related_articles") or [])
+            if article.get("url")
+        ))
+        for result in results
+    ]
+    selected_urls = direct_urls[:EVIDENCE_MAX_LINKS]
+    selected_set = set(selected_urls)
+    depth = 0
+    while len(selected_urls) < EVIDENCE_MAX_LINKS and any(depth < len(queue) for queue in article_queues):
+        for queue in article_queues:
+            if len(selected_urls) >= EVIDENCE_MAX_LINKS:
+                break
+            if depth < len(queue) and queue[depth] not in selected_set:
+                selected_urls.append(queue[depth])
+                selected_set.add(queue[depth])
+        depth += 1
+
     probes: dict[str, tuple[bool, str, str | None]] = {}
-
-    def probe(url: str) -> tuple[bool, str, str | None]:
-        return _probe_evidence_url(url)
-
-    if unique_urls:
-        with ThreadPoolExecutor(max_workers=min(EVIDENCE_MAX_WORKERS, len(unique_urls))) as pool:
-            future_urls = {pool.submit(probe, url): url for url in unique_urls}
+    if selected_urls:
+        with ThreadPoolExecutor(max_workers=min(EVIDENCE_MAX_WORKERS, len(selected_urls))) as pool:
+            future_urls = {pool.submit(_probe_evidence_url, url): url for url in selected_urls}
             for future in as_completed(future_urls):
                 url = future_urls[future]
                 try:
@@ -655,7 +677,7 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
         direct_url = result.get("source_url")
         decisive_factcheck = result.get("status") in {"verified", "disputed", "mixed"}
         if direct_url:
-            reachable, final_url, reason = probes.get(direct_url, (False, "", "unreachable"))
+            reachable, final_url, reason = probes.get(direct_url, (False, "", "validation_budget_exceeded"))
             final_domain = _extract_domain(final_url)
             if reachable and is_scanned_domain(final_domain):
                 reachable, reason = False, "self_corroboration"
@@ -685,7 +707,7 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
         seen_final_domains = set()
         for article in result.get("related_articles") or []:
             candidate_url = article.get("url") or ""
-            reachable, final_url, reason = probes.get(candidate_url, (False, "", "unreachable"))
+            reachable, final_url, reason = probes.get(candidate_url, (False, "", "validation_budget_exceeded"))
             final_domain = _extract_domain(final_url)
             if reachable and is_scanned_domain(final_domain):
                 reachable, reason = False, "self_corroboration"
@@ -708,13 +730,11 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
 
         result["related_articles"] = accepted[:5]
         result["source_count"] = len(accepted)
-        relevance_scores = [
-            float(article.get("relevance_score") or 0) for article in accepted
-        ]
+        relevance_scores = [float(article.get("relevance_score") or 0) for article in accepted]
         average_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
         result["average_relevance"] = round(average_relevance, 3)
         result["corroboration"] = _classify_corroboration(len(accepted), average_relevance)
-        result["rejected_articles"] = rejections[:12]
+        result["rejected_articles"] = rejections[:16]
         result["validation_summary"] = {
             "shown": len(accepted) + int(bool(result.get("source_url"))),
             "rejected": len(rejections),
@@ -729,7 +749,6 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
             rejection_reasons,
         )
     return results
-
 _EMPTY_RESULT = {
     "status": "no_fact_check_found",
     "source": None,
@@ -743,15 +762,7 @@ _NEWS_DEFAULT = {"source_count": 0, "corroboration": "not_corroborated", "relate
 
 
 def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict]:
-    """Full pipeline: extract claims, then verify via Fact Check + Google News.
-
-    Uses a single Google News RSS search for corroboration instead of one
-    API call per claim. Google Fact Check API calls run fully in parallel.
-    Filters out articles matching source_url to avoid self-citation.
-
-    Returns a list of dicts, each with:
-        claim, status, source, source_url, rating, source_count, corroboration
-    """
+    """Extract claims and search fact-check and news evidence per claim."""
     if not is_available():
         return []
 
@@ -759,59 +770,63 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
     if not claims:
         return []
 
-    logger.info("Verifying %d claims via Fact Check + Google News RSS", len(claims))
-
-    fc_results = {}
-    news_results = {}
-
+    logger.info("Verifying %d claims via Fact Check + per-claim Google News RSS", len(claims))
+    fc_results: dict[int, dict] = {}
+    news_results: dict[int, dict] = {}
     title_query = _extract_keywords(title, max_words=8) if title else ""
-    claim_query = _extract_keywords(claims[0], max_words=8)
+    claim_queries = [_extract_keywords(claim, max_words=10) for claim in claims]
+    unique_queries = list(dict.fromkeys(query for query in [title_query, *claim_queries] if query))
+    query_articles: dict[str, list[dict]] = {}
 
-    with ThreadPoolExecutor(max_workers=len(claims) + 2) as pool:
-        fc_futures = {
-            pool.submit(search_factcheck_api, claim): i
-            for i, claim in enumerate(claims)
-        }
-        news_futures = []
-        if title_query:
-            news_futures.append(pool.submit(_search_news, title_query))
-        if claim_query and claim_query != title_query:
-            news_futures.append(pool.submit(_search_news, claim_query))
-        elif not title_query:
-            news_futures.append(pool.submit(_search_news, claim_query))
+    workers = max(1, min(EVIDENCE_MAX_WORKERS, len(claims) + len(unique_queries)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        fc_futures = {pool.submit(search_factcheck_api, claim): i for i, claim in enumerate(claims)}
+        news_futures = {pool.submit(_search_news, query): query for query in unique_queries}
+        for future in as_completed([*fc_futures, *news_futures]):
+            if future in fc_futures:
+                idx = fc_futures[future]
+                try:
+                    fc_results[idx] = future.result()
+                except Exception as exc:
+                    logger.warning("FC API failed for claim index=%d error=%s", idx + 1, type(exc).__name__)
+                    fc_results[idx] = {"claim": claims[idx], **_EMPTY_RESULT}
+            else:
+                query = news_futures[future]
+                try:
+                    query_articles[query] = future.result()
+                except Exception as exc:
+                    logger.warning("News search failed error=%s", type(exc).__name__)
+                    query_articles[query] = []
 
-        for future in as_completed(fc_futures):
-            idx = fc_futures[future]
-            try:
-                fc_results[idx] = future.result()
-            except Exception as exc:
-                logger.warning("FC API failed for claim %d: %s", idx + 1, exc)
-                fc_results[idx] = {"claim": claims[idx], **_EMPTY_RESULT}
-
-        try:
-            all_articles = []
-            seen_urls = set()
-            for nf in news_futures:
-                for article in nf.result():
-                    url = article.get("url", "")
-                    if url not in seen_urls:
-                        seen_urls.add(url)
-                        all_articles.append(article)
-            if all_articles:
-                news_results = _match_claims_to_articles(claims, all_articles, source_url=source_url)
-        except Exception as exc:
-            logger.warning("News corroboration pipeline failed: %s", exc)
+    title_articles = query_articles.get(title_query, []) if title_query else []
+    for index, (claim, query) in enumerate(zip(claims, claim_queries)):
+        combined = []
+        seen_urls = set()
+        for article in [*query_articles.get(query, []), *title_articles]:
+            url = article.get("url") or ""
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined.append(article)
+        matched = _match_claims_to_articles([claim], combined, source_url=source_url).get(0, _NEWS_DEFAULT)
+        news_results[index] = matched
+        logger.info(
+            "Claim discovery index=%d candidates=%d matched=%d",
+            index + 1, len(combined), matched.get("source_count", 0),
+        )
 
     results = []
-    for i, claim in enumerate(claims):
-        fc = fc_results.get(i, {"claim": claim, **_EMPTY_RESULT})
-        nr = news_results.get(i, _NEWS_DEFAULT)
-        fc["source_count"] = nr["source_count"]
-        fc["corroboration"] = nr["corroboration"]
-        fc["related_articles"] = nr.get("related_articles", [])
-        logger.info("Claim evidence result index=%d corr=%s sources=%d fc=%s",
-                    i + 1, fc.get("corroboration"), fc.get("source_count", 0),
-                    fc.get("status"))
+    for index, claim in enumerate(claims):
+        fc = fc_results.get(index, {"claim": claim, **_EMPTY_RESULT})
+        news = news_results.get(index, _NEWS_DEFAULT)
+        fc["source_count"] = news.get("source_count", 0)
+        fc["corroboration"] = news.get("corroboration", "not_corroborated")
+        fc["average_relevance"] = news.get("average_relevance", 0.0)
+        fc["related_articles"] = news.get("related_articles", [])
+        fc["rejected_articles"] = news.get("rejected_articles", [])
+        logger.info(
+            "Claim evidence result index=%d corr=%s sources=%d fc=%s",
+            index + 1, fc.get("corroboration"), fc.get("source_count", 0), fc.get("status"),
+        )
         results.append(fc)
 
     return enrich_claim_evidence(_validate_evidence_links(results, source_url=source_url))

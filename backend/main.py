@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.16.0",
+    version="0.17.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -465,6 +465,7 @@ class RelatedArticle(BaseModel):
     semantic_relevance: Optional[float] = None
     stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
     source_type: Optional[Literal["primary", "secondary"]] = None
+    evidence_level: Optional[Literal["direct_factcheck", "corroborating", "matching_coverage", "related_context"]] = None
 
 
 class FactCheckResult(BaseModel):
@@ -484,6 +485,7 @@ class FactCheckResult(BaseModel):
     corroborating_source_count: Optional[int] = None
     contradicting_source_count: Optional[int] = None
     primary_source_count: Optional[int] = None
+    matching_coverage_count: Optional[int] = None
     reviewed_claim: Optional[str] = None
     claim_match_score: Optional[float] = None
     factcheck_match: Optional[Literal["strong", "related"]] = None
@@ -573,6 +575,7 @@ class V1EvidenceSource(BaseModel):
     semantic_relevance: Optional[float] = None
     stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
     source_type: Optional[Literal["primary", "secondary"]] = None
+    evidence_level: Optional[Literal["direct_factcheck", "corroborating", "matching_coverage", "related_context"]] = None
     reviewed_claim: Optional[str] = None
     rating: Optional[str] = None
     claim_match_score: Optional[float] = None
@@ -600,6 +603,8 @@ class V1FactualEvidenceAssessment(BaseModel):
     contradicted_count: int = 0
     mixed_count: int = 0
     insufficient_count: int = 0
+    coverage_breadth: Literal["none", "limited", "partial", "broad"] = "none"
+    verification_strength: Literal["limited", "moderate", "strong"] = "limited"
 
 
 class V1AnalyzeResponse(AnalyzeResponse):
@@ -649,6 +654,7 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
             publisher=fact_check.source, url=fact_check.source_url,
             reachable=fact_check.source_reachable, independent=True,
             source_type="secondary", stance="contextual" if fact_check.status == "mixed" else None,
+            evidence_level="direct_factcheck",
             reviewed_claim=fact_check.reviewed_claim, rating=fact_check.rating,
             claim_match_score=fact_check.claim_match_score,
         ))
@@ -659,7 +665,7 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
             recency=article.recency, reachable=article.reachable,
             independent=article.independent,
             semantic_relevance=article.semantic_relevance, stance=article.stance,
-            source_type=article.source_type,
+            source_type=article.source_type, evidence_level=article.evidence_level,
         )
         for article in (fact_check.related_articles or []) if article.url
     ]
@@ -792,32 +798,43 @@ def _build_factual_evidence_assessment(
         "mixed": sum(claim.status == "mixed" for claim in claims),
         "insufficient": sum(claim.status == "insufficient_evidence" for claim in claims),
     }
+    claims_with_coverage = sum(bool(
+        claim.supporting_sources or claim.contradicting_sources or claim.related_sources
+    ) for claim in claims)
+    coverage_ratio = claims_with_coverage / len(claims) if claims else 0.0
+    if coverage_ratio >= 0.75:
+        coverage_breadth = "broad"
+    elif coverage_ratio >= 0.40:
+        coverage_breadth = "partial"
+    elif claims_with_coverage:
+        coverage_breadth = "limited"
+    else:
+        coverage_breadth = "none"
+
     common = {
         "claim_count": len(claims),
         "supported_count": counts["supported"],
         "contradicted_count": counts["contradicted"],
         "mixed_count": counts["mixed"],
         "insufficient_count": counts["insufficient"],
+        "coverage_breadth": coverage_breadth,
     }
 
     if classification and not classification.factual_verdict_allowed:
         return V1FactualEvidenceAssessment(
-            status="not_applicable",
-            confidence="low",
+            status="not_applicable", confidence="low", verification_strength="limited",
             summary="FactScope did not assign an overall factual status to this type of content.",
             **common,
         )
     if processing_state == "processing":
         return V1FactualEvidenceAssessment(
-            status="processing",
-            confidence="low",
+            status="processing", confidence="low", verification_strength="limited",
             summary="Claim-level evidence is still being processed.",
             **common,
         )
     if not claims:
         return V1FactualEvidenceAssessment(
-            status="insufficient_evidence",
-            confidence="low",
+            status="insufficient_evidence", confidence="low", verification_strength="limited",
             summary="No claim-level evidence was available for an overall factual assessment.",
             **common,
         )
@@ -852,24 +869,28 @@ def _build_factual_evidence_assessment(
         )
     else:
         status = "insufficient_evidence"
-        summary = "The available evidence is not sufficient to support or contradict the checked claims."
+        if coverage_breadth == "broad":
+            summary = "Matching independent coverage was found for most checked claims, but the available pages could not be inspected strongly enough for a factual verdict."
+        elif coverage_breadth in {"partial", "limited"}:
+            summary = "Matching coverage was found for some checked claims, while other claims still lack corroborating evidence."
+        else:
+            summary = "No sufficiently relevant corroborating evidence was found for the checked claims."
 
     claim_confidences = [claim.confidence for claim in claims]
     if status == "insufficient_evidence" or processing_state != "complete":
         confidence = "low"
+        verification_strength = "limited"
     elif claim_confidences and all(value == "high" for value in claim_confidences):
         confidence = "high"
+        verification_strength = "strong"
     else:
         confidence = "medium"
+        verification_strength = "moderate"
 
     return V1FactualEvidenceAssessment(
-        status=status,
-        confidence=confidence,
-        summary=summary,
-        **common,
+        status=status, confidence=confidence, verification_strength=verification_strength,
+        summary=summary, **common,
     )
-
-
 def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1AnalyzeResponse:
     classification = legacy.content_classification
     # Correct older cached classifications created before checkable breaking

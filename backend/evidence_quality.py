@@ -129,11 +129,24 @@ def assess_text(claim: str, title: str, text: str, url: str = "", publisher: str
 
 
 def enrich_claim_evidence(results: list[dict]) -> list[dict]:
-    """Fetch selected final URLs once and add conservative semantic evidence metadata."""
-    urls = list(dict.fromkeys(
-        article.get("url") for result in results for article in (result.get("related_articles") or [])
-        if article.get("url")
-    ))[:EVIDENCE_CONTENT_MAX_LINKS]
+    """Fetch selected URLs fairly and classify their evidence strength."""
+    queues = [
+        list(dict.fromkeys(
+            article.get("url") for article in (result.get("related_articles") or [])
+            if article.get("url")
+        ))
+        for result in results
+    ]
+    urls, selected = [], set()
+    depth = 0
+    while len(urls) < EVIDENCE_CONTENT_MAX_LINKS and any(depth < len(queue) for queue in queues):
+        for queue in queues:
+            if len(urls) >= EVIDENCE_CONTENT_MAX_LINKS:
+                break
+            if depth < len(queue) and queue[depth] not in selected:
+                urls.append(queue[depth])
+                selected.add(queue[depth])
+        depth += 1
     fetched: dict[str, tuple[str, str] | None] = {}
 
     def fetch(url: str):
@@ -161,8 +174,14 @@ def enrich_claim_evidence(results: list[dict]) -> list[dict]:
         accepted, rejected = [], list(result.get("rejected_articles") or [])
         for article in result.get("related_articles") or []:
             payload = fetched.get(article.get("url"))
+            source_type = _source_type(article.get("url", ""), article.get("source", ""), article.get("title", ""))
             if not payload:
-                accepted.append({**article, "stance": "unavailable", "source_type": _source_type(article.get("url", ""), article.get("source", ""), article.get("title", ""))})
+                accepted.append({
+                    **article,
+                    "stance": "unavailable",
+                    "source_type": source_type,
+                    "evidence_level": "matching_coverage" if float(article.get("relevance_score") or 0) >= 0.5 else "related_context",
+                })
                 continue
             text, final_url = payload
             assessment = assess_text(
@@ -176,13 +195,18 @@ def enrich_claim_evidence(results: list[dict]) -> list[dict]:
                     "relevance_score": assessment["semantic_relevance"],
                 })
                 continue
-            accepted.append({**article, **assessment, "url": final_url})
+            level = (
+                "corroborating" if assessment["stance"] in {"corroborating", "contradicting"}
+                else "related_context"
+            )
+            accepted.append({**article, **assessment, "url": final_url, "evidence_level": level})
 
-        priority = {"primary": 0, "secondary": 1}
+        level_priority = {"corroborating": 0, "matching_coverage": 1, "related_context": 2}
+        source_priority = {"primary": 0, "secondary": 1}
         accepted.sort(key=lambda item: (
-            priority.get(item.get("source_type"), 2),
-            0 if item.get("stance") in {"corroborating", "contradicting"} else 1,
-            -float(item.get("semantic_relevance") or 0),
+            level_priority.get(item.get("evidence_level"), 3),
+            source_priority.get(item.get("source_type"), 2),
+            -float(item.get("semantic_relevance") or item.get("relevance_score") or 0),
         ))
         supporting = [item for item in accepted if item.get("stance") == "corroborating"]
         contradicting = [item for item in accepted if item.get("stance") == "contradicting"]
@@ -201,6 +225,7 @@ def enrich_claim_evidence(results: list[dict]) -> list[dict]:
         result["source_count"] = len(accepted)
         result["corroborating_source_count"] = len(supporting)
         result["contradicting_source_count"] = len(contradicting)
+        result["matching_coverage_count"] = sum(item.get("evidence_level") == "matching_coverage" for item in accepted)
         result["primary_source_count"] = sum(item.get("source_type") == "primary" for item in accepted)
         result["evidence_status"] = evidence_status
         summary = result.get("validation_summary") or {}
