@@ -72,6 +72,18 @@ assert.match(relatedClaimHTML, /Why these results\?/);
 assert.doesNotMatch(relatedClaimHTML, /low evidence confidence/i);
 assert.match(overlayCSS, /fs-limitations-compact > summary[\s\S]*?cursor:\s*pointer/);
 
+const corroboratedClaimHTML = security.buildV1ClaimsHTML([{
+  claim: 'The ministry issued the notification', status: 'supported', confidence: 'medium',
+  supporting_sources: [{
+    title: 'Official notification', publisher: 'Ministry', url: 'https://ministry.gov.in/notice',
+    stance: 'corroborating', source_type: 'primary', recency: 'current',
+  }],
+  contradicting_sources: [], related_sources: [], limitations: [],
+}]);
+assert.match(corroboratedClaimHTML, /Corroborated by independent reporting/);
+assert.match(corroboratedClaimHTML, /Ministry.*Primary source.*Current/);
+assert.doesNotMatch(corroboratedClaimHTML, />Supported</);
+
 const imageAssessmentHTML = security.buildV1ImageAssessmentHTML({
   authenticity_score: 35,
   legacy_score: 35,
@@ -119,5 +131,15 @@ assert.match(articleAssessmentHTML, /Classification confidence: Medium/);
 assert.match(articleAssessmentHTML, /Checkability: Checkable/);
 assert.doesNotMatch(articleAssessmentHTML, /checkable checkability/);
 assert.match(source, /identified as satire, so its statements were not evaluated as literal factual claims/);
+
+const corroboratedArticleHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: { status: 'supported', confidence: 'medium', summary: 'Independent reports corroborate the checked claim.' },
+  overall_evidence_summary: 'Independent reports corroborate the checked claim.',
+  claims: [{ supporting_sources: [{ stance: 'corroborating' }], contradicting_sources: [] }],
+  content_classification: { content_type: 'standard_news', confidence: 'medium', checkability: 'checkable' },
+  source_quality: {}, limitations: [],
+});
+assert.match(corroboratedArticleHTML, /Supported by independent reporting/);
+assert.doesNotMatch(corroboratedArticleHTML, /Supported by direct evidence/);
 
 console.log('frontend security tests passed');

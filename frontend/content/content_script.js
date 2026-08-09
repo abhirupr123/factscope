@@ -482,7 +482,12 @@
     if (!Array.isArray(sources) || sources.length === 0) return '';
     const items = sources.slice(0, 4).map((source) => {
       const title = source.title || source.publisher || 'Evidence source';
-      const publisher = source.publisher ? `<span class="fs-article-source">${source.publisher}</span>` : '';
+      const sourceMeta = [
+        source.publisher,
+        source.source_type === 'primary' ? 'Primary source' : '',
+        ['current', 'recent', 'older'].includes(source.recency) ? formatV1Label(source.recency) : '',
+      ].filter(Boolean).join(' · ');
+      const publisher = sourceMeta ? `<span class="fs-article-source">${sourceMeta}</span>` : '';
       const link = source.url
         ? `<a class="fs-article-link" href="${source.url}" target="_blank" rel="noopener">${title}</a>`
         : `<span>${title}</span>`;
@@ -504,7 +509,13 @@
       const relatedCount = Array.isArray(claim.related_sources) ? claim.related_sources.length : 0;
       let contextualPresentation = presentation;
       let contextNote = '';
-      if (claim.status === 'insufficient_evidence' && relatedCount > 1) {
+      const reportingSupport = (claim.supporting_sources || []).some((source) => source.stance === 'corroborating');
+      const reportingContradiction = (claim.contradicting_sources || []).some((source) => source.stance === 'contradicting');
+      if (claim.status === 'supported' && claim.confidence === 'medium' && reportingSupport) {
+        contextualPresentation = { ...presentation, label: 'Corroborated by independent reporting' };
+      } else if (claim.status === 'contradicted' && claim.confidence === 'medium' && reportingContradiction) {
+        contextualPresentation = { ...presentation, label: 'Contradicted by independent reporting' };
+      } else if (claim.status === 'insufficient_evidence' && relatedCount > 1) {
         contextualPresentation = { ...presentation, label: 'Multiple related reports found' };
         contextNote = 'These reports discuss the claim but are not classified as direct confirmation.';
       } else if (claim.status === 'insufficient_evidence' && relatedCount === 1) {
@@ -547,6 +558,12 @@
       presentation = { ...presentation, label: labels[classification.content_type] || 'Context-only assessment' };
     } else if (factual.status === 'insufficient_evidence' && classification.content_type === 'breaking_news') {
       presentation = { ...presentation, label: 'Evidence still developing' };
+    } else if (factual.status === 'supported' && (result.claims || []).some((claim) =>
+      (claim.supporting_sources || []).some((source) => source.stance === 'corroborating'))) {
+      presentation = { ...presentation, label: 'Supported by independent reporting' };
+    } else if (factual.status === 'contradicted' && (result.claims || []).some((claim) =>
+      (claim.contradicting_sources || []).some((source) => source.stance === 'contradicting'))) {
+      presentation = { ...presentation, label: 'Contradicted by independent reporting' };
     }
     const quality = result.source_quality || {};
     const classificationLabel = classification.content_type

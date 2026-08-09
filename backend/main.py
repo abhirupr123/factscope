@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.14.0",
+    version="0.15.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -462,6 +462,9 @@ class RelatedArticle(BaseModel):
     recency: Optional[Literal["current", "recent", "older", "unknown"]] = None
     reachable: Optional[bool] = None
     independent: Optional[bool] = None
+    semantic_relevance: Optional[float] = None
+    stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
+    source_type: Optional[Literal["primary", "secondary"]] = None
 
 
 class FactCheckResult(BaseModel):
@@ -477,6 +480,10 @@ class FactCheckResult(BaseModel):
     related_articles: Optional[list[RelatedArticle]] = None
     rejected_articles: Optional[list[dict]] = None
     validation_summary: Optional[dict] = None
+    evidence_status: Optional[Literal["corroborated_reporting", "contradicted_reporting", "mixed_reporting", "insufficient"]] = None
+    corroborating_source_count: Optional[int] = None
+    contradicting_source_count: Optional[int] = None
+    primary_source_count: Optional[int] = None
 
 
 class CommunityNote(BaseModel):
@@ -560,6 +567,9 @@ class V1EvidenceSource(BaseModel):
     recency: Optional[Literal["current", "recent", "older", "unknown"]] = None
     reachable: Optional[bool] = None
     independent: Optional[bool] = None
+    semantic_relevance: Optional[float] = None
+    stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
+    source_type: Optional[Literal["primary", "secondary"]] = None
 
 
 class V1ClaimResult(BaseModel):
@@ -622,59 +632,64 @@ def _deduplicate_v1_sources(sources: list[V1EvidenceSource]) -> list[V1EvidenceS
 
 
 def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
-    """Conservatively map legacy corroboration data into the v1 claim model."""
+    """Map validated direct and independent-reporting evidence into v1."""
     direct_source = []
     if fact_check.source_url:
         direct_source.append(V1EvidenceSource(
             title=fact_check.rating or fact_check.claim[:160],
-            publisher=fact_check.source,
-            url=fact_check.source_url,
-            reachable=fact_check.source_reachable,
-            independent=True,
+            publisher=fact_check.source, url=fact_check.source_url,
+            reachable=fact_check.source_reachable, independent=True,
+            source_type="secondary",
         ))
-    related_sources = [
+    article_sources = [
         V1EvidenceSource(
             title=article.title, publisher=article.source, url=article.url,
             relevance_score=article.relevance_score, published_at=article.published_at,
             recency=article.recency, reachable=article.reachable,
             independent=article.independent,
+            semantic_relevance=article.semantic_relevance, stance=article.stance,
+            source_type=article.source_type,
         )
-        for article in (fact_check.related_articles or [])
-        if article.url
+        for article in (fact_check.related_articles or []) if article.url
     ]
-    limitations = []
-    supporting = []
-    contradicting = []
+    semantic_support = [source for source in article_sources if source.stance == "corroborating"]
+    semantic_contradiction = [source for source in article_sources if source.stance == "contradicting"]
+    contextual = [source for source in article_sources if source.stance not in {"corroborating", "contradicting"}]
+    limitations, supporting, contradicting, related = [], [], [], []
 
     if fact_check.status == "verified":
-        status = "supported"
-        confidence = "high" if direct_source else "medium"
-        supporting = direct_source
-        if related_sources:
-            limitations.append(
-                "Related coverage was found but was not classified as direct supporting evidence."
-            )
+        status, confidence, supporting, related = "supported", "high", direct_source, article_sources
+        if related:
+            limitations.append("Related reporting is shown separately from the direct fact-check evidence.")
     elif fact_check.status == "disputed":
-        status = "contradicted"
-        confidence = "high" if direct_source else "medium"
-        contradicting = direct_source
-        if related_sources:
-            limitations.append(
-                "Related coverage was found but was not classified as contradicting evidence."
-            )
+        status, confidence, contradicting, related = "contradicted", "high", direct_source, article_sources
+        if related:
+            limitations.append("Related reporting is shown separately from the direct fact-check evidence.")
     elif fact_check.status == "mixed":
-        status = "mixed"
-        confidence = "medium" if direct_source else "low"
+        status, confidence, related = "mixed", "medium" if direct_source else "low", article_sources
         limitations.append("The available fact-check rating was mixed or context-dependent.")
+    elif fact_check.evidence_status == "corroborated_reporting":
+        status, confidence = "supported", "medium"
+        supporting, related = semantic_support, contextual
+        limitations.append(
+            "This status is based on closely matching independent reporting or an authoritative primary source, not an adjudicated fact-check."
+        )
+    elif fact_check.evidence_status == "contradicted_reporting":
+        status, confidence = "contradicted", "medium"
+        contradicting, related = semantic_contradiction, contextual
+        limitations.append(
+            "This status is based on closely matching independent reporting or an authoritative primary source, not an adjudicated fact-check."
+        )
+    elif fact_check.evidence_status == "mixed_reporting":
+        status, confidence = "mixed", "medium"
+        supporting, contradicting, related = semantic_support, semantic_contradiction, contextual
+        limitations.append("Independent reporting contained both corroborating and contradicting statements.")
     else:
-        status = "insufficient_evidence"
-        confidence = "low"
+        status, confidence, related = "insufficient_evidence", "low", article_sources
         if fact_check.status == "opinion":
             limitations.append("This statement appears to be opinion or rhetoric rather than a checkable fact.")
-        elif related_sources:
-            limitations.append(
-                "Related reporting was found but was not classified as supporting evidence."
-            )
+        elif related:
+            limitations.append("Related reporting was found but did not meet the threshold for direct corroboration.")
         else:
             limitations.append("No direct supporting or contradicting evidence was found.")
 
@@ -688,15 +703,11 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
             + ", ".join(reasons[:4]) + "."
         )
     return V1ClaimResult(
-        claim=fact_check.claim,
-        status=status,
-        confidence=confidence,
+        claim=fact_check.claim, status=status, confidence=confidence,
         supporting_sources=_deduplicate_v1_sources(supporting),
         contradicting_sources=_deduplicate_v1_sources(contradicting),
-        related_sources=_deduplicate_v1_sources(related_sources),
-        limitations=limitations,
+        related_sources=_deduplicate_v1_sources(related), limitations=limitations,
     )
-
 
 def _provider_failed(legacy: AnalyzeResponse) -> bool:
     explanation = (legacy.explanation or "").lower()
@@ -801,6 +812,14 @@ def _build_factual_evidence_assessment(
         )
 
     decisive_kinds = int(counts["supported"] > 0) + int(counts["contradicted"] > 0)
+    reporting_support = any(
+        source.stance == "corroborating"
+        for claim in claims for source in claim.supporting_sources
+    )
+    reporting_contradiction = any(
+        source.stance == "contradicting"
+        for claim in claims for source in claim.contradicting_sources
+    )
     if counts["mixed"] or decisive_kinds > 1 or (
         counts["insufficient"] and (counts["supported"] or counts["contradicted"])
     ):
@@ -808,10 +827,18 @@ def _build_factual_evidence_assessment(
         summary = "The checked claims have mixed outcomes or incomplete evidence."
     elif counts["supported"]:
         status = "supported"
-        summary = "The available direct evidence supports the checked claim or claims."
+        summary = (
+            "Independent reporting or an authoritative primary source corroborates the checked claim or claims."
+            if reporting_support else
+            "The available direct fact-check evidence supports the checked claim or claims."
+        )
     elif counts["contradicted"]:
         status = "contradicted"
-        summary = "The available direct evidence contradicts the checked claim or claims."
+        summary = (
+            "Independent reporting or an authoritative primary source contradicts the checked claim or claims."
+            if reporting_contradiction else
+            "The available direct fact-check evidence contradicts the checked claim or claims."
+        )
     else:
         status = "insufficient_evidence"
         summary = "The available evidence is not sufficient to support or contradict the checked claims."
@@ -2256,13 +2283,29 @@ def _share_status_view(snapshot: dict, result_type: str, fallback_verdict: str) 
     elif status == "insufficient_evidence" and classification.get("content_type") == "breaking_news":
         label = "Evidence still developing"
     else:
-        label = {
-            "supported": "Supported by direct evidence",
-            "contradicted": "Contradicted by direct evidence",
-            "mixed": "Mixed evidence",
-            "insufficient_evidence": "No direct conclusion",
-            "processing": "Evidence check in progress",
-        }.get(status, "Evidence assessment")
+        claims = snapshot.get("claims") or []
+        reporting_support = any(
+            source.get("stance") == "corroborating"
+            for claim in claims for source in (claim.get("supporting_sources") or [])
+            if isinstance(source, dict)
+        )
+        reporting_contradiction = any(
+            source.get("stance") == "contradicting"
+            for claim in claims for source in (claim.get("contradicting_sources") or [])
+            if isinstance(source, dict)
+        )
+        if status == "supported" and reporting_support:
+            label = "Supported by independent reporting"
+        elif status == "contradicted" and reporting_contradiction:
+            label = "Contradicted by independent reporting"
+        else:
+            label = {
+                "supported": "Supported by direct evidence",
+                "contradicted": "Contradicted by direct evidence",
+                "mixed": "Mixed evidence",
+                "insufficient_evidence": "No direct conclusion",
+                "processing": "Evidence check in progress",
+            }.get(status, "Evidence assessment")
     return label, factual.get("confidence", snapshot.get("confidence", "low")), (
         snapshot.get("overall_evidence_summary") or factual.get("summary")
         or "No evidence summary is available."
@@ -2355,7 +2398,13 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             continue
         related = claim.get("related_sources") or []
         claim_status = str(claim.get("status") or "insufficient_evidence")
-        if claim_status == "insufficient_evidence" and len(related) > 1:
+        reporting_support = any(item.get("stance") == "corroborating" for item in (claim.get("supporting_sources") or []))
+        reporting_contradiction = any(item.get("stance") == "contradicting" for item in (claim.get("contradicting_sources") or []))
+        if claim_status == "supported" and claim.get("confidence") == "medium" and reporting_support:
+            claim_label = "Corroborated by independent reporting"
+        elif claim_status == "contradicted" and claim.get("confidence") == "medium" and reporting_contradiction:
+            claim_label = "Contradicted by independent reporting"
+        elif claim_status == "insufficient_evidence" and len(related) > 1:
             claim_label = "Multiple related reports found"
         elif claim_status == "insufficient_evidence" and len(related) == 1:
             claim_label = "Related coverage found"

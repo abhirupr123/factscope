@@ -25,6 +25,7 @@ from config import (
     EVIDENCE_MAX_LINKS, EVIDENCE_MAX_WORKERS,
 )
 from safe_fetch import safe_probe, UnsafeURLError
+from evidence_quality import enrich_claim_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -518,7 +519,7 @@ def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
         "Image claim evidence corr=%s sources=%d fc=%s",
         result["corroboration"], result["source_count"], result["status"],
     )
-    return _validate_evidence_links([result], source_url=source_url)
+    return enrich_claim_evidence(_validate_evidence_links([result], source_url=source_url))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main pipeline (article-length text)
@@ -728,4 +729,4 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
                     fc.get("status"))
         results.append(fc)
 
-    return _validate_evidence_links(results, source_url=source_url)
+    return enrich_claim_evidence(_validate_evidence_links(results, source_url=source_url))
