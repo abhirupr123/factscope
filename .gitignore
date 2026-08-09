@@ -33,3 +33,5 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Generated evaluation reports
+backend/evaluation/reports/
