@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.17.0",
+    version="0.18.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -465,7 +465,10 @@ class RelatedArticle(BaseModel):
     semantic_relevance: Optional[float] = None
     stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
     source_type: Optional[Literal["primary", "secondary"]] = None
-    evidence_level: Optional[Literal["direct_factcheck", "corroborating", "matching_coverage", "related_context"]] = None
+    evidence_level: Optional[Literal["direct_factcheck", "corroborating", "matching_coverage", "related_context", "broader_context"]] = None
+    discovery_basis: Optional[Literal["strong_match", "topic_overlap", "repeated_report", "full_text_context"]] = None
+    additional_reports: int = 0
+    repeated_by: list[str] = Field(default_factory=list)
 
 
 class FactCheckResult(BaseModel):
@@ -486,6 +489,8 @@ class FactCheckResult(BaseModel):
     contradicting_source_count: Optional[int] = None
     primary_source_count: Optional[int] = None
     matching_coverage_count: Optional[int] = None
+    context_count: Optional[int] = None
+    context_articles: Optional[list[RelatedArticle]] = None
     reviewed_claim: Optional[str] = None
     claim_match_score: Optional[float] = None
     factcheck_match: Optional[Literal["strong", "related"]] = None
@@ -575,7 +580,10 @@ class V1EvidenceSource(BaseModel):
     semantic_relevance: Optional[float] = None
     stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
     source_type: Optional[Literal["primary", "secondary"]] = None
-    evidence_level: Optional[Literal["direct_factcheck", "corroborating", "matching_coverage", "related_context"]] = None
+    evidence_level: Optional[Literal["direct_factcheck", "corroborating", "matching_coverage", "related_context", "broader_context"]] = None
+    discovery_basis: Optional[Literal["strong_match", "topic_overlap", "repeated_report", "full_text_context"]] = None
+    additional_reports: int = 0
+    repeated_by: list[str] = Field(default_factory=list)
     reviewed_claim: Optional[str] = None
     rating: Optional[str] = None
     claim_match_score: Optional[float] = None
@@ -588,6 +596,8 @@ class V1ClaimResult(BaseModel):
     supporting_sources: list[V1EvidenceSource] = Field(default_factory=list)
     contradicting_sources: list[V1EvidenceSource] = Field(default_factory=list)
     related_sources: list[V1EvidenceSource] = Field(default_factory=list)
+    context_sources: list[V1EvidenceSource] = Field(default_factory=list)
+    context_notes: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
 
@@ -604,6 +614,7 @@ class V1FactualEvidenceAssessment(BaseModel):
     mixed_count: int = 0
     insufficient_count: int = 0
     coverage_breadth: Literal["none", "limited", "partial", "broad"] = "none"
+    context_breadth: Literal["none", "limited", "partial", "broad"] = "none"
     verification_strength: Literal["limited", "moderate", "strong"] = "limited"
 
 
@@ -646,7 +657,7 @@ def _deduplicate_v1_sources(sources: list[V1EvidenceSource]) -> list[V1EvidenceS
 
 
 def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
-    """Map validated direct and independent-reporting evidence into v1."""
+    """Map verdict-grade evidence and non-decisive context separately into v1."""
     direct_source = []
     if fact_check.source_url:
         direct_source.append(V1EvidenceSource(
@@ -654,20 +665,33 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
             publisher=fact_check.source, url=fact_check.source_url,
             reachable=fact_check.source_reachable, independent=True,
             source_type="secondary", stance="contextual" if fact_check.status == "mixed" else None,
-            evidence_level="direct_factcheck",
+            evidence_level=(
+                "direct_factcheck"
+                if fact_check.status in {"verified", "disputed", "mixed"}
+                else "related_context"
+            ),
             reviewed_claim=fact_check.reviewed_claim, rating=fact_check.rating,
             claim_match_score=fact_check.claim_match_score,
         ))
-    article_sources = [
-        V1EvidenceSource(
+
+    def map_article(article: RelatedArticle) -> V1EvidenceSource:
+        return V1EvidenceSource(
             title=article.title, publisher=article.source, url=article.url,
             relevance_score=article.relevance_score, published_at=article.published_at,
             recency=article.recency, reachable=article.reachable,
             independent=article.independent,
             semantic_relevance=article.semantic_relevance, stance=article.stance,
             source_type=article.source_type, evidence_level=article.evidence_level,
+            discovery_basis=article.discovery_basis,
+            additional_reports=article.additional_reports,
+            repeated_by=article.repeated_by,
         )
-        for article in (fact_check.related_articles or []) if article.url
+
+    article_sources = [
+        map_article(article) for article in (fact_check.related_articles or []) if article.url
+    ]
+    context_sources = [
+        map_article(article) for article in (fact_check.context_articles or []) if article.url
     ]
     semantic_support = [source for source in article_sources if source.stance == "corroborating"]
     semantic_contradiction = [source for source in article_sources if source.stance == "contradicting"]
@@ -706,26 +730,58 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         if fact_check.status == "opinion":
             limitations.append("This statement appears to be opinion or rhetoric rather than a checkable fact.")
         elif related:
-            limitations.append("Related reporting was found but did not meet the threshold for direct corroboration.")
+            limitations.append("Reporting or a related fact-check was found but did not meet the threshold for a factual status.")
+        elif context_sources:
+            limitations.append("Broader context was found, but no source directly matched enough of the claim for a factual status.")
         else:
-            limitations.append("No direct supporting or contradicting evidence was found.")
+            limitations.append("No useful external coverage was found for this claim.")
 
-    if fact_check.rejected_articles:
+    material_rejections = [
+        item for item in (fact_check.rejected_articles or [])
+        if isinstance(item, dict) and item.get("reason") not in {
+            "duplicate_publisher", "syndicated_duplicate",
+        }
+    ]
+    if material_rejections:
         reasons = sorted({
             str(item.get("reason") or "validation_failed").replace("_", " ")
-            for item in fact_check.rejected_articles if isinstance(item, dict)
+            for item in material_rejections
         })
         limitations.append(
-            f"{len(fact_check.rejected_articles)} candidate source(s) were excluded after validation: "
+            f"{len(material_rejections)} candidate source(s) could not be shown after validation: "
             + ", ".join(reasons[:4]) + "."
         )
+
+    all_visible = [*supporting, *contradicting, *related, *context_sources]
+    matching_count = sum(source.evidence_level == "matching_coverage" for source in all_visible)
+    broader_count = len(context_sources)
+    additional_count = sum(source.additional_reports for source in all_visible)
+    has_primary = any(source.source_type == "primary" for source in all_visible)
+    context_notes = []
+    if matching_count:
+        context_notes.append(
+            f"{matching_count} matching report{'s' if matching_count != 1 else ''} found."
+        )
+    if broader_count:
+        context_notes.append(
+            f"{broader_count} additional source{'s' if broader_count != 1 else ''} provide broader or repeated-report context."
+        )
+    if additional_count:
+        context_notes.append(
+            f"{additional_count} additional similar result{'s were' if additional_count != 1 else ' was'} grouped and not counted as independent confirmation."
+        )
+    if all_visible and not has_primary:
+        context_notes.append("No authoritative primary source was identified in the displayed results.")
+
     return V1ClaimResult(
         claim=fact_check.claim, status=status, confidence=confidence,
         supporting_sources=_deduplicate_v1_sources(supporting),
         contradicting_sources=_deduplicate_v1_sources(contradicting),
-        related_sources=_deduplicate_v1_sources(related), limitations=limitations,
+        related_sources=_deduplicate_v1_sources(related),
+        context_sources=_deduplicate_v1_sources(context_sources),
+        context_notes=context_notes,
+        limitations=limitations,
     )
-
 def _provider_failed(legacy: AnalyzeResponse) -> bool:
     explanation = (legacy.explanation or "").lower()
     return legacy.verdict == "unknown" and any(marker in explanation for marker in (
@@ -798,18 +854,35 @@ def _build_factual_evidence_assessment(
         "mixed": sum(claim.status == "mixed" for claim in claims),
         "insufficient": sum(claim.status == "insufficient_evidence" for claim in claims),
     }
-    claims_with_coverage = sum(bool(
-        claim.supporting_sources or claim.contradicting_sources or claim.related_sources
+    def claim_has_matching_coverage(claim: V1ClaimResult) -> bool:
+        sources = [
+            *claim.supporting_sources,
+            *claim.contradicting_sources,
+            *claim.related_sources,
+        ]
+        return any(
+            source.evidence_level in {"direct_factcheck", "corroborating", "matching_coverage"}
+            for source in sources
+        )
+
+    def breadth(count: int) -> str:
+        ratio = count / len(claims) if claims else 0.0
+        if ratio >= 0.75:
+            return "broad"
+        if ratio >= 0.40:
+            return "partial"
+        if count:
+            return "limited"
+        return "none"
+
+    claims_with_coverage = sum(claim_has_matching_coverage(claim) for claim in claims)
+    claims_with_context = sum(bool(
+        claim.context_sources or any(
+            source.evidence_level == "related_context" for source in claim.related_sources
+        )
     ) for claim in claims)
-    coverage_ratio = claims_with_coverage / len(claims) if claims else 0.0
-    if coverage_ratio >= 0.75:
-        coverage_breadth = "broad"
-    elif coverage_ratio >= 0.40:
-        coverage_breadth = "partial"
-    elif claims_with_coverage:
-        coverage_breadth = "limited"
-    else:
-        coverage_breadth = "none"
+    coverage_breadth = breadth(claims_with_coverage)
+    context_breadth = breadth(claims_with_context)
 
     common = {
         "claim_count": len(claims),
@@ -818,6 +891,7 @@ def _build_factual_evidence_assessment(
         "mixed_count": counts["mixed"],
         "insufficient_count": counts["insufficient"],
         "coverage_breadth": coverage_breadth,
+        "context_breadth": context_breadth,
     }
 
     if classification and not classification.factual_verdict_allowed:
@@ -873,8 +947,10 @@ def _build_factual_evidence_assessment(
             summary = "Matching independent coverage was found for most checked claims, but the available pages could not be inspected strongly enough for a factual verdict."
         elif coverage_breadth in {"partial", "limited"}:
             summary = "Matching coverage was found for some checked claims, while other claims still lack corroborating evidence."
+        elif context_breadth != "none":
+            summary = "Broader reporting and background context were found, but they do not directly confirm or contradict the checked claims."
         else:
-            summary = "No sufficiently relevant corroborating evidence was found for the checked claims."
+            summary = "No useful external coverage was found for the checked claims."
 
     claim_confidences = [claim.confidence for claim in claims]
     if status == "insufficient_evidence" or processing_state != "complete":

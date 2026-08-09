@@ -73,7 +73,7 @@ FACTCHECK_API_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:searc
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en&gl=US&ceid=US:en"
 
 CLAIM_EXTRACTION_PROMPT = """\
-You are a faithful claim extractor. Given page content, identify 3-4 specific, \
+You are a faithful claim extractor. Given page content, identify up to 6 specific, \
 verifiable factual claims that represent the article's MAIN assertions.
 
 Respond with ONLY a JSON array of short claim strings. No markdown, no backticks.
@@ -94,7 +94,7 @@ If A attacked B, say "A attacked B", never "B attacked A".
 - Extract only factual assertions that could be checked (names, numbers, events, dates).
 - Ignore opinions, subjective statements, and hedged language ("might", "could").
 - Each claim must be a self-contained sentence under 25 words.
-- If the content has fewer than 2 verifiable claims, return an empty array [].
+- If the content has one verifiable main claim, return that claim; return [] only when none are checkable.
 - Do NOT invent claims. Only extract what the text actually states."""
 
 _FALSE_PATTERNS = re.compile(
@@ -285,7 +285,7 @@ def _titles_are_syndicated(left: str, right: str) -> bool:
 
 def _match_claims_to_articles(claims: list[str], articles: list[dict],
                               source_url: str = "") -> dict[int, dict]:
-    """Match claims to independent candidates and retain validation metadata."""
+    """Separate strict evidence candidates from useful broader context."""
     source_domain = _extract_domain(source_url)
     candidates = []
     for article in articles:
@@ -303,85 +303,109 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
             "self_source": bool(source_domain and _source_matches_domain(source, source_domain)),
         })
 
-    results = {}
-    for index, claim in enumerate(claims):
-        claim_keywords = set(_extract_keywords(claim, max_words=10).split())
-        if len(claim_keywords) < 2:
-            results[index] = {
-                "source_count": 0, "corroboration": "not_corroborated",
-                "average_relevance": 0.0, "related_articles": [], "rejected_articles": [],
-            }
-            continue
+    def article_record(candidate: dict, relevance: float, basis: str) -> dict:
+        return {
+            "title": candidate["title"], "source": candidate["source"],
+            "url": candidate["url"], "relevance_score": round(relevance, 3),
+            "published_at": candidate["published_at"],
+            "recency": _recency_label(candidate["published_at"]),
+            "independent": True if basis == "strong_match" else False if basis == "repeated_report" else None,
+            "discovery_basis": basis,
+            "additional_reports": 0,
+            "repeated_by": [],
+        }
 
-        matching_publishers = set()
-        matched_articles = []
-        rejection_items = []
-        relevance_scores = []
-        threshold = min(len(claim_keywords), max(3, math.ceil(len(claim_keywords) * 0.5)))
-        ranked_candidates = []
-        for candidate in candidates:
-            overlap = sum(1 for keyword in claim_keywords if keyword in candidate["combined"])
-            relevance = overlap / len(claim_keywords) if claim_keywords else 0.0
-            if overlap < threshold:
-                if overlap >= 2 and len(rejection_items) < 5:
-                    rejection_items.append({
-                        "title": candidate["title"], "source": candidate["source"],
-                        "url": candidate["url"], "reason": "low_relevance",
-                        "relevance_score": round(relevance, 3),
-                    })
-                continue
-            ranked_candidates.append((relevance, candidate))
-
-        ranked_candidates.sort(key=lambda item: (
-            -item[0],
-            0 if _recency_label(item[1]["published_at"]) in {"current", "recent"} else 1,
-            item[1]["title"].casefold(),
-        ))
-        for relevance, candidate in ranked_candidates:
+    def add_ranked(ranked: list[tuple[float, dict]], accepted: list[dict],
+                   publishers: set[str], rejections: list[dict], basis: str,
+                   duplicate_context: list[dict]) -> None:
+        for relevance, candidate in ranked:
             if candidate["self_source"]:
-                rejection_items.append({
+                rejections.append({
                     "title": candidate["title"], "source": candidate["source"],
                     "url": candidate["url"], "reason": "self_corroboration",
                     "relevance_score": round(relevance, 3),
                 })
                 continue
             publisher_id = candidate["publisher_id"] or "unknown"
-            if publisher_id in matching_publishers:
-                rejection_items.append({
+            duplicate = next((item for item in accepted if (
+                item.get("publisher_id") == publisher_id
+                or _titles_are_syndicated(candidate["title"], item["title"])
+            )), None)
+            if duplicate:
+                duplicate["additional_reports"] += 1
+                if candidate["source"] and candidate["source"] not in duplicate["repeated_by"]:
+                    duplicate["repeated_by"].append(candidate["source"])
+                reason = "duplicate_publisher" if publisher_id in publishers else "syndicated_duplicate"
+                rejections.append({
                     "title": candidate["title"], "source": candidate["source"],
-                    "url": candidate["url"], "reason": "duplicate_publisher",
+                    "url": candidate["url"], "reason": reason,
                     "relevance_score": round(relevance, 3),
                 })
+                repeated = article_record(candidate, relevance, "repeated_report")
+                repeated["publisher_id"] = publisher_id
+                duplicate_context.append(repeated)
                 continue
-            if any(_titles_are_syndicated(candidate["title"], item["title"]) for item in matched_articles):
-                rejection_items.append({
-                    "title": candidate["title"], "source": candidate["source"],
-                    "url": candidate["url"], "reason": "syndicated_duplicate",
-                    "relevance_score": round(relevance, 3),
-                })
-                continue
-            matching_publishers.add(publisher_id)
-            relevance_scores.append(relevance)
-            matched_articles.append({
-                "title": candidate["title"], "source": candidate["source"],
-                "url": candidate["url"], "relevance_score": round(relevance, 3),
-                "published_at": candidate["published_at"],
-                "recency": _recency_label(candidate["published_at"]),
-                "independent": True, "reachable": None,
-            })
+            publishers.add(publisher_id)
+            record = article_record(candidate, relevance, basis)
+            record["publisher_id"] = publisher_id
+            accepted.append(record)
 
+    results = {}
+    for index, claim in enumerate(claims):
+        claim_keywords = set(_extract_keywords(claim, max_words=10).split())
+        if len(claim_keywords) < 2:
+            results[index] = {
+                "source_count": 0, "context_count": 0,
+                "corroboration": "not_corroborated", "average_relevance": 0.0,
+                "related_articles": [], "context_articles": [], "rejected_articles": [],
+            }
+            continue
+
+        strict_threshold = min(len(claim_keywords), max(3, math.ceil(len(claim_keywords) * 0.5)))
+        context_threshold = min(strict_threshold, max(2, math.ceil(len(claim_keywords) * 0.25)))
+        strict_ranked, context_ranked = [], []
+        for candidate in candidates:
+            overlap = sum(1 for keyword in claim_keywords if keyword in candidate["combined"])
+            relevance = overlap / len(claim_keywords)
+            if overlap >= strict_threshold:
+                strict_ranked.append((relevance, candidate))
+            elif overlap >= context_threshold:
+                context_ranked.append((relevance, candidate))
+
+        rank_key = lambda item: (
+            -item[0],
+            0 if _recency_label(item[1]["published_at"]) in {"current", "recent"} else 1,
+            item[1]["title"].casefold(),
+        )
+        strict_ranked.sort(key=rank_key)
+        context_ranked.sort(key=rank_key)
+        matched_articles, context_articles, rejection_items = [], [], []
+        strong_publishers, context_publishers = set(), set()
+        add_ranked(
+            strict_ranked, matched_articles, strong_publishers, rejection_items,
+            "strong_match", context_articles,
+        )
+        add_ranked(
+            context_ranked, context_articles, context_publishers, rejection_items,
+            "topic_overlap", context_articles,
+        )
+        for item in matched_articles + context_articles:
+            item.pop("publisher_id", None)
+
+        relevance_scores = [float(item.get("relevance_score") or 0) for item in matched_articles]
         source_count = len(matched_articles)
         average_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
         results[index] = {
             "source_count": source_count,
+            "context_count": len(context_articles),
             "corroboration": _classify_corroboration(source_count, average_relevance),
             "average_relevance": round(average_relevance, 3),
             "related_articles": matched_articles[:10],
-            "rejected_articles": rejection_items[:8],
-            "discovered_count": len(ranked_candidates),
+            "context_articles": context_articles[:8],
+            "rejected_articles": rejection_items[:16],
+            "discovered_count": len(strict_ranked) + len(context_ranked),
         }
     return results
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Claim extraction
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -423,7 +447,7 @@ def extract_claims(text: str, title: str = "") -> list[str]:
         if not isinstance(claims, list):
             logger.info("Claim extraction: LLM returned non-list JSON")
             return []
-        filtered = [str(c).strip() for c in claims if isinstance(c, str) and len(c.strip()) > 10][:4]
+        filtered = [str(c).strip() for c in claims if isinstance(c, str) and len(c.strip()) > 10][:6]
         logger.info("Claim extraction: found %d claims", len(filtered))
         return filtered
     except Exception as exc:
@@ -629,17 +653,24 @@ def _probe_evidence_url(url: str) -> tuple[bool, str, str | None]:
         return False, "", "unreachable"
 
 def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[dict]:
-    """Resolve and validate evidence fairly across claims."""
+    """Validate strict evidence and broader context fairly across claims."""
     direct_urls = list(dict.fromkeys(
         result.get("source_url") for result in results if result.get("source_url")
     ))
-    article_queues = [
-        list(dict.fromkeys(
-            article.get("url") for article in (result.get("related_articles") or [])
-            if article.get("url")
-        ))
-        for result in results
-    ]
+    article_queues = []
+    for result in results:
+        strong = result.get("related_articles") or []
+        context = result.get("context_articles") or []
+        interleaved = []
+        for index in range(max(len(strong), len(context))):
+            if index < len(strong):
+                interleaved.append(strong[index])
+            if index < len(context):
+                interleaved.append(context[index])
+        article_queues.append(list(dict.fromkeys(
+            article.get("url") for article in interleaved if article.get("url")
+        )))
+
     selected_urls = direct_urls[:EVIDENCE_MAX_LINKS]
     selected_set = set(selected_urls)
     depth = 0
@@ -702,41 +733,51 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
             result["status"] = "no_fact_check_found"
             result["source_reachable"] = False
 
-        accepted = []
-        seen_final_urls = set()
-        seen_final_domains = set()
-        for article in result.get("related_articles") or []:
-            candidate_url = article.get("url") or ""
-            reachable, final_url, reason = probes.get(candidate_url, (False, "", "validation_budget_exceeded"))
-            final_domain = _extract_domain(final_url)
-            if reachable and is_scanned_domain(final_domain):
-                reachable, reason = False, "self_corroboration"
-            normalized_final = _normalize_url(final_url)
-            if reachable and normalized_final in seen_final_urls:
-                reachable, reason = False, "duplicate_url"
-            elif reachable and final_domain and final_domain in seen_final_domains:
-                reachable, reason = False, "duplicate_publisher"
-            if not reachable:
-                rejections.append({
-                    "title": article.get("title", ""), "source": article.get("source"),
-                    "url": candidate_url, "reason": reason or "unreachable",
-                    "relevance_score": article.get("relevance_score"),
-                })
-                continue
-            seen_final_urls.add(normalized_final)
-            if final_domain:
-                seen_final_domains.add(final_domain)
-            accepted.append({**article, "url": final_url, "reachable": True})
+        seen_final_urls, seen_strong_domains = set(), set()
 
-        result["related_articles"] = accepted[:5]
-        result["source_count"] = len(accepted)
-        relevance_scores = [float(article.get("relevance_score") or 0) for article in accepted]
+        def validate_articles(items: list[dict], *, strict: bool) -> list[dict]:
+            accepted = []
+            for article in items:
+                candidate_url = article.get("url") or ""
+                reachable, final_url, reason = probes.get(
+                    candidate_url, (False, "", "validation_budget_exceeded")
+                )
+                final_domain = _extract_domain(final_url)
+                if reachable and is_scanned_domain(final_domain):
+                    reachable, reason = False, "self_corroboration"
+                normalized_final = _normalize_url(final_url)
+                if reachable and normalized_final in seen_final_urls:
+                    reachable, reason = False, "duplicate_url"
+                if strict and reachable and final_domain and final_domain in seen_strong_domains:
+                    reachable, reason = False, "duplicate_publisher"
+                if not reachable:
+                    rejections.append({
+                        "title": article.get("title", ""), "source": article.get("source"),
+                        "url": candidate_url, "reason": reason or "unreachable",
+                        "relevance_score": article.get("relevance_score"),
+                    })
+                    continue
+                seen_final_urls.add(normalized_final)
+                if strict and final_domain:
+                    seen_strong_domains.add(final_domain)
+                accepted.append({**article, "url": final_url, "reachable": True})
+            return accepted
+
+        accepted_strong = validate_articles(result.get("related_articles") or [], strict=True)
+        accepted_context = validate_articles(result.get("context_articles") or [], strict=False)
+        result["related_articles"] = accepted_strong[:5]
+        result["context_articles"] = accepted_context[:5]
+        result["source_count"] = len(accepted_strong)
+        result["context_count"] = len(accepted_context)
+        relevance_scores = [float(article.get("relevance_score") or 0) for article in accepted_strong]
         average_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
         result["average_relevance"] = round(average_relevance, 3)
-        result["corroboration"] = _classify_corroboration(len(accepted), average_relevance)
-        result["rejected_articles"] = rejections[:16]
+        result["corroboration"] = _classify_corroboration(len(accepted_strong), average_relevance)
+        result["rejected_articles"] = rejections[:24]
         result["validation_summary"] = {
-            "shown": len(accepted) + int(bool(result.get("source_url"))),
+            "shown": len(accepted_strong) + len(accepted_context) + int(bool(result.get("source_url"))),
+            "strict_evidence": len(accepted_strong),
+            "broader_context": len(accepted_context),
             "rejected": len(rejections),
         }
         rejection_reasons = {}
@@ -744,9 +785,9 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
             reason = str(item.get("reason") or "validation_failed")
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
         logger.info(
-            "Evidence validation shown=%d rejected=%d average_relevance=%.3f reasons=%s",
-            result["validation_summary"]["shown"], len(rejections), average_relevance,
-            rejection_reasons,
+            "Evidence validation shown=%d strict=%d context=%d rejected=%d reasons=%s",
+            result["validation_summary"]["shown"], len(accepted_strong),
+            len(accepted_context), len(rejections), rejection_reasons,
         )
     return results
 _EMPTY_RESULT = {
@@ -762,7 +803,7 @@ _NEWS_DEFAULT = {"source_count": 0, "corroboration": "not_corroborated", "relate
 
 
 def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict]:
-    """Extract claims and search fact-check and news evidence per claim."""
+    """Extract claims and gather both verdict-grade evidence and broader context."""
     if not is_available():
         return []
 
@@ -774,8 +815,13 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
     fc_results: dict[int, dict] = {}
     news_results: dict[int, dict] = {}
     title_query = _extract_keywords(title, max_words=8) if title else ""
-    claim_queries = [_extract_keywords(claim, max_words=10) for claim in claims]
-    unique_queries = list(dict.fromkeys(query for query in [title_query, *claim_queries] if query))
+    claim_query_sets = []
+    for claim in claims:
+        queries = list(filter(None, (_extract_keywords(claim, max_words=7),)))
+        claim_query_sets.append(queries)
+    unique_queries = list(dict.fromkeys(
+        query for query in [title_query, *(q for queries in claim_query_sets for q in queries)] if query
+    ))
     query_articles: dict[str, list[dict]] = {}
 
     workers = max(1, min(EVIDENCE_MAX_WORKERS, len(claims) + len(unique_queries)))
@@ -799,10 +845,15 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
                     query_articles[query] = []
 
     title_articles = query_articles.get(title_query, []) if title_query else []
-    for index, (claim, query) in enumerate(zip(claims, claim_queries)):
-        combined = []
-        seen_urls = set()
-        for article in [*query_articles.get(query, []), *title_articles]:
+    for index, (claim, queries) in enumerate(zip(claims, claim_query_sets)):
+        combined, seen_urls = [], set()
+        for query in queries:
+            for article in query_articles.get(query, []):
+                url = article.get("url") or ""
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    combined.append(article)
+        for article in title_articles:
             url = article.get("url") or ""
             if url and url not in seen_urls:
                 seen_urls.add(url)
@@ -810,8 +861,8 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
         matched = _match_claims_to_articles([claim], combined, source_url=source_url).get(0, _NEWS_DEFAULT)
         news_results[index] = matched
         logger.info(
-            "Claim discovery index=%d candidates=%d matched=%d",
-            index + 1, len(combined), matched.get("source_count", 0),
+            "Claim discovery index=%d candidates=%d matched=%d context=%d",
+            index + 1, len(combined), matched.get("source_count", 0), matched.get("context_count", 0),
         )
 
     results = []
@@ -819,13 +870,16 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
         fc = fc_results.get(index, {"claim": claim, **_EMPTY_RESULT})
         news = news_results.get(index, _NEWS_DEFAULT)
         fc["source_count"] = news.get("source_count", 0)
+        fc["context_count"] = news.get("context_count", 0)
         fc["corroboration"] = news.get("corroboration", "not_corroborated")
         fc["average_relevance"] = news.get("average_relevance", 0.0)
         fc["related_articles"] = news.get("related_articles", [])
+        fc["context_articles"] = news.get("context_articles", [])
         fc["rejected_articles"] = news.get("rejected_articles", [])
         logger.info(
-            "Claim evidence result index=%d corr=%s sources=%d fc=%s",
-            index + 1, fc.get("corroboration"), fc.get("source_count", 0), fc.get("status"),
+            "Claim evidence result index=%d corr=%s sources=%d context=%d fc=%s",
+            index + 1, fc.get("corroboration"), fc.get("source_count", 0),
+            fc.get("context_count", 0), fc.get("status"),
         )
         results.append(fc)
 
