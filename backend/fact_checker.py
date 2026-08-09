@@ -96,12 +96,17 @@ If A attacked B, say "A attacked B", never "B attacked A".
 - If the content has fewer than 2 verifiable claims, return an empty array [].
 - Do NOT invent claims. Only extract what the text actually states."""
 
-_DISPUTE_PATTERNS = re.compile(
-    r"false|pants on fire|mostly false|misleading|incorrect|wrong|fabricat|debunk|hoax|fake",
+_FALSE_PATTERNS = re.compile(
+    r"\bfalse\b|not true|not correct|pants on fire|\bincorrect\b|\bwrong\b|fabricat|debunk|\bhoax\b|\bfake\b",
+    re.IGNORECASE,
+)
+_CONTEXT_RATING_PATTERNS = re.compile(
+    r"mostly false|mostly true|partly false|partly true|half true|misleading|missing context|"
+    r"needs context|mixture|mixed|unproven|unsupported|outdated|altered",
     re.IGNORECASE,
 )
 _VERIFY_PATTERNS = re.compile(
-    r"true|mostly true|correct|accurate|confirmed|verified",
+    r"\btrue\b|\bcorrect\b|\baccurate\b|confirmed|verified",
     re.IGNORECASE,
 )
 
@@ -420,12 +425,34 @@ def extract_claims(text: str, title: str = "") -> list[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _classify_rating(rating_text: str) -> str:
-    """Map a fact-checker's textual rating to disputed/verified/mixed."""
-    if _DISPUTE_PATTERNS.search(rating_text):
+    """Map nuanced ratings without treating context warnings as categorical falsehoods."""
+    if _CONTEXT_RATING_PATTERNS.search(rating_text):
+        return "mixed"
+    if _FALSE_PATTERNS.search(rating_text):
         return "disputed"
     if _VERIFY_PATTERNS.search(rating_text):
         return "verified"
     return "mixed"
+
+
+def _factcheck_claim_similarity(query: str, reviewed_claim: str) -> float:
+    """Conservative lexical match used before a review may affect claim status."""
+    query_tokens = _title_tokens(query)
+    reviewed_tokens = _title_tokens(reviewed_claim)
+    if len(query_tokens) < 2 or len(reviewed_tokens) < 2:
+        return 0.0
+    overlap = len(query_tokens & reviewed_tokens)
+    precision = overlap / len(reviewed_tokens)
+    recall = overlap / len(query_tokens)
+    score = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    query_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", query))
+    reviewed_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", reviewed_claim))
+    if query_numbers and reviewed_numbers and query_numbers != reviewed_numbers:
+        score *= 0.55
+    polarity_pattern = re.compile(r"\b(?:no|not|never|without|neither|none|free)\b", re.IGNORECASE)
+    if bool(polarity_pattern.search(query)) != bool(polarity_pattern.search(reviewed_claim)):
+        score *= 0.50
+    return round(score, 3)
 
 
 def search_factcheck_api(claim: str) -> dict:
@@ -462,17 +489,30 @@ def search_factcheck_api(claim: str) -> dict:
         if not api_claims:
             return result
 
-        best = api_claims[0]
-        reviews = best.get("claimReview", [])
-        if not reviews:
+        candidates = []
+        for api_claim in api_claims:
+            reviewed_claim = str(api_claim.get("text") or "").strip()
+            match_score = _factcheck_claim_similarity(claim, reviewed_claim)
+            for review in api_claim.get("claimReview", []) or []:
+                candidates.append((match_score, reviewed_claim, review))
+        if not candidates:
             return result
 
-        review = reviews[0]
+        match_score, reviewed_claim, review = max(candidates, key=lambda item: item[0])
+        # Weak search results must not appear as evidence for a different claim.
+        if match_score < 0.40:
+            logger.info("Fact Check match rejected score=%.3f", match_score)
+            return result
+
         rating_text = review.get("textualRating", "")
         result["source"] = review.get("publisher", {}).get("name")
         result["source_url"] = review.get("url")
         result["rating"] = rating_text
-        result["status"] = _classify_rating(rating_text)
+        result["reviewed_claim"] = reviewed_claim
+        result["claim_match_score"] = match_score
+        result["factcheck_match"] = "strong" if match_score >= 0.62 else "related"
+        # Only a strong claim match may determine supported/contradicted/mixed.
+        result["status"] = _classify_rating(rating_text) if match_score >= 0.62 else "no_fact_check_found"
 
     except requests.RequestException as exc:
         logger.warning("Fact Check API request failed: %s", exc)
@@ -613,31 +653,32 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
     for result in results:
         rejections = list(result.get("rejected_articles") or [])
         direct_url = result.get("source_url")
-        if result.get("status") in {"verified", "disputed", "mixed"}:
-            if not direct_url:
+        decisive_factcheck = result.get("status") in {"verified", "disputed", "mixed"}
+        if direct_url:
+            reachable, final_url, reason = probes.get(direct_url, (False, "", "unreachable"))
+            final_domain = _extract_domain(final_url)
+            if reachable and is_scanned_domain(final_domain):
+                reachable, reason = False, "self_corroboration"
+            if reachable:
+                result["source_url"] = final_url
+                result["source_reachable"] = True
+            else:
                 rejections.append({
                     "title": result.get("rating") or result.get("claim", ""),
-                    "source": result.get("source"), "url": "", "reason": "missing_url",
+                    "source": result.get("source"), "url": direct_url,
+                    "reason": reason or "unreachable",
                 })
-                result["status"] = "no_fact_check_found"
-                result["source_reachable"] = False
-            else:
-                reachable, final_url, reason = probes.get(direct_url, (False, "", "unreachable"))
-                final_domain = _extract_domain(final_url)
-                if reachable and is_scanned_domain(final_domain):
-                    reachable, reason = False, "self_corroboration"
-                if reachable:
-                    result["source_url"] = final_url
-                    result["source_reachable"] = True
-                else:
-                    rejections.append({
-                        "title": result.get("rating") or result.get("claim", ""),
-                        "source": result.get("source"), "url": direct_url,
-                        "reason": reason or "unreachable",
-                    })
+                if decisive_factcheck:
                     result["status"] = "no_fact_check_found"
-                    result["source_url"] = None
-                    result["source_reachable"] = False
+                result["source_url"] = None
+                result["source_reachable"] = False
+        elif decisive_factcheck:
+            rejections.append({
+                "title": result.get("rating") or result.get("claim", ""),
+                "source": result.get("source"), "url": "", "reason": "missing_url",
+            })
+            result["status"] = "no_fact_check_found"
+            result["source_reachable"] = False
 
         accepted = []
         seen_final_urls = set()

@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.15.1",
+    version="0.16.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -484,6 +484,9 @@ class FactCheckResult(BaseModel):
     corroborating_source_count: Optional[int] = None
     contradicting_source_count: Optional[int] = None
     primary_source_count: Optional[int] = None
+    reviewed_claim: Optional[str] = None
+    claim_match_score: Optional[float] = None
+    factcheck_match: Optional[Literal["strong", "related"]] = None
 
 
 class CommunityNote(BaseModel):
@@ -570,6 +573,9 @@ class V1EvidenceSource(BaseModel):
     semantic_relevance: Optional[float] = None
     stance: Optional[Literal["corroborating", "contradicting", "contextual", "low_relevance", "unavailable"]] = None
     source_type: Optional[Literal["primary", "secondary"]] = None
+    reviewed_claim: Optional[str] = None
+    rating: Optional[str] = None
+    claim_match_score: Optional[float] = None
 
 
 class V1ClaimResult(BaseModel):
@@ -616,6 +622,9 @@ class V1ClaimsResponse(BaseModel):
     analysis_id: str
     processing_state: Literal["processing", "complete", "failed"]
     claims: list[V1ClaimResult] = Field(default_factory=list)
+    overall_evidence_summary: Optional[str] = None
+    confidence: Optional[Literal["low", "medium", "high"]] = None
+    factual_evidence: Optional[V1FactualEvidenceAssessment] = None
     limitations: list[str] = Field(default_factory=list)
 
 
@@ -636,10 +645,12 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
     direct_source = []
     if fact_check.source_url:
         direct_source.append(V1EvidenceSource(
-            title=fact_check.rating or fact_check.claim[:160],
+            title=(f"Fact-check rating: {fact_check.rating}" if fact_check.rating else "Related fact-check"),
             publisher=fact_check.source, url=fact_check.source_url,
             reachable=fact_check.source_reachable, independent=True,
-            source_type="secondary",
+            source_type="secondary", stance="contextual" if fact_check.status == "mixed" else None,
+            reviewed_claim=fact_check.reviewed_claim, rating=fact_check.rating,
+            claim_match_score=fact_check.claim_match_score,
         ))
     article_sources = [
         V1EvidenceSource(
@@ -666,7 +677,7 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         if related:
             limitations.append("Related reporting is shown separately from the direct fact-check evidence.")
     elif fact_check.status == "mixed":
-        status, confidence, related = "mixed", "medium" if direct_source else "low", article_sources
+        status, confidence, related = "mixed", "medium" if direct_source else "low", direct_source + article_sources
         limitations.append("The available fact-check rating was mixed or context-dependent.")
     elif fact_check.evidence_status == "corroborated_reporting":
         status, confidence = "supported", "medium"
@@ -685,7 +696,7 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         supporting, contradicting, related = semantic_support, semantic_contradiction, contextual
         limitations.append("Independent reporting contained both corroborating and contradicting statements.")
     else:
-        status, confidence, related = "insufficient_evidence", "low", article_sources
+        status, confidence, related = "insufficient_evidence", "low", direct_source + article_sources
         if fact_check.status == "opinion":
             limitations.append("This statement appears to be opinion or rhetoric rather than a checkable fact.")
         elif related:
@@ -2115,10 +2126,15 @@ async def get_v1_claims(
     limitations = []
     if not fact_checks:
         limitations.append("No checkable claims were identified in the extracted content.")
+    claims = [_map_v1_claim(item) for item in fact_checks]
+    factual_evidence = _build_factual_evidence_assessment(claims, "complete", None)
     return V1ClaimsResponse(
         analysis_id=analysis_id,
         processing_state="complete",
-        claims=[_map_v1_claim(item) for item in fact_checks],
+        claims=claims,
+        overall_evidence_summary=factual_evidence.summary,
+        confidence=factual_evidence.confidence,
+        factual_evidence=factual_evidence,
         limitations=limitations,
     )
 

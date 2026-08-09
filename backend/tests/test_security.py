@@ -1018,6 +1018,10 @@ class ChunkFourV1ContractTests(unittest.TestCase):
             complete = asyncio.run(main.get_v1_claims(request, "e" * 64))
         self.assertEqual(complete.processing_state, "complete")
         self.assertEqual(complete.claims[0].status, "supported")
+        self.assertIsNotNone(complete.factual_evidence)
+        self.assertEqual(complete.factual_evidence.status, "supported")
+        self.assertEqual(complete.overall_evidence_summary, complete.factual_evidence.summary)
+        self.assertEqual(complete.confidence, complete.factual_evidence.confidence)
 
 class ChunkFourSeparatedAssessmentTests(unittest.TestCase):
     def test_v1_keeps_strong_source_quality_separate_from_contradicted_claim(self):
@@ -1521,6 +1525,73 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
         self.assertEqual(result.content, b"")
         self.assertEqual(result.final_url, "https://example.com/report")
 
+    def test_nuanced_factcheck_ratings_are_not_categorical_contradictions(self):
+        self.assertEqual(fact_checker._classify_rating("MISLEADING"), "mixed")
+        self.assertEqual(fact_checker._classify_rating("Mostly False"), "mixed")
+        self.assertEqual(fact_checker._classify_rating("Missing Context"), "mixed")
+        self.assertEqual(fact_checker._classify_rating("False"), "disputed")
+        self.assertEqual(fact_checker._classify_rating("Not true"), "disputed")
+        self.assertEqual(fact_checker._classify_rating("True"), "verified")
+
+    def test_opposite_polarity_claim_cannot_be_a_strong_match(self):
+        score = fact_checker._factcheck_claim_similarity(
+            "Consumers will not have to pay transaction charges for UPI",
+            "Consumers will have to pay transaction charges for UPI",
+        )
+        self.assertLess(score, 0.62)
+        equivalent = fact_checker._factcheck_claim_similarity(
+            "Consumers will not have to pay transaction charges for UPI",
+            "UPI transaction payments will remain free for consumers",
+        )
+        self.assertGreater(equivalent, score)
+    def test_factcheck_api_selects_matching_review_not_first_result(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"claims": [
+            {
+                "text": "A celebrity launched an unrelated mobile application",
+                "claimReview": [{
+                    "publisher": {"name": "Wrong Checker"},
+                    "url": "https://facts.example/unrelated",
+                    "textualRating": "False",
+                }],
+            },
+            {
+                "text": "Consumers will not have to pay transaction charges when using UPI",
+                "claimReview": [{
+                    "publisher": {"name": "Factly"},
+                    "url": "https://facts.example/upi",
+                    "textualRating": "Misleading",
+                }],
+            },
+        ]}
+        claim = "Consumers will not have to pay transaction charges for using UPI"
+        with patch.object(fact_checker, "GOOGLE_FACTCHECK_API_KEY", "test-key"), \
+             patch.object(fact_checker.requests, "get", return_value=response):
+            result = fact_checker.search_factcheck_api(claim)
+
+        self.assertEqual(result["source"], "Factly")
+        self.assertEqual(result["status"], "mixed")
+        self.assertEqual(result["factcheck_match"], "strong")
+        self.assertGreaterEqual(result["claim_match_score"], 0.62)
+        self.assertIn("Consumers", result["reviewed_claim"])
+
+    def test_weak_factcheck_match_cannot_change_claim_status(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"claims": [{
+            "text": "A celebrity launched an unrelated mobile application",
+            "claimReview": [{
+                "publisher": {"name": "Checker"},
+                "url": "https://facts.example/unrelated",
+                "textualRating": "False",
+            }],
+        }]}
+        with patch.object(fact_checker, "GOOGLE_FACTCHECK_API_KEY", "test-key"), \
+             patch.object(fact_checker.requests, "get", return_value=response):
+            result = fact_checker.search_factcheck_api(
+                "Consumers will not pay transaction charges for UPI"
+            )
+        self.assertEqual(result["status"], "no_fact_check_found")
+        self.assertIsNone(result["source_url"])
     def test_trusted_google_news_redirect_is_retained_without_fetching_destination(self):
         response = FakeResponse(headers={"location": "https://publisher.example/report"})
         response.is_redirect = True
