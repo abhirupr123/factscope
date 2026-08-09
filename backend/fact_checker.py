@@ -24,7 +24,7 @@ from config import (
     GOOGLE_FACTCHECK_API_KEY, EVIDENCE_PROBE_TIMEOUT_SECONDS,
     EVIDENCE_MAX_LINKS, EVIDENCE_MAX_WORKERS,
 )
-from safe_fetch import safe_probe, UnsafeURLError
+from safe_fetch import safe_probe, validate_public_url, UnsafeURLError
 from evidence_quality import enrich_claim_evidence
 
 logger = logging.getLogger(__name__)
@@ -525,6 +525,56 @@ def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
 # Main pipeline (article-length text)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _is_trusted_google_news_article_url(url: str) -> bool:
+    """Allow only article redirects emitted by FactScope's fixed Google News feed."""
+    try:
+        parsed = urlparse(url)
+        return bool(
+            parsed.scheme == "https"
+            and parsed.hostname == "news.google.com"
+            and not parsed.username
+            and not parsed.password
+            and parsed.path.startswith("/rss/articles/")
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _probe_evidence_url(url: str) -> tuple[bool, str, str | None]:
+    """Probe arbitrary evidence strictly; handle trusted Google RSS redirects narrowly."""
+    try:
+        if _is_trusted_google_news_article_url(url):
+            validate_public_url(url)
+            with requests.get(
+                url, timeout=EVIDENCE_PROBE_TIMEOUT_SECONDS,
+                headers={"User-Agent": "FactScope/1.0", "Accept-Encoding": "identity"},
+                allow_redirects=False, stream=True,
+            ) as response:
+                response.raise_for_status()
+                if response.is_redirect or response.is_permanent_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        return False, "", "invalid_redirect"
+                    # Never fetch the destination here. DNS/IP validation prevents
+                    # private targets; the browser follows the trusted Google URL.
+                    validate_public_url(urljoin(url, location))
+                return True, url, None
+
+        response = safe_probe(
+            url, timeout=EVIDENCE_PROBE_TIMEOUT_SECONDS, max_redirects=5,
+            allowed_content_prefixes=(
+                "text/html", "application/xhtml+xml", "text/plain", "application/pdf",
+            ),
+        )
+        return True, response.final_url, None
+    except UnsafeURLError as exc:
+        reason = "peer_unavailable" if "verify the remote network address" in str(exc) else "unsafe_or_invalid_url"
+        return False, "", reason
+    except requests.RequestException:
+        return False, "", "unreachable"
+    except Exception:
+        return False, "", "unreachable"
+
 def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[dict]:
     """Resolve and validate only evidence links selected by claim matching."""
     urls = []
@@ -539,18 +589,7 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
     probes: dict[str, tuple[bool, str, str | None]] = {}
 
     def probe(url: str) -> tuple[bool, str, str | None]:
-        try:
-            response = safe_probe(
-                url, timeout=EVIDENCE_PROBE_TIMEOUT_SECONDS, max_redirects=5,
-                allowed_content_prefixes=("text/html", "application/xhtml+xml", "text/plain", "application/pdf"),
-            )
-            return True, response.final_url, None
-        except UnsafeURLError:
-            return False, "", "unsafe_or_invalid_url"
-        except requests.RequestException:
-            return False, "", "unreachable"
-        except Exception:
-            return False, "", "unreachable"
+        return _probe_evidence_url(url)
 
     if unique_urls:
         with ThreadPoolExecutor(max_workers=min(EVIDENCE_MAX_WORKERS, len(unique_urls))) as pool:
@@ -639,9 +678,14 @@ def _validate_evidence_links(results: list[dict], source_url: str = "") -> list[
             "shown": len(accepted) + int(bool(result.get("source_url"))),
             "rejected": len(rejections),
         }
+        rejection_reasons = {}
+        for item in rejections:
+            reason = str(item.get("reason") or "validation_failed")
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
         logger.info(
-            "Evidence validation shown=%d rejected=%d average_relevance=%.3f",
+            "Evidence validation shown=%d rejected=%d average_relevance=%.3f reasons=%s",
             result["validation_summary"]["shown"], len(rejections), average_relevance,
+            rejection_reasons,
         )
     return results
 

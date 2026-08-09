@@ -1521,6 +1521,45 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
         self.assertEqual(result.content, b"")
         self.assertEqual(result.final_url, "https://example.com/report")
 
+    def test_trusted_google_news_redirect_is_retained_without_fetching_destination(self):
+        response = FakeResponse(headers={"location": "https://publisher.example/report"})
+        response.is_redirect = True
+        response.status_code = 302
+        validated_urls = []
+
+        def validate(url):
+            validated_urls.append(url)
+            return url
+
+        google_url = "https://news.google.com/rss/articles/CBMi-example"
+        with patch.object(fact_checker, "validate_public_url", side_effect=validate), \
+             patch.object(fact_checker.requests, "get", return_value=response) as request:
+            reachable, final_url, reason = fact_checker._probe_evidence_url(google_url)
+
+        self.assertTrue(reachable)
+        self.assertEqual(final_url, google_url)
+        self.assertIsNone(reason)
+        self.assertEqual(validated_urls, [google_url, "https://publisher.example/report"])
+        self.assertFalse(request.call_args.kwargs["allow_redirects"])
+
+    def test_trusted_google_news_redirect_rejects_private_destination(self):
+        response = FakeResponse(headers={"location": "http://127.0.0.1/admin"})
+        response.is_redirect = True
+        response.status_code = 302
+
+        def validate(url):
+            if "127.0.0.1" in url:
+                raise UnsafeURLError("Local or reserved network addresses are not allowed")
+            return url
+
+        google_url = "https://news.google.com/rss/articles/CBMi-private"
+        with patch.object(fact_checker, "validate_public_url", side_effect=validate), \
+             patch.object(fact_checker.requests, "get", return_value=response):
+            reachable, final_url, reason = fact_checker._probe_evidence_url(google_url)
+
+        self.assertFalse(reachable)
+        self.assertEqual(final_url, "")
+        self.assertEqual(reason, "unsafe_or_invalid_url")
     def test_matcher_excludes_self_corroboration_and_non_independent_copies(self):
         claim = "India standardised 27 Arunachal Pradesh locations on official maps"
         articles = [
