@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.19.0",
+    version="0.20.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -2624,12 +2624,43 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     factual = snapshot.get("factual_evidence") or {}
     counts_html = ""
     if result_type == "page" and factual:
-        counts = [
-            ("Claims", factual.get("claim_count", 0)),
-            ("Supported", factual.get("supported_count", 0)),
-            ("Contradicted", factual.get("contradicted_count", 0)),
-            ("Insufficient", factual.get("insufficient_count", 0)),
-        ]
+        if factual.get("status") == "insufficient_evidence":
+            def has_matching(claim: dict) -> bool:
+                sources = [
+                    *(claim.get("supporting_sources") or []),
+                    *(claim.get("contradicting_sources") or []),
+                    *(claim.get("related_sources") or []),
+                ]
+                return any(
+                    isinstance(source, dict) and source.get("evidence_level") in {
+                        "direct_factcheck", "corroborating", "matching_coverage",
+                    }
+                    for source in sources
+                )
+
+            def has_context(claim: dict) -> bool:
+                return bool(claim.get("context_sources")) or any(
+                    isinstance(source, dict) and source.get("evidence_level") == "related_context"
+                    for source in (claim.get("related_sources") or [])
+                )
+
+            claim_dicts = [claim for claim in claims if isinstance(claim, dict)]
+            matching_count = sum(has_matching(claim) for claim in claim_dicts)
+            context_count = sum(not has_matching(claim) and has_context(claim) for claim in claim_dicts)
+            no_coverage_count = max(0, len(claim_dicts) - matching_count - context_count)
+            counts = [
+                ("Checked claims", len(claim_dicts)),
+                ("With matching reporting", matching_count),
+                ("With background context", context_count),
+                ("Without useful coverage", no_coverage_count),
+            ]
+        else:
+            counts = [
+                ("Claims", factual.get("claim_count", 0)),
+                ("Supported", factual.get("supported_count", 0)),
+                ("Contradicted", factual.get("contradicted_count", 0)),
+                ("Insufficient", factual.get("insufficient_count", 0)),
+            ]
         counts_html = '<div class="counts">' + "".join(
             f'<div><strong>{int(value or 0)}</strong><span>{esc(label)}</span></div>' for label, value in counts
         ) + '</div>'

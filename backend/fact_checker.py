@@ -283,8 +283,97 @@ def _titles_are_syndicated(left: str, right: str) -> bool:
         return False
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens) >= 0.82
 
+_EVENT_GENERIC_TOKENS = frozenset({
+    "aircraft", "airport", "airline", "aboard", "board", "declared", "emergency",
+    "engine", "failure", "flight", "full", "landed", "landing", "people", "plane",
+    "report", "reported", "runway", "safely",
+})
+
+
+def _flight_identifiers(value: str) -> set[str]:
+    """Extract distinctive flight numbers such as 6E-723 without matching years."""
+    identifiers = set()
+    for carrier, number in re.findall(r"\b([A-Z0-9]{2,3})[\s-]?(\d{2,4})\b", value or "", re.IGNORECASE):
+        if any(character.isdigit() for character in carrier):
+            identifiers.add(f"{carrier.upper()}{number}")
+    for carrier, number in re.findall(r"\bflight\s+([A-Z]{2,3})[\s-]?(\d{2,4})\b", value or "", re.IGNORECASE):
+        identifiers.add(f"{carrier.upper()}{number}")
+    return identifiers
+
+
+def _quantified_anchors(value: str) -> dict[str, set[str]]:
+    """Return numbers grouped by their explicit unit, avoiding unrelated-number conflicts."""
+    anchors: dict[str, set[str]] = {}
+    for number, unit in re.findall(r"\b(\d+(?:\.\d+)?)\s+([A-Za-z₹]{2,20})\b", value or ""):
+        normalized_unit = unit.casefold().rstrip("s")
+        if normalized_unit in _STOP_WORDS or normalized_unit in {"august", "january", "february", "march", "april", "june", "july", "september", "october", "november", "december"}:
+            continue
+        anchors.setdefault(normalized_unit, set()).add(number)
+    return anchors
+
+
+def _travel_locations(value: str) -> set[str]:
+    """Extract only locations explicitly attached to travel/airport wording."""
+    locations = set()
+    patterns = (
+        r"\bfrom\s+([A-Z][A-Za-z.-]{2,})",
+        r"\bto\s+([A-Z][A-Za-z.-]{2,})",
+        r"\b([A-Z][A-Za-z.-]{2,})[-\s]bound\b",
+        r"\bat\s+([A-Z][A-Za-z.-]{2,})(?:['’]s)?(?:\s+(?:airport|igi|terminal))\b",
+        r"\b([A-Z][A-Za-z.-]{2,})(?:['’]s)?\s+(?:airport|igi)\b",
+    )
+    for pattern in patterns:
+        locations.update(
+            match.casefold() for match in re.findall(pattern, value or "", flags=re.IGNORECASE)
+            if match.casefold() not in _STOP_WORDS
+        )
+    return locations
+
+
+def _event_match_adjustment(
+    claim: str,
+    candidate_text: str,
+    *,
+    event_context: str = "",
+    published_at: str | None = None,
+) -> tuple[str, str | None]:
+    """Reject explicit event conflicts and downgrade ambiguity without over-filtering."""
+    reference = " ".join(part for part in (claim, event_context) if part)
+    expected_flights = _flight_identifiers(reference)
+    candidate_flights = _flight_identifiers(candidate_text)
+    if expected_flights and candidate_flights and expected_flights.isdisjoint(candidate_flights):
+        return "reject", "conflicting_flight_identifier"
+
+    transport_pattern = re.compile(r"\b(?:flight|aircraft|airline|airport|plane|train|bus|ship|route|bound)\b", re.IGNORECASE)
+    if transport_pattern.search(reference) and transport_pattern.search(candidate_text):
+        expected_locations = _travel_locations(reference)
+        candidate_locations = _travel_locations(candidate_text)
+        if expected_locations and candidate_locations:
+            overlap = expected_locations & candidate_locations
+            if not overlap or (len(expected_locations) >= 2 and len(candidate_locations) >= 2 and len(overlap) < 2):
+                return "reject", "conflicting_route"
+
+    claim_quantities = _quantified_anchors(claim)
+    candidate_quantities = _quantified_anchors(candidate_text)
+    for unit in claim_quantities.keys() & candidate_quantities.keys():
+        if claim_quantities[unit].isdisjoint(candidate_quantities[unit]):
+            return "reject", "conflicting_numeric_anchor"
+
+    anchor_context = reference
+    context_tokens = {
+        token for token in (_title_tokens(anchor_context) - _EVENT_GENERIC_TOKENS)
+        if not token.isdigit()
+    }
+    candidate_tokens = _title_tokens(candidate_text)
+    distinctive_overlap = context_tokens & candidate_tokens
+    if _recency_label(published_at) == "older" and context_tokens and not distinctive_overlap:
+        return "reject", "older_unrelated_event"
+    if context_tokens and not distinctive_overlap:
+        return "context", "missing_event_anchor"
+    return "allow", None
+
 def _match_claims_to_articles(claims: list[str], articles: list[dict],
-                              source_url: str = "") -> dict[int, dict]:
+                              source_url: str = "", event_context: str = "") -> dict[int, dict]:
     """Separate strict evidence candidates from useful broader context."""
     source_domain = _extract_domain(source_url)
     candidates = []
@@ -364,12 +453,24 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
         strict_threshold = min(len(claim_keywords), max(3, math.ceil(len(claim_keywords) * 0.5)))
         context_threshold = min(strict_threshold, max(2, math.ceil(len(claim_keywords) * 0.25)))
         strict_ranked, context_ranked = [], []
+        event_rejections = []
         for candidate in candidates:
             overlap = sum(1 for keyword in claim_keywords if keyword in candidate["combined"])
             relevance = overlap / len(claim_keywords)
-            if overlap >= strict_threshold:
+            adjustment, reason = _event_match_adjustment(
+                claim, candidate["combined"], event_context=event_context,
+                published_at=candidate["published_at"],
+            )
+            if adjustment == "reject":
+                event_rejections.append({
+                    "title": candidate["title"], "source": candidate["source"],
+                    "url": candidate["url"], "reason": reason,
+                    "relevance_score": round(relevance, 3),
+                })
+                continue
+            if overlap >= strict_threshold and adjustment == "allow":
                 strict_ranked.append((relevance, candidate))
-            elif overlap >= context_threshold:
+            elif overlap >= context_threshold or (overlap >= strict_threshold and adjustment == "context"):
                 context_ranked.append((relevance, candidate))
 
         rank_key = lambda item: (
@@ -379,7 +480,7 @@ def _match_claims_to_articles(claims: list[str], articles: list[dict],
         )
         strict_ranked.sort(key=rank_key)
         context_ranked.sort(key=rank_key)
-        matched_articles, context_articles, rejection_items = [], [], []
+        matched_articles, context_articles, rejection_items = [], [], list(event_rejections)
         strong_publishers, context_publishers = set(), set()
         add_ranked(
             strict_ranked, matched_articles, strong_publishers, rejection_items,
@@ -862,7 +963,7 @@ def verify_claims(text: str, title: str = "", source_url: str = "") -> list[dict
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 combined.append(article)
-        matched = _match_claims_to_articles([claim], combined, source_url=source_url).get(0, _NEWS_DEFAULT)
+        matched = _match_claims_to_articles([claim], combined, source_url=source_url, event_context=title).get(0, _NEWS_DEFAULT)
         news_results[index] = matched
         logger.info(
             "Claim discovery index=%d candidates=%d matched=%d context=%d",

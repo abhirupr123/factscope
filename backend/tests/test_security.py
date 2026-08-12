@@ -1663,6 +1663,74 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
         matched = fact_checker._match_claims_to_articles([claim], articles)[0]
         self.assertEqual(matched["source_count"], 0)
 
+    def test_matcher_rejects_explicit_event_conflicts_but_keeps_recent_matching_report(self):
+        now = datetime.now(timezone.utc)
+        claim = "IndiGo flight 6E-723 from Kolkata to Chennai declared a full emergency"
+        title = "IndiGo flight 6E-723 from Kolkata to Chennai declares emergency"
+        articles = [
+            {
+                "title": claim,
+                "url": "https://valid.example/report", "source": {"name": "Valid outlet"},
+                "published_at": (now - timedelta(days=1)).isoformat(),
+            },
+            {
+                "title": "Full emergency declared at Delhi IGI Airport after IndiGo engine failure",
+                "url": "https://wrong.example/report", "source": {"name": "Wrong event"},
+                "published_at": now.isoformat(),
+            },
+            {
+                "title": "Bengaluru-bound IndiGo flight makes emergency landing at Kolkata airport",
+                "url": "https://wrong-route.example/report", "source": {"name": "Wrong route"},
+                "published_at": now.isoformat(),
+            },
+        ]
+        matched = fact_checker._match_claims_to_articles(
+            [claim], articles, event_context=title,
+        )[0]
+        self.assertEqual([item["url"] for item in matched["related_articles"]], [
+            "https://valid.example/report",
+        ])
+        self.assertEqual(matched["related_articles"][0]["recency"], "current")
+        reasons = {item["reason"] for item in matched["rejected_articles"]}
+        self.assertEqual(reasons, {"conflicting_route"})
+
+    def test_image_caption_matcher_rejects_old_unrelated_event_with_same_number(self):
+        now = datetime.now(timezone.utc)
+        caption = "IndiGo flight 6E-723 from Kolkata to Chennai carried 224 people"
+        articles = [
+            {
+                "title": "Russian plane crashes in Sinai killing all 224 people aboard",
+                "url": "https://old.example/report", "source": {"name": "Old outlet"},
+                "published_at": "2015-10-31T00:00:00+00:00",
+            },
+            {
+                "title": "IndiGo flight 6E-723 lands safely with 224 people aboard",
+                "url": "https://valid.example/report", "source": {"name": "Current outlet"},
+                "published_at": now.isoformat(),
+            },
+        ]
+        matched = fact_checker._match_claims_to_articles([caption], articles)[0]
+        self.assertEqual([item["url"] for item in matched["related_articles"]], [
+            "https://valid.example/report",
+        ])
+        self.assertEqual(matched["context_articles"], [])
+        self.assertIn("older_unrelated_event", {
+            item["reason"] for item in matched["rejected_articles"]
+        })
+
+    def test_missing_event_detail_downgrades_current_source_instead_of_hiding_it(self):
+        claim = "IndiGo flight 6E-723 from Kolkata to Chennai declared an emergency"
+        article = {
+            "title": "Airline declared an emergency after an engine warning",
+            "url": "https://context.example/report", "source": {"name": "Context outlet"},
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        matched = fact_checker._match_claims_to_articles(
+            [claim], [article], event_context=claim,
+        )[0]
+        self.assertEqual(matched["source_count"], 0)
+        self.assertEqual(matched["context_count"], 1)
+        self.assertEqual(matched["context_articles"][0]["discovery_basis"], "topic_overlap")
     def test_verify_claims_searches_each_claim_separately(self):
         claims = [
             "India standardised 27 Arunachal locations on official maps",
@@ -2033,6 +2101,10 @@ class ChunkFiveSemanticEvidenceTests(unittest.TestCase):
         self.assertIn("Broader context found", page_html)
         self.assertNotIn('class="source-heading">Broader context', page_html)
         self.assertIn("+2 similar results grouped", page_html)
+        self.assertIn("Checked claims", page_html)
+        self.assertIn("With background context", page_html)
+        self.assertIn("Without useful coverage", page_html)
+        self.assertNotIn(">Supported</span>", page_html)
 
         image_snapshot = {
             "processing_state": "complete",
