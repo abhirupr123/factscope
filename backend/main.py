@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FactScope API",
-    version="0.18.0",
+    version="0.19.0",
     docs_url=None if ENVIRONMENT == "production" else "/docs",
     redoc_url=None if ENVIRONMENT == "production" else "/redoc",
     openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
@@ -1074,7 +1074,6 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
         legacy_verdict=legacy.verdict,
     )
 
-
 class FlagRequest(BaseModel):
     fingerprint: str = Field(min_length=16, max_length=128)
     user_id: Optional[str] = None
@@ -1291,7 +1290,17 @@ def _build_image_assessment(
             caption_summary = "Direct evidence contradicts the checked caption claim or claims."
         else:
             caption_status = "insufficient_evidence"
-            caption_summary = "The available evidence is insufficient to evaluate caption consistency."
+            has_matching_coverage = any(
+                source.evidence_level == "matching_coverage"
+                for claim in mapped_claims for source in claim.related_sources
+            )
+            has_broader_context = any(claim.context_sources for claim in mapped_claims)
+            if has_matching_coverage:
+                caption_summary = "Matching coverage was found for the caption claim, but it was not strong enough to establish consistency."
+            elif has_broader_context:
+                caption_summary = "Broader context was found for the caption claim, but it does not directly establish consistency."
+            else:
+                caption_summary = "No useful external coverage was found to evaluate caption consistency."
         if caption_status in ("insufficient_evidence", "mixed"):
             caption_confidence = "low" if caption_status == "insufficient_evidence" else "medium"
         elif all(claim.confidence == "high" for claim in mapped_claims):
@@ -2363,9 +2372,8 @@ async def create_share(request: ShareRequest, http_request: Request):
 
 _SHARE_TEMPLATE = (Path(__file__).parent / "templates" / "share.html").read_text(encoding="utf-8")
 
-
 def _share_status_view(snapshot: dict, result_type: str, fallback_verdict: str) -> tuple[str, str, str]:
-    """Return a cautious public label, confidence, and summary."""
+    """Return the same cautious public label, confidence, and summary as v1 UI."""
     if result_type == "image":
         manipulation = ((snapshot.get("assessment") or {}).get("manipulation") or {})
         labels = {
@@ -2376,36 +2384,38 @@ def _share_status_view(snapshot: dict, result_type: str, fallback_verdict: str) 
             "uncertain": "Visual assessment uncertain",
         }
         status = manipulation.get("status", "uncertain")
-        return (
-            labels.get(status, "Visual assessment uncertain"),
-            manipulation.get("confidence", "low"),
-            manipulation.get("summary") or "No visual assessment summary is available.",
+        return labels.get(status, "Visual assessment uncertain"), manipulation.get("confidence", "low"), (
+            manipulation.get("summary") or "No visual assessment summary is available."
         )
-
     factual = snapshot.get("factual_evidence") or {}
     classification = snapshot.get("content_classification") or {}
     status = factual.get("status", "insufficient_evidence")
+    coverage = factual.get("coverage_breadth", "none")
+    context_breadth = factual.get("context_breadth", "none")
     if status == "not_applicable":
-        labels = {
-            "satire": "Satire identified",
-            "opinion": "Opinion and context assessment",
-            "prediction": "Forward-looking claim",
-            "unsupported_page": "Unable to assess this page",
-        }
-        label = labels.get(classification.get("content_type"), "Context-only assessment")
+        label = {
+            "satire": "Satire identified", "opinion": "Opinion and context assessment",
+            "prediction": "Forward-looking claim", "unsupported_page": "Unable to assess this page",
+        }.get(classification.get("content_type"), "Context-only assessment")
+    elif status == "insufficient_evidence" and coverage == "broad":
+        label = "Matching coverage found"
+    elif status == "insufficient_evidence" and coverage in {"partial", "limited"}:
+        label = "Some matching coverage found"
+    elif status == "insufficient_evidence" and context_breadth != "none":
+        label = "Context found; verification remains open"
     elif status == "insufficient_evidence" and classification.get("content_type") == "breaking_news":
         label = "Evidence still developing"
+    elif status == "insufficient_evidence":
+        label = "No external coverage found"
     else:
         claims = snapshot.get("claims") or []
         reporting_support = any(
-            source.get("stance") == "corroborating"
+            isinstance(source, dict) and source.get("stance") == "corroborating"
             for claim in claims for source in (claim.get("supporting_sources") or [])
-            if isinstance(source, dict)
         )
         reporting_contradiction = any(
-            source.get("stance") == "contradicting"
+            isinstance(source, dict) and source.get("stance") == "contradicting"
             for claim in claims for source in (claim.get("contradicting_sources") or [])
-            if isinstance(source, dict)
         )
         if status == "supported" and reporting_support:
             label = "Supported by independent reporting"
@@ -2413,17 +2423,13 @@ def _share_status_view(snapshot: dict, result_type: str, fallback_verdict: str) 
             label = "Contradicted by independent reporting"
         else:
             label = {
-                "supported": "Supported by direct evidence",
-                "contradicted": "Contradicted by direct evidence",
-                "mixed": "Mixed evidence",
-                "insufficient_evidence": "No direct conclusion",
-                "processing": "Evidence check in progress",
+                "supported": "Supported by direct evidence", "contradicted": "Contradicted by direct evidence",
+                "mixed": "Mixed evidence", "processing": "Evidence check in progress",
             }.get(status, "Evidence assessment")
     return label, factual.get("confidence", snapshot.get("confidence", "low")), (
         snapshot.get("overall_evidence_summary") or factual.get("summary")
         or "No evidence summary is available."
     )
-
 
 def _render_share_page(data: dict, share_url: str = "") -> str:
     import html as _html
@@ -2445,23 +2451,38 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             return ""
         return raw
 
-    def sources_html(sources: object, heading: str) -> str:
+    def sources_html(sources: object, heading: str = "") -> str:
         if not isinstance(sources, list) or not sources:
             return ""
         items = []
-        for source in sources[:4]:
+        for source in sources[:8]:
             if not isinstance(source, dict):
                 continue
             title = esc(source.get("title") or source.get("publisher") or "Evidence source", 240)
             publisher = esc(source.get("publisher"), 120)
             url = safe_http_url(source.get("url"))
             link = f'<a href="{esc(url)}" target="_blank" rel="noopener">{title}</a>' if url else title
-            publisher_html = f'<span>{publisher}</span>' if publisher else ""
+            meta = []
+            if publisher:
+                meta.append(publisher)
+            if source.get("independent") is False:
+                meta.append("Repeated or non-independent")
+            additional = max(0, int(source.get("additional_reports") or 0))
+            if additional:
+                meta.append(f"+{additional} similar result{'s' if additional != 1 else ''} grouped")
+            publisher_html = f'<span>{" · ".join(meta)}</span>' if meta else ""
             items.append(f"<li>{link}{publisher_html}</li>")
         if not items:
             return ""
-        return f'<div class="source-group"><div class="source-heading">{esc(heading)}</div><ul>{"".join(items)}</ul></div>'
-
+        heading_html = f'<div class="source-heading">{esc(heading)}</div>' if heading else ""
+        visible = "".join(items[:4])
+        remaining = "".join(items[4:])
+        more_html = (
+            f'<details class="more-sources"><summary>Show {len(items) - 4} more source'
+            f'{"" if len(items) - 4 == 1 else "s"}</summary><ul>{remaining}</ul></details>'
+            if remaining else ""
+        )
+        return f'<div class="source-group">{heading_html}<ul>{visible}</ul>{more_html}</div>'
     result_type = "image" if data.get("result_type") == "image" else "page"
     snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
     is_legacy = not bool(snapshot)
@@ -2506,49 +2527,100 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     else:
         claims = snapshot.get("claims") or []
     claim_items = []
-    for claim in claims[:4]:
+    for claim in claims[:6]:
         if not isinstance(claim, dict):
             continue
-        related = claim.get("related_sources") or []
+        related_sources = claim.get("related_sources") or []
+        matching = [
+            item for item in related_sources if isinstance(item, dict) and (
+                item.get("evidence_level") == "matching_coverage"
+                or (not item.get("evidence_level") and item.get("stance") == "unavailable")
+            )
+        ]
+        related = [item for item in related_sources if item not in matching]
+        broader = claim.get("context_sources") or []
         claim_status = str(claim.get("status") or "insufficient_evidence")
-        reporting_support = any(item.get("stance") == "corroborating" for item in (claim.get("supporting_sources") or []))
-        reporting_contradiction = any(item.get("stance") == "contradicting" for item in (claim.get("contradicting_sources") or []))
+        reporting_support = any(
+            isinstance(item, dict) and item.get("stance") == "corroborating"
+            for item in (claim.get("supporting_sources") or [])
+        )
+        reporting_contradiction = any(
+            isinstance(item, dict) and item.get("stance") == "contradicting"
+            for item in (claim.get("contradicting_sources") or [])
+        )
         if claim_status == "supported" and claim.get("confidence") == "medium" and reporting_support:
             claim_label = "Corroborated by independent reporting"
         elif claim_status == "contradicted" and claim.get("confidence") == "medium" and reporting_contradiction:
             claim_label = "Contradicted by independent reporting"
-        elif claim_status == "insufficient_evidence" and len(related) > 1:
-            claim_label = "Multiple related reports found"
-        elif claim_status == "insufficient_evidence" and len(related) == 1:
-            claim_label = "Related coverage found"
+        elif claim_status == "insufficient_evidence" and len(matching) > 1:
+            claim_label = "Multiple matching reports"
+        elif claim_status == "insufficient_evidence" and len(matching) == 1:
+            claim_label = "Matching coverage"
+        elif claim_status == "insufficient_evidence" and related:
+            claim_label = "Related reporting found"
+        elif claim_status == "insufficient_evidence" and broader:
+            claim_label = "Broader context found"
         elif claim_status == "insufficient_evidence":
-            claim_label = "No corroborating evidence found"
+            claim_label = "No external coverage found"
         else:
             claim_label = {
-                "supported": "Supported by direct evidence",
-                "contradicted": "Contradicted by direct evidence",
+                "supported": "Supported by direct evidence", "contradicted": "Contradicted by direct evidence",
                 "mixed": "Mixed evidence",
             }.get(claim_status, claim_status.replace("_", " ").title())
+        broader_heading = "" if claim_label == "Broader context found" else "Broader context"
         source_sections = (
             sources_html(claim.get("supporting_sources"), "Supporting sources")
             + sources_html(claim.get("contradicting_sources"), "Contradicting sources")
-            + sources_html(related, "Related coverage — not verified as supporting evidence")
+            + sources_html(matching)
+            + sources_html(related, "Related reporting")
+            + sources_html(broader, broader_heading)
         )
         claim_confidence = esc(claim.get("confidence", "low"))
-        confidence_html = (
-            "" if claim_status == "insufficient_evidence" and claim_confidence == "low"
-            else f"<span>{claim_confidence.title()} evidence confidence</span>"
+        confidence_html = "" if claim_status == "insufficient_evidence" else (
+            f"<span>{claim_confidence.title()} evidence confidence</span>"
+        )
+        notes = [str(item) for item in (claim.get("context_notes") or []) if item]
+        notes_html = (
+            '<ul class="context-notes">' + "".join(f"<li>{esc(item, 400)}</li>" for item in notes[:4]) + "</ul>"
+            if notes else ""
         )
         claim_items.append(
             f'<article class="claim"><div class="claim-text">{esc(claim.get("claim"), 600)}</div>'
             f'<div class="claim-meta"><strong>{esc(claim_label)}</strong>{confidence_html}</div>'
-            f'{source_sections}</article>'
+            f'{source_sections}{notes_html}</article>'
         )
+    claim_section_title = "Caption claim evidence" if result_type == "image" else "Claim evidence"
     claims_html = (
-        f'<section class="card"><div class="card-heading">Claim evidence</div>{"".join(claim_items)}</section>'
+        f'<section class="card"><div class="card-heading">{claim_section_title}</div>{"".join(claim_items)}</section>'
         if claim_items else ""
     )
 
+    image_assessment_html = ""
+    if result_type == "image" and not is_legacy:
+        assessment = snapshot.get("assessment") or {}
+        manipulation = assessment.get("manipulation") or {}
+        caption = assessment.get("caption_consistency") or {}
+        provenance = assessment.get("provenance") or {}
+        indicators = [str(item) for item in (manipulation.get("indicators") or []) if item]
+        provenance_indicators = [str(item) for item in (provenance.get("indicators") or []) if item]
+        indicator_html = "".join(f"<li>{esc(item, 300)}</li>" for item in indicators[:5])
+        provenance_html = "".join(f"<li>{esc(item, 300)}</li>" for item in provenance_indicators[:5])
+        provenance_list = f"<ul>{provenance_html}</ul>" if provenance_html else ""
+        visual_block = (
+            '<div class="mini-assessment wide"><div class="card-heading">Visual indicators</div>'
+            f'<ul>{indicator_html}</ul></div>'
+            if indicator_html else ""
+        )
+        image_assessment_html = (
+            '<section class="card assessment-grid">'
+            '<div class="mini-assessment"><div class="card-heading">Caption consistency</div>'
+            f'<strong>{esc(str(caption.get("status") or "insufficient_evidence").replace("_", " ").title())}</strong>'
+            f'<p>{esc(caption.get("summary"), 800)}</p></div>'
+            '<div class="mini-assessment"><div class="card-heading">Visible provenance</div>'
+            f'<strong>{esc(str(provenance.get("status") or "unknown").replace("_", " ").title())}</strong>'
+            f'<p>{esc(provenance.get("summary"), 800)}</p>{provenance_list}</div>'
+            f'{visual_block}</section>'
+        )
     factual = snapshot.get("factual_evidence") or {}
     counts_html = ""
     if result_type == "page" and factual:
@@ -2616,12 +2688,20 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             f'<button id="copyLink" data-url="{esc(share_url)}">Copy link</button></div>'
         )
 
+    if result_type == "page" and factual.get("status") == "insufficient_evidence":
+        assessment_meta = (
+            f'Coverage: {esc(str(factual.get("coverage_breadth") or "none").replace("_", " ")).title()}'
+            f' · Context: {esc(str(factual.get("context_breadth") or "none").replace("_", " ")).title()}'
+            f' · Evidence strength: {esc(str(factual.get("verification_strength") or "limited").replace("_", " ")).title()}'
+        )
+    else:
+        assessment_meta = f'Evidence confidence: {esc(confidence).title()}'
     snapshot_html = (
         '<main class="result"><section class="assessment">'
         '<div class="eyebrow">AI-assisted verification snapshot</div>'
-        f'<div class="status">{esc(status_label)}</div><div class="confidence">Evidence confidence: {esc(confidence).title()}</div>'
+        f'<div class="status">{esc(status_label)}</div><div class="confidence">{assessment_meta}</div>'
         f'<p class="summary">{esc(summary, 1600)}</p>{counts_html}<div class="metadata">{metadata_html}</div>'
-        f'</section>{claims_html}{model_html}{limitations_html}{compatibility_html}</main>'
+        f'</section>{image_assessment_html}{claims_html}{model_html}{limitations_html}{compatibility_html}</main>'
     )
     return _SHARE_TEMPLATE.format(
         page_title=page_title,

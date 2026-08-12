@@ -904,7 +904,7 @@ class ChunkFourFoundationTests(unittest.TestCase):
             "analysis_version": "4h-test", "scan_timestamp": "2026-08-08T10:00:00+00:00",
         }, "https://factscope.example/s/share123")
         self.assertIn("Evidence still developing", html)
-        self.assertIn("Related coverage", html)
+        self.assertIn("Related reporting", html)
         self.assertIn("Content and source assessment", html)
         self.assertIn("https://factscope.example/s/share123/card.png", html)
         self.assertNotIn('property="og:image" content="https://publisher.example/image.jpg"', html)
@@ -948,7 +948,7 @@ class ChunkFourV1ContractTests(unittest.TestCase):
         self.assertEqual(insufficient.confidence, "low")
         self.assertEqual(insufficient.supporting_sources, [])
         self.assertEqual([s.url for s in insufficient.related_sources], ["https://news.example/topic"])
-        self.assertTrue(any("threshold for direct corroboration" in item for item in insufficient.limitations))
+        self.assertTrue(any("threshold for a factual status" in item for item in insufficient.limitations))
 
     def test_v1_provider_failure_is_retryable_and_never_zero_confidence_score(self):
         legacy = main.AnalyzeResponse(
@@ -1592,7 +1592,7 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "no_fact_check_found")
         self.assertIsNone(result["source_url"])
-    def test_trusted_google_news_redirect_is_retained_without_fetching_destination(self):
+    def test_trusted_google_news_redirect_resolves_to_validated_publisher(self):
         response = FakeResponse(headers={"location": "https://publisher.example/report"})
         response.is_redirect = True
         response.status_code = 302
@@ -1608,7 +1608,7 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
             reachable, final_url, reason = fact_checker._probe_evidence_url(google_url)
 
         self.assertTrue(reachable)
-        self.assertEqual(final_url, google_url)
+        self.assertEqual(final_url, "https://publisher.example/report")
         self.assertIsNone(reason)
         self.assertEqual(validated_urls, [google_url, "https://publisher.example/report"])
         self.assertFalse(request.call_args.kwargs["allow_redirects"])
@@ -1652,6 +1652,101 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
         self.assertEqual(matched["source_count"], 2)
         self.assertTrue(all(item["independent"] for item in matched["related_articles"]))
 
+    def test_matcher_requires_half_of_meaningful_claim_terms(self):
+        claim = "Government proposes nominal merchant discount rate above payment threshold"
+        articles = [{
+            "title": "Government discusses merchant policy in unrelated meeting",
+            "description": "",
+            "url": "https://outlet.example/unrelated",
+            "source": {"name": "Outlet"},
+        }]
+        matched = fact_checker._match_claims_to_articles([claim], articles)[0]
+        self.assertEqual(matched["source_count"], 0)
+
+    def test_verify_claims_searches_each_claim_separately(self):
+        claims = [
+            "India standardised 27 Arunachal locations on official maps",
+            "Consumers continue using UPI payments without transaction charges",
+        ]
+        def news(query):
+            if "arunachal" in query:
+                return [{"title": claims[0], "url": "https://maps.example/report", "source": {"name": "Maps News"}}]
+            if "consumers" in query or "payments" in query:
+                return [{"title": claims[1], "url": "https://upi.example/report", "source": {"name": "Payments News"}}]
+            return []
+        empty_fc = lambda claim: {"claim": claim, **fact_checker._EMPTY_RESULT}
+        with patch.object(fact_checker, "extract_claims", return_value=claims), \
+             patch.object(fact_checker, "search_factcheck_api", side_effect=empty_fc), \
+             patch.object(fact_checker, "_search_news", side_effect=news) as search, \
+             patch.object(fact_checker, "_validate_evidence_links", side_effect=lambda value, source_url="": value), \
+             patch.object(fact_checker, "enrich_claim_evidence", side_effect=lambda value: value):
+            result = fact_checker.verify_claims("article text", title="A general news title")
+        queries = {call.args[0] for call in search.call_args_list}
+        self.assertTrue(any("arunachal" in query for query in queries))
+        self.assertTrue(any("consumers" in query or "payments" in query for query in queries))
+        self.assertEqual(result[0]["related_articles"][0]["url"], "https://maps.example/report")
+        self.assertEqual(result[1]["related_articles"][0]["url"], "https://upi.example/report")
+
+    def test_validation_budget_is_allocated_across_claims(self):
+        results = [
+            {"claim": "First", "status": "no_fact_check_found", "related_articles": [
+                {"title": "A1", "source": "A1", "url": "https://a1.example/x", "relevance_score": 0.9},
+                {"title": "A2", "source": "A2", "url": "https://a2.example/x", "relevance_score": 0.8},
+            ]},
+            {"claim": "Second", "status": "no_fact_check_found", "related_articles": [
+                {"title": "B1", "source": "B1", "url": "https://b1.example/x", "relevance_score": 0.9},
+                {"title": "B2", "source": "B2", "url": "https://b2.example/x", "relevance_score": 0.8},
+            ]},
+        ]
+        with patch.object(fact_checker, "EVIDENCE_MAX_LINKS", 2), \
+             patch.object(fact_checker, "_probe_evidence_url", side_effect=lambda url: (True, url, None)):
+            validated = fact_checker._validate_evidence_links(results)
+        self.assertEqual([item["url"] for item in validated[0]["related_articles"]], ["https://a1.example/x"])
+        self.assertEqual([item["url"] for item in validated[1]["related_articles"]], ["https://b1.example/x"])
+        self.assertIn("validation_budget_exceeded", {item["reason"] for item in validated[0]["rejected_articles"]})
+        self.assertIn("validation_budget_exceeded", {item["reason"] for item in validated[1]["rejected_articles"]})
+    def test_matcher_retains_lower_overlap_as_broader_context(self):
+        claim = "Government proposes nominal merchant discount rate above payment threshold"
+        articles = [{
+            "title": "Government discusses merchant payment policy",
+            "description": "",
+            "url": "https://context.example/payment-policy",
+            "source": {"name": "Context Outlet"},
+        }]
+        matched = fact_checker._match_claims_to_articles([claim], articles)[0]
+        self.assertEqual(matched["source_count"], 0)
+        self.assertEqual(matched["context_count"], 1)
+        self.assertEqual(matched["context_articles"][0]["discovery_basis"], "topic_overlap")
+
+    def test_matcher_retains_syndicated_duplicate_as_non_independent_context(self):
+        claim = "India standardised 27 Arunachal Pradesh locations on official maps"
+        articles = [
+            {"title": claim, "url": "https://a.example/report", "source": {"name": "Outlet A"}},
+            {"title": claim, "url": "https://b.example/report", "source": {"name": "Outlet B"}},
+        ]
+        matched = fact_checker._match_claims_to_articles([claim], articles)[0]
+        self.assertEqual(matched["source_count"], 1)
+        self.assertEqual(matched["context_count"], 1)
+        self.assertFalse(matched["context_articles"][0]["independent"])
+        self.assertEqual(matched["context_articles"][0]["discovery_basis"], "repeated_report")
+
+    def test_unsafe_broader_context_is_not_exposed(self):
+        results = [{
+            "claim": "A claim", "status": "no_fact_check_found", "related_articles": [],
+            "context_articles": [{
+                "title": "Unsafe context", "source": "Unsafe", "url": "http://127.0.0.1/private",
+                "relevance_score": 0.3,
+            }],
+        }]
+        with patch.object(
+            fact_checker, "_probe_evidence_url",
+            return_value=(False, "", "unsafe_or_invalid_url"),
+        ):
+            validated = fact_checker._validate_evidence_links(results)[0]
+        self.assertEqual(validated["context_articles"], [])
+        self.assertIn("unsafe_or_invalid_url", {
+            item["reason"] for item in validated["rejected_articles"]
+        })
     def test_recency_metadata_is_explicit_without_rejecting_historical_sources(self):
         now = datetime.now(timezone.utc)
         self.assertEqual(fact_checker._recency_label(now.isoformat()), "current")
@@ -1695,7 +1790,9 @@ class ChunkFiveEvidenceValidationTests(unittest.TestCase):
         self.assertEqual([item["url"] for item in validated["related_articles"]], ["https://outlet.example/report"])
         reasons = {item["reason"] for item in validated["rejected_articles"]}
         self.assertEqual(reasons, {"unreachable", "self_corroboration", "duplicate_publisher"})
-        self.assertEqual(validated["validation_summary"], {"shown": 2, "rejected": 3})
+        self.assertEqual(validated["validation_summary"], {
+            "shown": 2, "strict_evidence": 1, "broader_context": 0, "rejected": 3,
+        })
 
     def test_unreachable_direct_fact_check_cannot_create_supported_status(self):
         result = [{
@@ -1790,6 +1887,79 @@ class ChunkFiveSemanticEvidenceTests(unittest.TestCase):
         self.assertEqual(secondary["evidence_status"], "insufficient")
         self.assertEqual(primary["evidence_status"], "corroborated_reporting")
 
+    def test_unavailable_high_match_is_labelled_matching_coverage(self):
+        result = [{
+            "claim": "The government announced a new payment policy",
+            "status": "no_fact_check_found",
+            "related_articles": [{
+                "title": "Government announces new payment policy",
+                "source": "Outlet", "url": "https://news.example/policy",
+                "reachable": True, "independent": True, "relevance_score": 0.8,
+            }],
+            "rejected_articles": [], "validation_summary": {},
+        }]
+        with patch.object(evidence_quality, "safe_get", side_effect=evidence_quality.requests.ConnectionError("blocked")):
+            enriched = evidence_quality.enrich_claim_evidence(result)[0]
+        self.assertEqual(enriched["related_articles"][0]["evidence_level"], "matching_coverage")
+        mapped = main._map_v1_claim(main.FactCheckResult(**enriched))
+        self.assertEqual(mapped.status, "insufficient_evidence")
+        self.assertEqual(mapped.related_sources[0].evidence_level, "matching_coverage")
+
+    def test_related_context_does_not_inflate_coverage_breadth(self):
+        matching = main.V1ClaimResult(
+            claim="Claim with matching report", status="insufficient_evidence", confidence="low",
+            related_sources=[main.V1EvidenceSource(
+                title="Matching report", url="https://matching.example/report",
+                evidence_level="matching_coverage", stance="unavailable",
+            )],
+        )
+        contextual = [main.V1ClaimResult(
+            claim=f"Context-only claim {index}", status="insufficient_evidence", confidence="low",
+            related_sources=[main.V1EvidenceSource(
+                title="Weakly related fact-check", url=f"https://context{index}.example/report",
+                evidence_level="related_context", stance="contextual", claim_match_score=0.5,
+            )],
+        ) for index in range(2)]
+        overall = main._build_factual_evidence_assessment([matching, *contextual], "complete", None)
+        self.assertEqual(overall.coverage_breadth, "limited")
+        self.assertEqual(overall.verification_strength, "limited")
+
+    def test_weak_related_factcheck_is_context_not_direct_evidence(self):
+        mapped = main._map_v1_claim(main.FactCheckResult(
+            claim="Claim under review", status="no_fact_check_found",
+            source="Checker", source_url="https://checker.example/related",
+            source_reachable=True, rating="False", reviewed_claim="A loosely related claim",
+            claim_match_score=0.5, factcheck_match="related",
+        ))
+        self.assertEqual(mapped.related_sources[0].evidence_level, "related_context")
+        overall = main._build_factual_evidence_assessment([mapped], "complete", None)
+        self.assertEqual(overall.coverage_breadth, "none")
+    def test_context_breadth_is_reported_without_inflating_matching_coverage(self):
+        claims = [main.V1ClaimResult(
+            claim=f"Low-reported claim {index}", status="insufficient_evidence", confidence="low",
+            context_sources=[main.V1EvidenceSource(
+                title=f"Background source {index}", url=f"https://context{index}.example/report",
+                evidence_level="broader_context", stance="contextual",
+            )],
+        ) for index in range(3)]
+        overall = main._build_factual_evidence_assessment(claims, "complete", None)
+        self.assertEqual(overall.coverage_breadth, "none")
+        self.assertEqual(overall.context_breadth, "broad")
+        self.assertEqual(overall.verification_strength, "limited")
+        self.assertIn("Broader reporting", overall.summary)
+    def test_aggregate_separates_broad_coverage_from_limited_verification(self):
+        claims = [main.V1ClaimResult(
+            claim=f"Claim {index}", status="insufficient_evidence", confidence="low",
+            related_sources=[main.V1EvidenceSource(
+                title=f"Matching report {index}", url=f"https://outlet{index}.example/report",
+                evidence_level="matching_coverage", stance="unavailable",
+            )],
+        ) for index in range(4)]
+        overall = main._build_factual_evidence_assessment(claims, "complete", None)
+        self.assertEqual(overall.status, "insufficient_evidence")
+        self.assertEqual(overall.coverage_breadth, "broad")
+        self.assertEqual(overall.verification_strength, "limited")
+        self.assertIn("Matching independent coverage", overall.summary)
     def test_low_full_text_relevance_is_not_shown(self):
         result = [{
             "claim": "The bill proposes a penalty of 10 crore", "status": "no_fact_check_found",
@@ -1800,7 +1970,91 @@ class ChunkFiveSemanticEvidenceTests(unittest.TestCase):
         with patch.object(evidence_quality, "safe_get", return_value=SafeFetchResult(unrelated, "text/html", "https://news.example/a", 200, {})):
             enriched = evidence_quality.enrich_claim_evidence(result)[0]
         self.assertEqual(enriched["related_articles"], [])
-        self.assertIn("low_full_text_relevance", {item["reason"] for item in enriched["rejected_articles"]})
+        self.assertEqual(len(enriched["context_articles"]), 1)
+        self.assertEqual(enriched["context_articles"][0]["evidence_level"], "broader_context")
+        self.assertEqual(enriched["evidence_status"], "insufficient")
 
+    def test_image_caption_discovery_retains_broader_context(self):
+        context = {
+            "title": "Background report", "source": "Outlet",
+            "url": "https://context.example/report", "evidence_level": "broader_context",
+            "discovery_basis": "topic_overlap", "independent": True,
+        }
+        with patch.object(fact_checker, "search_factcheck_api", return_value={"status": "no_fact_check_found"}), \
+             patch.object(fact_checker, "_search_news", return_value=[]), \
+             patch.object(fact_checker, "_match_claims_to_articles", return_value={0: {
+                 "source_count": 0, "corroboration": "not_corroborated",
+                 "average_relevance": 0.25, "related_articles": [],
+                 "context_count": 1, "context_articles": [context], "rejected_articles": [],
+             }}), \
+             patch.object(fact_checker, "_validate_evidence_links", side_effect=lambda results, **_kwargs: results), \
+             patch.object(fact_checker, "enrich_claim_evidence", side_effect=lambda results: results):
+            result = fact_checker.verify_image_claim(
+                "A caption reports a newly announced public decision."
+            )[0]
+        self.assertEqual(result["context_count"], 1)
+        self.assertEqual(result["context_articles"][0]["evidence_level"], "broader_context")
+        assessment = main._build_image_assessment(
+            {"verdict": "uncertain", "authenticity_score": 50},
+            [main.FactCheckResult(
+                claim="A caption reports a newly announced public decision.",
+                status="no_fact_check_found",
+                context_articles=[main.RelatedArticle(
+                    title="Background report", source="Outlet",
+                    url="https://context.example/report", evidence_level="broader_context",
+                )],
+            )],
+            True, "informal",
+        )
+        self.assertIn("Broader context", assessment.caption_consistency.summary)
+
+    def test_share_page_renders_v1_context_and_image_assessments(self):
+        claim = {
+            "claim": "A low-reported caption claim", "status": "insufficient_evidence",
+            "confidence": "low", "supporting_sources": [], "contradicting_sources": [],
+            "related_sources": [], "context_sources": [{
+                "title": "Context report", "publisher": "Outlet",
+                "url": "https://context.example/report", "evidence_level": "broader_context",
+                "additional_reports": 2, "independent": False,
+            }],
+            "context_notes": ["One additional source provides broader context."],
+        }
+        page_snapshot = {
+            "processing_state": "complete", "overall_evidence_summary": "Context is available.",
+            "factual_evidence": {
+                "status": "insufficient_evidence", "confidence": "low",
+                "coverage_breadth": "none", "context_breadth": "limited",
+                "verification_strength": "limited", "claim_count": 1,
+            },
+            "claims": [claim],
+        }
+        page_html = main._render_share_page({"result_type": "page", "snapshot": page_snapshot})
+        self.assertIn("Context found; verification remains open", page_html)
+        self.assertIn("Broader context found", page_html)
+        self.assertNotIn('class="source-heading">Broader context', page_html)
+        self.assertIn("+2 similar results grouped", page_html)
+
+        image_snapshot = {
+            "processing_state": "complete",
+            "assessment": {
+                "manipulation": {
+                    "status": "uncertain", "confidence": "low",
+                    "summary": "Visual evidence is limited.", "indicators": ["Low resolution"],
+                },
+                "caption_consistency": {
+                    "status": "insufficient_evidence", "confidence": "low",
+                    "summary": "Caption evidence remains open.", "claims": [claim],
+                },
+                "provenance": {
+                    "status": "no_visible_source_indicator", "confidence": "low",
+                    "summary": "No visible credit was found.", "indicators": [],
+                },
+            },
+        }
+        image_html = main._render_share_page({"result_type": "image", "snapshot": image_snapshot})
+        self.assertIn("Caption consistency", image_html)
+        self.assertIn("Visible provenance", image_html)
+        self.assertIn("Caption claim evidence", image_html)
+        self.assertIn("https://context.example/report", image_html)
 if __name__ == "__main__":
     unittest.main()

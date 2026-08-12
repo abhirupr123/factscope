@@ -574,7 +574,9 @@ def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
 
     fc_result = search_factcheck_api(claim)
 
-    search_query = _extract_keywords(claim, max_words=10)
+    # Caption claims use the same concise discovery query as article claims so
+    # sparse reporting is not lost behind an over-specific caption search.
+    search_query = _extract_keywords(claim, max_words=7)
     articles = _search_news(search_query)
 
     news_result = _match_claims_to_articles([claim], articles, source_url=source_url).get(0, {})
@@ -588,6 +590,8 @@ def verify_image_claim(caption: str, source_url: str = "") -> list[dict]:
         "corroboration": news_result.get("corroboration", "not_corroborated"),
         "average_relevance": news_result.get("average_relevance", 0.0),
         "related_articles": news_result.get("related_articles", []),
+        "context_count": news_result.get("context_count", 0),
+        "context_articles": news_result.get("context_articles", []),
         "rejected_articles": news_result.get("rejected_articles", []),
     }
     logger.info(
