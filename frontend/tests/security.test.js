@@ -74,6 +74,17 @@ assert.doesNotMatch(relatedClaimHTML, /Evidence is indirect\./);
 assert.match(relatedClaimHTML, /About the coverage labels/);
 assert.match(relatedClaimHTML, /same claim or event/);
 assert.match(relatedClaimHTML, /5 other results were hidden/);
+const contextualClaimHTML = security.buildV1ClaimsHTML([{
+  claim: 'A related event', status: 'insufficient_evidence', confidence: 'low',
+  supporting_sources: [], contradicting_sources: [],
+  related_sources: [{
+    title: 'Context report', publisher: 'Outlet', url: 'https://context.example/report',
+    evidence_level: 'related_context',
+  }],
+  context_sources: [], limitations: [],
+}]);
+assert.equal((contextualClaimHTML.match(/Related reporting/g) || []).length, 1);
+assert.doesNotMatch(contextualClaimHTML, /fs-v1-source-heading">Related reporting/);
 const broaderContextHTML = security.buildV1ClaimsHTML([{
   claim: 'A low-reported infrastructure claim', status: 'insufficient_evidence', confidence: 'low',
   supporting_sources: [], contradicting_sources: [], related_sources: [],
@@ -183,15 +194,15 @@ const contextOnlySummaryHTML = security.buildV1ArticleSummaryHTML({
   source_quality: {}, limitations: [],
 });
 assert.match(contextOnlySummaryHTML, /Context found; verification remains open/);
-assert.match(contextOnlySummaryHTML, /Background reporting found/);
-assert.match(contextOnlySummaryHTML, /No claim-level verdict yet/);
+assert.doesNotMatch(contextOnlySummaryHTML, /Background reporting found/);
+assert.doesNotMatch(contextOnlySummaryHTML, /No claim-level verdict yet/);
 assert.doesNotMatch(contextOnlySummaryHTML, /Evidence still developing/);
 assert.match(broadCoverageHTML, /Matching coverage found/);
-assert.match(broadCoverageHTML, /Matching reporting found for most claims/);
+assert.doesNotMatch(broadCoverageHTML, /Matching reporting found for most claims|No claim-level verdict yet/);
 assert.doesNotMatch(broadCoverageHTML, /Evidence still developing/);
 assert.match(articleAssessmentHTML, /Evidence still developing/);
-assert.match(articleAssessmentHTML, /No matching reporting found/);
-assert.match(articleAssessmentHTML, /No claim-level verdict yet/);
+assert.doesNotMatch(articleAssessmentHTML, /No matching reporting found/);
+assert.doesNotMatch(articleAssessmentHTML, /No claim-level verdict yet/);
 assert.doesNotMatch(articleAssessmentHTML, /Evidence confidence: low/);
 assert.match(articleAssessmentHTML, /Page and source context/);
 assert.match(articleAssessmentHTML, /Professional article presentation/);
@@ -206,7 +217,7 @@ assert.doesNotMatch(articleAssessmentHTML, /checkable checkability/);
 assert.doesNotMatch(articleAssessmentHTML, /Evidence strength:/);
 assert.match(source, /\$\{claimsSlotHTML\}[\s\S]*?\$\{buildVoteHTML\(result\.vote_stats, result\.fingerprint\)\}/);
 assert.match(source, /\$\{claimHTML\}[\s\S]*?\$\{buildVoteHTML\(result\.vote_stats, result\.fingerprint\)\}/);
-assert.match(overlayCSS, /fs-evidence-overview/);
+assert.doesNotMatch(overlayCSS, /fs-evidence-overview|fs-overview-item/);
 assert.match(overlayCSS, /fs-claim-number/);
 assert.match(source, /identified as satire, so its statements were not evaluated as literal factual claims/);
 assert.match(source, /mergeCompletedClaimResult[\s\S]*processing_state: 'complete'/);
@@ -231,10 +242,8 @@ const evidenceOverviewHTML = security.buildV1ArticleSummaryHTML({
   ],
   content_classification: {}, source_quality: {}, limitations: [],
 });
-assert.match(evidenceOverviewHTML, /Claims checked<\/span>/);
-assert.match(evidenceOverviewHTML, /Evidence findings<\/span>/);
-assert.match(evidenceOverviewHTML, /Matching coverage<\/span>/);
-assert.match(evidenceOverviewHTML, /Still open<\/span>/);
+assert.doesNotMatch(evidenceOverviewHTML, /fs-evidence-overview|Claims checked|Evidence findings|Still open/);
+assert.doesNotMatch(evidenceOverviewHTML, /No claim-level verdict yet/);
 assert.match(corroboratedArticleHTML, /Supported by independent reporting/);
 assert.doesNotMatch(corroboratedArticleHTML, /Supported by direct evidence/);
 

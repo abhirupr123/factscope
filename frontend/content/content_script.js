@@ -625,37 +625,9 @@
     return `<div class="fs-v1-source-group">${headingHTML}<ul class="fs-related-articles">${visible}</ul>${moreHTML}</div>`;
   }
 
-  function buildEvidenceOverviewHTML(claims) {
-    if (!Array.isArray(claims) || claims.length === 0) return '';
-    const factualFindings = claims.filter((claim) =>
-      ['supported', 'contradicted', 'mixed'].includes(claim.status)).length;
-    const matchingCoverage = claims.filter((claim) =>
-      (claim.related_sources || []).some((source) => source.evidence_level === 'matching_coverage')).length;
-    const contextOnly = claims.filter((claim) =>
-      !(claim.related_sources || []).some((source) => source.evidence_level === 'matching_coverage')
-      && (claim.context_sources || []).length > 0).length;
-    const openClaims = Math.max(0, claims.length - factualFindings - matchingCoverage - contextOnly);
-    const items = [
-      ['Claims checked', claims.length],
-      ['Evidence findings', factualFindings],
-      ['Matching coverage', matchingCoverage],
-      ['Still open', openClaims + contextOnly],
-    ];
-    return `<div class="fs-evidence-overview" aria-label="Evidence overview">${items.map(([label, value]) =>
-      `<div class="fs-overview-item"><strong>${value}</strong><span>${label}</span></div>`).join('')}</div>`;
-  }
-
   function buildEvidenceMetaHTML(factual, result) {
-    if (factual.status !== 'insufficient_evidence') {
-      return `<div class="fs-assessment-meta" title="How strongly the displayed evidence supports this finding">Finding confidence: ${formatV1Label(factual.confidence || result.confidence || 'low')}</div>`;
-    }
-    const coverage = factual.coverage_breadth || 'none';
-    const context = factual.context_breadth || 'none';
-    let coverageLabel = 'No matching reporting found';
-    if (coverage === 'broad') coverageLabel = 'Matching reporting found for most claims';
-    else if (['partial', 'limited'].includes(coverage)) coverageLabel = 'Matching reporting found for some claims';
-    else if (context !== 'none') coverageLabel = 'Background reporting found';
-    return `<div class="fs-assessment-meta">${coverageLabel} <span aria-hidden="true">&middot;</span> No claim-level verdict yet</div>`;
+    if (factual.status === 'insufficient_evidence') return '';
+    return `<div class="fs-assessment-meta" title="How strongly the displayed evidence supports this finding">Finding confidence: ${formatV1Label(factual.confidence || result.confidence || 'low')}</div>`;
   }
 
   function buildV1ClaimsHTML(claims, limitations = [], title = 'Claim evidence') {
@@ -694,7 +666,7 @@
       } else if (claim.status === 'insufficient_evidence' && matchingSources.length === 1) {
         contextualPresentation = { ...presentation, label: 'Matching coverage' };
       } else if (claim.status === 'insufficient_evidence' && relatedContext.length > 0) {
-        contextualPresentation = { ...presentation, label: 'Related reporting found' };
+        contextualPresentation = { ...presentation, label: 'Related reporting' };
       } else if (claim.status === 'insufficient_evidence' && broaderContext.length > 0) {
         contextualPresentation = { ...presentation, label: 'Broader context found' };
       } else if (claim.status === 'insufficient_evidence') {
@@ -711,7 +683,7 @@
           ${buildV1SourcesHTML(claim.supporting_sources, 'Supporting sources')}
           ${buildV1SourcesHTML(claim.contradicting_sources, 'Contradicting sources')}
           ${buildV1SourcesHTML(matchingSources, '')}
-          ${buildV1SourcesHTML(relatedContext, 'Related reporting')}
+          ${buildV1SourcesHTML(relatedContext, '')}
           ${buildV1SourcesHTML(
             broaderContext,
             contextualPresentation.label === 'Broader context found' ? '' : 'Broader context',
@@ -782,7 +754,7 @@
       <div class="fs-assessment-status" style="color:${presentation.color}"><span>${presentation.icon}</span>${presentation.label}</div>
       ${evidenceMeta}
       <div class="fs-body">${result.overall_evidence_summary || factual.summary || 'No evidence summary is available.'}</div>
-      ${buildEvidenceOverviewHTML(result.claims)}
+
     </div>`;
     const contextHTML = `${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(friendlyAssessmentLimitations(result.limitations), 'About this assessment', true)}`;
     if (view === 'summary') return primaryHTML;

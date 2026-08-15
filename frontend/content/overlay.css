@@ -1280,40 +1280,6 @@
   line-height: 1.4;
 }
 
-.factscope-popup .fs-evidence-overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 5px;
-  margin-top: 10px;
-}
-
-.factscope-popup .fs-overview-item {
-  min-width: 0;
-  padding: 6px 4px;
-  border: 1px solid #e2e8f0;
-  border-radius: 7px;
-  background: #fff;
-  text-align: center;
-}
-
-.factscope-popup .fs-overview-item strong,
-.factscope-popup .fs-overview-item span {
-  display: block;
-}
-
-.factscope-popup .fs-overview-item strong {
-  color: #1e293b;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.factscope-popup .fs-overview-item span {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 8px;
-  line-height: 1.15;
-}
-
 .factscope-popup .fs-section-heading {
   display: flex;
   align-items: baseline;
@@ -1369,9 +1335,6 @@
   .factscope-popup .fs-caveat { color: #94a3b8; }
   .factscope-popup .fs-assessment-meta,
   .factscope-popup .fs-section-heading > span { color: #94a3b8; }
-  .factscope-popup .fs-overview-item { background: #1e293b; border-color: #334155; }
-  .factscope-popup .fs-overview-item strong { color: #f8fafc; }
-  .factscope-popup .fs-overview-item span { color: #94a3b8; }
   .factscope-popup .fs-claim-number { background: #312e81; color: #c7d2fe; }
   .factscope-popup .fs-mini-assessment,
   .factscope-popup .fs-secondary-assessment { background: #1e293b; border-color: #334155; }

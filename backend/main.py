@@ -2519,7 +2519,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         elif claim_status == "insufficient_evidence" and len(matching) == 1:
             claim_label = "Matching coverage"
         elif claim_status == "insufficient_evidence" and related:
-            claim_label = "Related reporting found"
+            claim_label = "Related reporting"
         elif claim_status == "insufficient_evidence" and broader:
             claim_label = "Broader context found"
         elif claim_status == "insufficient_evidence":
@@ -2534,7 +2534,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             sources_html(claim.get("supporting_sources"), "Supporting sources")
             + sources_html(claim.get("contradicting_sources"), "Contradicting sources")
             + sources_html(matching)
-            + sources_html(related, "Related reporting")
+            + sources_html(related)
             + sources_html(broader, broader_heading)
         )
         claim_confidence = esc(claim.get("confidence", "low"))
@@ -2618,7 +2618,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
                 ("Contradicted", factual.get("contradicted_count", 0)),
                 ("Insufficient", factual.get("insufficient_count", 0)),
             ]
-        counts_html = '<div class="counts">' + "".join(
+        counts_html = '<div class="card-heading findings-heading">Findings overview</div><div class="counts">' + "".join(
             f'<div><strong>{int(value or 0)}</strong><span>{esc(label)}</span></div>' for label, value in counts
         ) + '</div>'
 
