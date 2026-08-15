@@ -955,7 +955,8 @@ class ChunkFourFoundationTests(unittest.TestCase):
             "analysis_version": "4h-test", "scan_timestamp": "2026-08-08T10:00:00+00:00",
         }, "https://factscope.example/s/share123")
         self.assertIn("Evidence still developing", html)
-        self.assertEqual(html.count("Related reporting"), 1)
+        self.assertIn("<strong>1</strong><span>Matching coverage</span>", html)
+        self.assertNotIn('class="source-heading">Matching coverage', html)
         self.assertIn("Findings overview", html)
         self.assertIn("Content and source assessment", html)
         self.assertIn("https://factscope.example/s/share123/card.png", html)
@@ -2159,8 +2160,8 @@ class ChunkFiveSemanticEvidenceTests(unittest.TestCase):
         self.assertIn("+2 similar results grouped", page_html)
         self.assertIn("Findings overview", page_html)
         self.assertIn("Checked claims", page_html)
-        self.assertIn("With background context", page_html)
-        self.assertIn("Without useful coverage", page_html)
+        self.assertIn("<strong>1</strong><span>Broader context</span>", page_html)
+        self.assertIn("<strong>0</strong><span>No external coverage</span>", page_html)
         self.assertNotIn(">Supported</span>", page_html)
 
         image_snapshot = {

@@ -675,7 +675,7 @@
       } else if (claim.status === 'insufficient_evidence' && matchingSources.length === 1) {
         contextualPresentation = { ...presentation, label: 'Matching coverage' };
       } else if (claim.status === 'insufficient_evidence' && relatedContext.length > 0) {
-        contextualPresentation = { ...presentation, label: 'Related reporting' };
+        contextualPresentation = { ...presentation, label: 'Matching coverage' };
       } else if (claim.status === 'insufficient_evidence' && broaderContext.length > 0) {
         contextualPresentation = { ...presentation, label: 'Broader context found' };
       } else if (claim.status === 'insufficient_evidence') {

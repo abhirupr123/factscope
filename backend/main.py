@@ -702,11 +702,11 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
     if fact_check.status == "verified":
         status, confidence, supporting, related = "supported", "high", direct_source, article_sources
         if related:
-            limitations.append("Related reporting is shown separately from the direct fact-check evidence.")
+            limitations.append("Matching coverage is shown separately from direct fact-check evidence.")
     elif fact_check.status == "disputed":
         status, confidence, contradicting, related = "contradicted", "high", direct_source, article_sources
         if related:
-            limitations.append("Related reporting is shown separately from the direct fact-check evidence.")
+            limitations.append("Matching coverage is shown separately from direct fact-check evidence.")
     elif fact_check.status == "mixed":
         status, confidence, related = "mixed", "medium" if direct_source else "low", direct_source + article_sources
         limitations.append("The available fact-check rating was mixed or context-dependent.")
@@ -910,7 +910,7 @@ def _build_factual_evidence_assessment(
         elif coverage_breadth in {"partial", "limited"}:
             summary = "Matching coverage was found for some checked claims, while other claims still lack corroborating evidence."
         elif context_breadth != "none":
-            summary = "Broader reporting and background context were found, but they do not directly confirm or contradict the checked claims."
+            summary = "Matching coverage and useful background were found, but they do not confirm every detail of the checked claims."
         else:
             summary = "No useful external coverage was found for the checked claims."
 
@@ -2519,7 +2519,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         elif claim_status == "insufficient_evidence" and len(matching) == 1:
             claim_label = "Matching coverage"
         elif claim_status == "insufficient_evidence" and related:
-            claim_label = "Related reporting"
+            claim_label = "Matching coverage"
         elif claim_status == "insufficient_evidence" and broader:
             claim_label = "Broader context found"
         elif claim_status == "insufficient_evidence":
@@ -2589,27 +2589,41 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
                     *(claim.get("related_sources") or []),
                 ]
                 return any(
-                    isinstance(source, dict) and source.get("evidence_level") in {
-                        "direct_factcheck", "corroborating", "matching_coverage",
-                    }
+                    isinstance(source, dict) and (
+                        source.get("evidence_level") in {
+                            "direct_factcheck", "corroborating", "matching_coverage",
+                        }
+                        or source.get("stance") in {"corroborating", "contradicting"}
+                        or (
+                            not source.get("evidence_level")
+                            and source.get("stance") == "unavailable"
+                        )
+                    )
                     for source in sources
                 )
 
-            def has_context(claim: dict) -> bool:
-                return bool(claim.get("context_sources")) or any(
-                    isinstance(source, dict) and source.get("evidence_level") == "related_context"
+            def has_displayed_coverage(claim: dict) -> bool:
+                return has_matching(claim) or any(
+                    isinstance(source, dict)
                     for source in (claim.get("related_sources") or [])
                 )
 
             claim_dicts = [claim for claim in claims if isinstance(claim, dict)]
-            matching_count = sum(has_matching(claim) for claim in claim_dicts)
-            context_count = sum(not has_matching(claim) and has_context(claim) for claim in claim_dicts)
-            no_coverage_count = max(0, len(claim_dicts) - matching_count - context_count)
+            matching_count = 0
+            broader_count = 0
+            no_coverage_count = 0
+            for claim in claim_dicts:
+                if has_displayed_coverage(claim):
+                    matching_count += 1
+                elif claim.get("context_sources"):
+                    broader_count += 1
+                else:
+                    no_coverage_count += 1
             counts = [
                 ("Checked claims", len(claim_dicts)),
-                ("With matching reporting", matching_count),
-                ("With background context", context_count),
-                ("Without useful coverage", no_coverage_count),
+                ("Matching coverage", matching_count),
+                ("Broader context", broader_count),
+                ("No external coverage", no_coverage_count),
             ]
         else:
             counts = [

@@ -83,8 +83,8 @@ const contextualClaimHTML = security.buildV1ClaimsHTML([{
   }],
   context_sources: [], limitations: [],
 }]);
-assert.equal((contextualClaimHTML.match(/Related reporting/g) || []).length, 1);
-assert.doesNotMatch(contextualClaimHTML, /fs-v1-source-heading">Related reporting/);
+assert.match(contextualClaimHTML, /Matching coverage/);
+assert.doesNotMatch(contextualClaimHTML, /fs-v1-source-heading">Matching coverage/);
 const broaderContextHTML = security.buildV1ClaimsHTML([{
   claim: 'A low-reported infrastructure claim', status: 'insufficient_evidence', confidence: 'low',
   supporting_sources: [], contradicting_sources: [], related_sources: [],
