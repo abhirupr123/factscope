@@ -2356,15 +2356,15 @@ def _share_status_view(snapshot: dict, result_type: str, fallback_verdict: str) 
     context_breadth = factual.get("context_breadth", "none")
     if status == "not_applicable":
         label = {
-            "satire": "Satire identified", "opinion": "Opinion and context assessment",
-            "prediction": "Forward-looking claim", "unsupported_page": "Unable to assess this page",
+            "satire": "Satire detected", "opinion": "Opinion detected",
+            "prediction": "Prediction detected", "unsupported_page": "Unable to assess this page",
         }.get(classification.get("content_type"), "Context-only assessment")
     elif status == "insufficient_evidence" and coverage == "broad":
         label = "Matching coverage found"
     elif status == "insufficient_evidence" and coverage in {"partial", "limited"}:
         label = "Some matching coverage found"
     elif status == "insufficient_evidence" and context_breadth != "none":
-        label = "Context found; verification remains open"
+        label = "Matching coverage found"
     elif status == "insufficient_evidence" and classification.get("content_type") == "breaking_news":
         label = "Evidence still developing"
     elif status == "insufficient_evidence":
@@ -2684,9 +2684,14 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         )
 
     if result_type == "page" and factual.get("status") == "insufficient_evidence":
+        raw_coverage = str(factual.get("coverage_breadth") or "none")
+        raw_context = str(factual.get("context_breadth") or "none")
+        effective_coverage = raw_coverage if raw_coverage != "none" else raw_context
+        coverage_label = "Broad" if effective_coverage == "broad" else (
+            "Limited" if effective_coverage in {"partial", "limited"} else "None"
+        )
         assessment_meta = (
-            f'Coverage: {esc(str(factual.get("coverage_breadth") or "none").replace("_", " ")).title()}'
-            f' · Context: {esc(str(factual.get("context_breadth") or "none").replace("_", " ")).title()}'
+            f'Coverage: {coverage_label}'
             f' · Evidence strength: {esc(str(factual.get("verification_strength") or "limited").replace("_", " ")).title()}'
         )
     else:

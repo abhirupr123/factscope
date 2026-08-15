@@ -626,8 +626,17 @@
   }
 
   function buildEvidenceMetaHTML(factual, result) {
-    if (factual.status === 'insufficient_evidence') return '';
-    return `<div class="fs-assessment-meta" title="How strongly the displayed evidence supports this finding">Finding confidence: ${formatV1Label(factual.confidence || result.confidence || 'low')}</div>`;
+    if (factual.status !== 'insufficient_evidence') {
+      return `<div class="fs-assessment-meta" title="How strongly the displayed evidence supports this finding">Finding confidence: ${formatV1Label(factual.confidence || result.confidence || 'low')}</div>`;
+    }
+    const coverage = factual.coverage_breadth || 'none';
+    const context = factual.context_breadth || 'none';
+    const effectiveCoverage = coverage !== 'none' ? coverage : context;
+    const coverageLabel = effectiveCoverage === 'broad'
+      ? 'Broad'
+      : ['partial', 'limited'].includes(effectiveCoverage) ? 'Limited' : 'None';
+    const strength = formatV1Label(factual.verification_strength || 'limited');
+    return `<div class="fs-assessment-meta">Coverage: ${coverageLabel} <span aria-hidden="true">&middot;</span> Evidence strength: ${strength}</div>`;
   }
 
   function buildV1ClaimsHTML(claims, limitations = [], title = 'Claim evidence') {
@@ -712,9 +721,9 @@
     let presentation = v1StatusPresentation(factual.status);
     if (factual.status === 'not_applicable') {
       const labels = {
-        satire: 'Satire identified',
-        opinion: 'Opinion and context assessment',
-        prediction: 'Forward-looking claim',
+        satire: 'Satire detected',
+        opinion: 'Opinion detected',
+        prediction: 'Prediction detected',
         unsupported_page: 'Unable to assess this page',
       };
       presentation = { ...presentation, label: labels[classification.content_type] || 'Context-only assessment' };
@@ -723,7 +732,7 @@
     } else if (factual.status === 'insufficient_evidence' && ['partial', 'limited'].includes(coverage)) {
       presentation = { ...presentation, label: 'Some matching coverage found' };
     } else if (factual.status === 'insufficient_evidence' && contextBreadth !== 'none') {
-      presentation = { ...presentation, label: 'Context found; verification remains open' };
+      presentation = { ...presentation, label: 'Matching coverage found' };
     } else if (factual.status === 'insufficient_evidence' && classification.content_type === 'breaking_news') {
       presentation = { ...presentation, label: 'Evidence still developing' };
     } else if (factual.status === 'insufficient_evidence') {

@@ -193,15 +193,28 @@ const contextOnlySummaryHTML = security.buildV1ArticleSummaryHTML({
   content_classification: { content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable' },
   source_quality: {}, limitations: [],
 });
-assert.match(contextOnlySummaryHTML, /Context found; verification remains open/);
-assert.doesNotMatch(contextOnlySummaryHTML, /Background reporting found/);
-assert.doesNotMatch(contextOnlySummaryHTML, /No claim-level verdict yet/);
+assert.match(contextOnlySummaryHTML, /Matching coverage found/);
+assert.match(contextOnlySummaryHTML, /Coverage: Broad/);
+assert.match(contextOnlySummaryHTML, /Evidence strength: Limited/);
 assert.doesNotMatch(contextOnlySummaryHTML, /Evidence still developing/);
+const satireSummaryHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: { status: 'not_applicable', confidence: 'medium', summary: 'Satirical content.' },
+  content_classification: { content_type: 'satire', confidence: 'high', checkability: 'not_checkable' },
+  source_quality: {}, limitations: [],
+});
+const opinionSummaryHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: { status: 'not_applicable', confidence: 'medium', summary: 'Opinion content.' },
+  content_classification: { content_type: 'opinion', confidence: 'high', checkability: 'not_checkable' },
+  source_quality: {}, limitations: [],
+});
+assert.match(satireSummaryHTML, /Satire detected/);
+assert.match(opinionSummaryHTML, /Opinion detected/);
+assert.doesNotMatch(`${satireSummaryHTML}${opinionSummaryHTML}`, /Satire identified|Opinion and context assessment/);
 assert.match(broadCoverageHTML, /Matching coverage found/);
-assert.doesNotMatch(broadCoverageHTML, /Matching reporting found for most claims|No claim-level verdict yet/);
+assert.match(broadCoverageHTML, /Coverage: Broad[\s\S]*Evidence strength: Limited/);
 assert.doesNotMatch(broadCoverageHTML, /Evidence still developing/);
 assert.match(articleAssessmentHTML, /Evidence still developing/);
-assert.doesNotMatch(articleAssessmentHTML, /No matching reporting found/);
+assert.match(articleAssessmentHTML, /Coverage: None/);
 assert.doesNotMatch(articleAssessmentHTML, /No claim-level verdict yet/);
 assert.doesNotMatch(articleAssessmentHTML, /Evidence confidence: low/);
 assert.match(articleAssessmentHTML, /Page and source context/);
@@ -214,7 +227,7 @@ assert.doesNotMatch(articleAssessmentHTML, /At least one claim lacks enough evid
 assert.match(articleAssessmentHTML, /Classification confidence: Medium/);
 assert.match(articleAssessmentHTML, /Checkability: Checkable/);
 assert.doesNotMatch(articleAssessmentHTML, /checkable checkability/);
-assert.doesNotMatch(articleAssessmentHTML, /Evidence strength:/);
+assert.match(articleAssessmentHTML, /Evidence strength: Limited/);
 assert.match(source, /\$\{claimsSlotHTML\}[\s\S]*?\$\{buildVoteHTML\(result\.vote_stats, result\.fingerprint\)\}/);
 assert.match(source, /\$\{claimHTML\}[\s\S]*?\$\{buildVoteHTML\(result\.vote_stats, result\.fingerprint\)\}/);
 assert.doesNotMatch(overlayCSS, /fs-evidence-overview|fs-overview-item/);

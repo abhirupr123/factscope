@@ -2150,7 +2150,10 @@ class ChunkFiveSemanticEvidenceTests(unittest.TestCase):
             "claims": [claim],
         }
         page_html = main._render_share_page({"result_type": "page", "snapshot": page_snapshot})
-        self.assertIn("Context found; verification remains open", page_html)
+        self.assertIn("Matching coverage found", page_html)
+        self.assertIn("Coverage: Limited", page_html)
+        self.assertIn("Evidence strength: Limited", page_html)
+        self.assertNotIn(" · Context:", page_html)
         self.assertIn("Broader context found", page_html)
         self.assertNotIn('class="source-heading">Broader context', page_html)
         self.assertIn("+2 similar results grouped", page_html)
