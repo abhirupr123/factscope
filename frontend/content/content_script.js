@@ -271,6 +271,108 @@
   function verdictIcon(v) { return VERDICT_ICONS[v] || ''; }
   function scoreColor(s) { return s > 70 ? '#10b981' : s > 40 ? '#f59e0b' : '#ef4444'; }
 
+  const RECOVERY_STATES = {
+    offline: {
+      icon: '\u21AF', title: 'You’re offline', tone: 'warning', action: 'Try again',
+      advice: 'Reconnect to the internet before retrying this scan.',
+    },
+    cold_start: {
+      icon: '\u25F7', title: 'FactScope is waking up', tone: 'info', action: 'Try again in a moment',
+      advice: 'The free beta service may need a short moment to start after being idle.',
+    },
+    timeout: {
+      icon: '\u23F1', title: 'Analysis took too long', tone: 'warning', action: 'Try again',
+      advice: 'A slower page, image host, or provider may have delayed this request.',
+    },
+    provider_failure: {
+      icon: '\u26A0', title: 'Analysis provider unavailable', tone: 'warning', action: 'Try again later',
+      advice: 'No verdict was produced from this failed attempt.',
+    },
+    server_busy: {
+      icon: '\u25F7', title: 'FactScope is busy', tone: 'info', action: 'Try again shortly',
+      advice: 'Capacity is temporarily full. Your page has not been given a factual verdict.',
+    },
+    blocked_image: {
+      icon: '\uD83D\uDDBC', title: 'Image could not be accessed', tone: 'warning', action: 'Try image again',
+      advice: 'Some sites block external image access. You can also try another copy of the image.',
+    },
+    unsupported_page: {
+      icon: '\u2298', title: 'This page cannot be scanned', tone: 'neutral', action: '',
+      advice: 'Chrome internal pages, extension pages, and some protected viewers do not allow FactScope to run.',
+    },
+    request_too_large: {
+      icon: '\u2637', title: 'This page is too large to scan', tone: 'neutral', action: '',
+      advice: 'Try a shorter article or a post containing the specific claim you want to investigate.',
+    },
+    connection_problem: {
+      icon: '\u21BB', title: 'Could not reach FactScope', tone: 'warning', action: 'Try again',
+      advice: 'Check your connection. If it is working, the service may be temporarily unavailable.',
+    },
+  };
+
+  function classifyRecoveryState(result, modality = 'page') {
+    if (!result || result.verdict === 'rate_limited') return null;
+    const explanation = String(result.explanation || '').toLowerCase();
+    const classification = result.content_classification || {};
+    let state = result.error_state || '';
+    if (!state && classification.content_type === 'unsupported_page') state = 'unsupported_page';
+    if (!state && result.processing_state === 'failed') {
+      if (modality === 'image' && /could not fetch|protected or too large|image retrieval/.test(explanation)) state = 'blocked_image';
+      else if (/timed out|timeout/.test(explanation)) state = 'timeout';
+      else if (/provider|model|analysis service/.test(explanation)) state = 'provider_failure';
+      else state = 'connection_problem';
+    }
+    const incompleteLegacyResult = !result.fingerprint || result.retryable === true;
+    if (!state && incompleteLegacyResult && modality === 'image' && /could not fetch|protected or too large|image retrieval/.test(explanation)) state = 'blocked_image';
+    if (!state && incompleteLegacyResult && /timed out|timeout/.test(explanation)) state = 'timeout';
+    if (!state && incompleteLegacyResult && /provider unavailable|provider failed|model unavailable/.test(explanation)) state = 'provider_failure';
+    if (!state && result.verdict === 'error') state = 'connection_problem';
+    if (!state) return null;
+    const presentation = RECOVERY_STATES[state] || RECOVERY_STATES.connection_problem;
+    return {
+      ...presentation,
+      state,
+      message: result.explanation || presentation.advice,
+      requestId: result.request_id || '',
+      retryable: result.retryable !== false && Boolean(presentation.action),
+    };
+  }
+
+  function showRecoveryPanel(result, modality, retryAction) {
+    const recovery = classifyRecoveryState(result, modality);
+    if (!recovery) return false;
+    const reference = recovery.requestId
+      ? `<div class="fs-recovery-reference">Reference: ${recovery.requestId}</div>`
+      : '';
+    const retry = recovery.retryable && typeof retryAction === 'function'
+      ? `<button type="button" class="fs-retry-btn">${recovery.action}</button>`
+      : '';
+    const panel = createPanel(`
+      <div class="fs-header">
+        <div class="fs-logo"><svg viewBox="0 0 100 100" width="28" height="28"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="fs-header-text"><div class="fs-brand">FactScope</div><div class="fs-subtitle">${modality === 'image' ? 'Image verification' : 'Page verification'}</div></div>
+        <div class="fs-header-actions"><button class="fs-close" aria-label="Close">&times;</button></div>
+      </div>
+      <section class="fs-recovery fs-recovery-${recovery.tone}" role="status" aria-live="polite">
+        <div class="fs-recovery-icon" aria-hidden="true">${recovery.icon}</div>
+        <h2>${recovery.title}</h2>
+        <p>${recovery.message}</p>
+        <p class="fs-recovery-advice">${recovery.advice}</p>
+        ${reference}${retry}
+      </section>
+      <div class="fs-footer">No factual verdict was produced</div>
+    `);
+    panel.querySelector('.fs-close').addEventListener('click', removePanel);
+    const retryButton = panel.querySelector('.fs-retry-btn');
+    if (retryButton) {
+      retryButton.addEventListener('click', () => {
+        retryButton.disabled = true;
+        retryButton.textContent = 'Retrying…';
+        retryAction();
+      });
+    }
+    return true;
+  }
   function escapeHTML(value) {
     return String(value ?? '')
       .replace(/&/g, '&amp;')
@@ -522,6 +624,40 @@
       : '';
     return `<div class="fs-v1-source-group">${headingHTML}<ul class="fs-related-articles">${visible}</ul>${moreHTML}</div>`;
   }
+
+  function buildEvidenceOverviewHTML(claims) {
+    if (!Array.isArray(claims) || claims.length === 0) return '';
+    const factualFindings = claims.filter((claim) =>
+      ['supported', 'contradicted', 'mixed'].includes(claim.status)).length;
+    const matchingCoverage = claims.filter((claim) =>
+      (claim.related_sources || []).some((source) => source.evidence_level === 'matching_coverage')).length;
+    const contextOnly = claims.filter((claim) =>
+      !(claim.related_sources || []).some((source) => source.evidence_level === 'matching_coverage')
+      && (claim.context_sources || []).length > 0).length;
+    const openClaims = Math.max(0, claims.length - factualFindings - matchingCoverage - contextOnly);
+    const items = [
+      ['Claims checked', claims.length],
+      ['Evidence findings', factualFindings],
+      ['Matching coverage', matchingCoverage],
+      ['Still open', openClaims + contextOnly],
+    ];
+    return `<div class="fs-evidence-overview" aria-label="Evidence overview">${items.map(([label, value]) =>
+      `<div class="fs-overview-item"><strong>${value}</strong><span>${label}</span></div>`).join('')}</div>`;
+  }
+
+  function buildEvidenceMetaHTML(factual, result) {
+    if (factual.status !== 'insufficient_evidence') {
+      return `<div class="fs-assessment-meta" title="How strongly the displayed evidence supports this finding">Finding confidence: ${formatV1Label(factual.confidence || result.confidence || 'low')}</div>`;
+    }
+    const coverage = factual.coverage_breadth || 'none';
+    const context = factual.context_breadth || 'none';
+    let coverageLabel = 'No matching reporting found';
+    if (coverage === 'broad') coverageLabel = 'Matching reporting found for most claims';
+    else if (['partial', 'limited'].includes(coverage)) coverageLabel = 'Matching reporting found for some claims';
+    else if (context !== 'none') coverageLabel = 'Background reporting found';
+    return `<div class="fs-assessment-meta">${coverageLabel} <span aria-hidden="true">&middot;</span> No claim-level verdict yet</div>`;
+  }
+
   function buildV1ClaimsHTML(claims, limitations = [], title = 'Claim evidence') {
     const safe = sanitizeForHTML({ claims: claims || [], limitations: limitations || [] });
     if (!Array.isArray(safe.claims) || safe.claims.length === 0) {
@@ -531,7 +667,7 @@
     let hasMatchingCoverage = false;
     let hasBroaderContext = false;
     let hiddenSourceCount = 0;
-    const items = safe.claims.map((claim) => {
+    const items = safe.claims.map((claim, claimIndex) => {
       const presentation = v1StatusPresentation(claim.status);
       const statusClass = V1_STATUS_PRESENTATION[claim.status] ? claim.status.replace(/_/g, '-') : 'unknown';
       let contextualPresentation = presentation;
@@ -566,9 +702,9 @@
       }
       const confidenceHTML = claim.status === 'insufficient_evidence'
         ? ''
-        : `<span class="fs-confidence">${claim.confidence || 'low'} evidence confidence</span>`;
+        : `<span class="fs-confidence">${formatV1Label(claim.confidence || 'low')} confidence</span>`;
       return `<div class="fs-factcheck-item fs-v1-claim-${statusClass}">
-        <span class="fs-claim-icon" style="color:${contextualPresentation.color}">${contextualPresentation.icon}</span>
+        <span class="fs-claim-number" aria-label="Claim ${claimIndex + 1}">${claimIndex + 1}</span>
         <div class="fs-claim-body">
           <span class="fs-claim-text">${claim.claim}</span>
           <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${contextualPresentation.color}">${contextualPresentation.label}</span>${confidenceHTML}</div>
@@ -593,15 +729,14 @@
     if (hiddenSourceCount > 0) {
       guide.push(`${hiddenSourceCount} other result${hiddenSourceCount === 1 ? ' was' : 's were'} hidden because ${hiddenSourceCount === 1 ? 'it was' : 'they were'} repetitive, outdated, unrelated, or could not be checked.`);
     }
-    return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div>${items}${buildLimitationsHTML(guide, 'How to read these results', true)}</div>`;
+    return `<div class="fs-factchecks"><div class="fs-section-heading"><div class="fs-factchecks-title">${title}</div><span>${safe.claims.length} checked</span></div>${items}${buildLimitationsHTML(guide, 'About the coverage labels', true)}</div>`;
   }
-  function buildV1ArticleSummaryHTML(result) {
+  function buildV1ArticleSummaryHTML(result, view = 'all') {
     result = sanitizeForHTML(result || {});
     const factual = result.factual_evidence || {};
     const classification = result.content_classification || {};
     const coverage = factual.coverage_breadth || 'none';
     const contextBreadth = factual.context_breadth || 'none';
-    const strength = factual.verification_strength || 'limited';
     let presentation = v1StatusPresentation(factual.status);
     if (factual.status === 'not_applicable') {
       const labels = {
@@ -631,25 +766,28 @@
     const quality = result.source_quality || {};
     const classificationLabel = classification.content_type ? formatV1Label(classification.content_type) : '';
     const classificationDetails = classificationLabel
-      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content type: ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">Classification confidence: ${formatV1Label(classification.confidence)} &middot; Checkability: ${formatV1Label(classification.checkability)}</div></details>`
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Why this was identified as ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">Classification confidence: ${formatV1Label(classification.confidence)} &middot; Checkability: ${formatV1Label(classification.checkability)}</div></details>`
       : '';
     const qualitySignals = (quality.signals || []).map((signal) => `<li>${signal.detail}</li>`).join('');
     const modelEvidence = (result.evidence || []).filter(Boolean).map((item) => `<li>${item}</li>`).join('');
     const modelAssessment = result.explanation || modelEvidence
-      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content and source assessment</summary><div class="fs-body">${result.explanation || ''}</div>${modelEvidence ? `<ul class="fs-details-list">${modelEvidence}</ul>` : ''}<div class="fs-caveat">AI-assisted review of presentation, attribution, and risk signals. It does not verify individual factual claims.</div></details>`
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Page and source context</summary><div class="fs-body">${result.explanation || ''}</div>${modelEvidence ? `<ul class="fs-details-list">${modelEvidence}</ul>` : ''}<div class="fs-caveat">This AI-assisted context review does not verify the claims above.</div></details>`
       : '';
     const qualityDetails = quality.summary || qualitySignals || (quality.limitations || []).length
-      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Source quality: ${quality.level || 'unknown'} (${Number.isFinite(quality.score) ? quality.score : result.legacy_score || 0}/100)</summary><div class="fs-body">${quality.summary || ''}</div>${qualitySignals ? `<ul class="fs-details-list">${qualitySignals}</ul>` : ''}${buildLimitationsHTML(quality.limitations, 'About source quality', true)}</details>`
+      ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Source and presentation signals</summary><div class="fs-body">${quality.summary || ''}</div>${qualitySignals ? `<ul class="fs-details-list">${qualitySignals}</ul>` : ''}${buildLimitationsHTML(quality.limitations, 'What these signals cannot tell you', true)}</details>`
       : '';
-    const evidenceMeta = factual.status === 'insufficient_evidence'
-      ? `<div class="fs-confidence">Coverage: ${formatV1Label(coverage)} &middot; Context: ${formatV1Label(contextBreadth)} &middot; Evidence strength: ${formatV1Label(strength)}</div>`
-      : `<div class="fs-confidence">Evidence confidence: ${factual.confidence || result.confidence || 'low'}</div>`;
-    return `<div class="fs-assessment-card">
+    const evidenceMeta = buildEvidenceMetaHTML(factual, result);
+    const primaryHTML = `<div class="fs-assessment-card">
       <div class="fs-assessment-kicker">Evidence assessment</div>
       <div class="fs-assessment-status" style="color:${presentation.color}"><span>${presentation.icon}</span>${presentation.label}</div>
       ${evidenceMeta}
       <div class="fs-body">${result.overall_evidence_summary || factual.summary || 'No evidence summary is available.'}</div>
-    </div>${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(friendlyAssessmentLimitations(result.limitations), 'About this assessment', true)}`;
+      ${buildEvidenceOverviewHTML(result.claims)}
+    </div>`;
+    const contextHTML = `${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(friendlyAssessmentLimitations(result.limitations), 'About this assessment', true)}`;
+    if (view === 'summary') return primaryHTML;
+    if (view === 'context') return contextHTML;
+    return `${primaryHTML}${contextHTML}`;
   }
   function buildV1ImageAssessmentHTML(result) {
     const assessment = result.assessment || {};
@@ -675,21 +813,22 @@
     return `<div class="fs-assessment-card">
       <div class="fs-assessment-kicker">Visual manipulation assessment</div>
       <div class="fs-assessment-status" style="color:${manipulationView.color}"><span>${manipulationView.icon}</span>${manipulationView.label}</div>
-      <div class="fs-confidence">${manipulation.confidence || 'low'} confidence</div>
+      <div class="fs-assessment-meta" title="How strongly the available visual signals support this assessment">Visual finding confidence: ${formatV1Label(manipulation.confidence || 'low')}</div>
       <div class="fs-body">${manipulation.summary || 'No visual assessment is available.'}</div>
-      ${indicatorList(manipulation.indicators)}${editingCaveat}${buildLimitationsHTML(manipulation.limitations)}
+      ${indicatorList(manipulation.indicators)}${editingCaveat}${buildLimitationsHTML(manipulation.limitations, 'What could affect this result', true)}
     </div>
     <div class="fs-assessment-grid">
-      <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Caption consistency</div><div class="fs-mini-status" style="color:${captionView.color}">${captionView.icon} ${captionView.label}</div><div class="fs-body">${caption.summary || ''}</div>${buildLimitationsHTML(caption.limitations)}</div>
-      <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Visible provenance</div><div class="fs-mini-status" style="color:${provenanceView.color}">${provenanceView.icon} ${provenanceView.label}</div><div class="fs-body">${provenance.summary || ''}</div>${indicatorList(provenance.indicators)}${buildLimitationsHTML(provenance.limitations)}<div class="fs-caveat">Visible credits are clues, not proof of origin.</div></div>
+      <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Caption consistency</div><div class="fs-mini-status" style="color:${captionView.color}">${captionView.icon} ${captionView.label}</div><div class="fs-body">${caption.summary || ''}</div>${buildLimitationsHTML(caption.limitations, 'What could affect this result', true)}</div>
+      <div class="fs-mini-assessment"><div class="fs-assessment-kicker">Visible source clues</div><div class="fs-mini-status" style="color:${provenanceView.color}">${provenanceView.icon} ${provenanceView.label}</div><div class="fs-body">${provenance.summary || ''}</div>${indicatorList(provenance.indicators)}${buildLimitationsHTML(provenance.limitations, 'What could affect this result', true)}<div class="fs-caveat">Visible credits are clues, not proof of origin.</div></div>
     </div>
-    <details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Legacy authenticity score: ${Number.isFinite(result.legacy_score) ? result.legacy_score : result.authenticity_score || 0}/100</summary><div class="fs-body">Kept temporarily for compatibility; use the separated assessments above when interpreting this result.</div></details>
-    ${buildLimitationsHTML(remainingLimitations)}`;
+    <details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Compatibility score (temporary)</summary><div class="fs-body">${Number.isFinite(result.legacy_score) ? result.legacy_score : result.authenticity_score || 0}/100. Use the separate visual, caption, and source-clue assessments above when interpreting this result.</div></details>
+    ${buildLimitationsHTML(remainingLimitations, 'Other things to keep in mind', true)}`;
   }
 
   if (globalThis.__FACTSCOPE_SECURITY_TEST__) {
     Object.assign(globalThis.__FACTSCOPE_SECURITY__, {
       buildV1ClaimsHTML, buildV1ArticleSummaryHTML, buildV1ImageAssessmentHTML,
+      classifyRecoveryState,
     });
   }
 
@@ -971,7 +1110,11 @@
         if (slot) slot.innerHTML = buildV1ClaimsHTML(completed.claims, resp.limitations);
         const primarySlot = document.getElementById('fs-primary-assessment-slot');
         if (primarySlot && completed.factual_evidence) {
-          primarySlot.innerHTML = buildV1ArticleSummaryHTML(completed);
+          primarySlot.innerHTML = buildV1ArticleSummaryHTML(completed, 'summary');
+        }
+        const secondarySlot = document.getElementById('fs-secondary-assessment-slot');
+        if (secondarySlot && completed.factual_evidence) {
+          secondarySlot.innerHTML = buildV1ArticleSummaryHTML(completed, 'context');
         }
       } else if (resp && !resp.pending && Array.isArray(resp.fact_checks)) {
         if (slot) slot.innerHTML = buildFactChecksHTML(resp.fact_checks);
@@ -1057,8 +1200,9 @@
     });
   }
 
-  function showResultPanel(result) {
+  function showResultPanel(result, retryAction = null) {
     result = sanitizeForHTML(result);
+    if (showRecoveryPanel(result, 'page', retryAction)) return;
     if (result.verdict === 'rate_limited') {
       const rl = result.rate_limit || {};
       const panel = createPanel(`
@@ -1074,7 +1218,7 @@
             You\u2019ve used <strong>${rl.used || '?'}/${rl.limit || '?'}</strong> scans today on the <strong>${rl.tier || 'free'}</strong> plan.<br/>
             Your limit resets at <strong>midnight UTC</strong>.
           </div>
-          <div style="margin-top:14px;font-size:12px;color:#94a3b8;">Upgrade via the extension popup for more scans.</div>
+          <div style="margin-top:14px;font-size:12px;color:#94a3b8;">FactScope is currently in free beta. Try again after the daily reset.</div>
         </div>
         <div class="fs-footer">Scanned by FactScope</div>
       `);
@@ -1088,7 +1232,7 @@
     const icon = verdictIcon(result.verdict);
     const isV1 = result.schema_version === '1.0' && result.factual_evidence && result.source_quality;
     const primaryAssessmentHTML = isV1
-      ? `<div id="fs-primary-assessment-slot">${buildV1ArticleSummaryHTML(result)}</div>`
+      ? `<div id="fs-primary-assessment-slot">${buildV1ArticleSummaryHTML(result, 'summary')}</div>`
       : `<div class="fs-verdict-row"><span class="fs-verdict-icon">${icon}</span><span class="fs-verdict-label" style="color:${color}">${label}</span></div><div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div><div class="fs-score-text"><strong style="color:${color}">${score}%</strong> trust score</div>`;
 
     const evidenceItems = (result.evidence || [])
@@ -1096,13 +1240,19 @@
       .map((e) => `<li>${e}</li>`)
       .join('');
 
+    const secondaryAssessmentHTML = isV1
+      ? `<div id="fs-secondary-assessment-slot">${buildV1ArticleSummaryHTML(result, 'context')}</div>`
+      : '';
+
     const sourceInfo = result.source_info;
     const sourceHTML = sourceInfo
       ? `<div class="fs-source">${[sourceInfo.site_name, sourceInfo.author, sourceInfo.publish_date].filter(Boolean).join(' &middot; ')}</div>`
       : '';
 
     let claimsSlotHTML;
-    if (isV1 && result.content_classification?.content_type === 'satire') {
+    if (isV1 && result.content_classification?.checkability === 'no_checkable_claims') {
+      claimsSlotHTML = '<div id="fs-claims-slot"><div class="fs-factchecks fs-empty-state"><div class="fs-factchecks-title">No checkable factual claims found</div><div class="fs-body">This page may be opinion, commentary, navigation, or another format without specific claims that can be compared with external evidence.</div><div class="fs-state-hint">Try an article or post containing a concrete statement about a person, event, number, policy, or place.</div></div></div>';
+    } else if (isV1 && result.content_classification?.content_type === 'satire') {
       claimsSlotHTML = '<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">Claim evidence</div><div class="fs-body">This page was identified as satire, so its statements were not evaluated as literal factual claims.</div></div></div>';
     } else if (result.claims_pending && result.fingerprint) {
       claimsSlotHTML = `<div id="fs-claims-slot"><div class="fs-factchecks"><div class="fs-factchecks-title">${isV1 ? 'Claim evidence' : 'Claim analysis'}</div><div class="fs-loader"><div class="fs-loader-bar"></div></div><div class="fs-body fs-scanning-text">Checking claims&hellip;</div></div></div>`;
@@ -1143,14 +1293,15 @@
       ${sourceHTML}
       ${isV1 ? '' : buildDomainProfileHTML(result.domain_profile)}
       ${isV1 ? '' : scansHTML}
-      ${buildVoteHTML(result.vote_stats, result.fingerprint)}
-      ${buildKBMatchHTML(result.kb_matches)}
-      ${buildCommunitySection(result)}
-      <div class="fs-divider"></div>
       ${isV1 ? '' : `<div class="fs-body">${result.explanation || 'No explanation available.'}</div>`}
       ${!isV1 && evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">Supporting evidence</div><ul>${evidenceItems}</ul></div>` : ''}
       ${claimsSlotHTML}
       ${signalsHTML}
+      ${secondaryAssessmentHTML}
+      <div class="fs-divider fs-secondary-divider"></div>
+      ${buildVoteHTML(result.vote_stats, result.fingerprint)}
+      ${buildKBMatchHTML(result.kb_matches)}
+      ${buildCommunitySection(result)}
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
@@ -1371,13 +1522,13 @@
     `);
   }
 
-  function showImageResultPanel(result, resolvedPageUrl) {
+  function showImageResultPanel(result, resolvedPageUrl, retryAction = null) {
+    result = sanitizeForHTML(result);
+    if (showRecoveryPanel(result, 'image', retryAction)) return;
     if (result.verdict === 'rate_limited') {
       showResultPanel(result);
       return;
     }
-    result = sanitizeForHTML(result);
-
     const score = result.authenticity_score;
     const color = imgScoreColor(score);
     const label = IMG_VERDICT_LABELS[result.verdict] || result.verdict;
@@ -1391,12 +1542,11 @@
       .map((e) => `<li>${e}</li>`)
       .join('');
 
+    const captionClaims = result.assessment?.caption_consistency?.claims || [];
     const claimHTML = isV1
-      ? buildV1ClaimsHTML(
-          result.assessment.caption_consistency?.claims,
-          result.assessment.caption_consistency?.limitations,
-          'Caption claim evidence',
-        )
+      ? (captionClaims.length
+        ? buildV1ClaimsHTML(captionClaims, [], 'Caption claim evidence')
+        : '')
       : (result.claim_analysis ? buildFactChecksHTML(result.claim_analysis) : '');
 
     const imgDomain = (() => { try { return new URL(location.href).hostname; } catch { return ''; } })();
@@ -1414,12 +1564,12 @@
         </div>
       </div>
       ${primaryAssessmentHTML}
-      ${buildVoteHTML(result.vote_stats, result.fingerprint)}
-      ${buildCommunitySection(result)}
-      <div class="fs-divider"></div>
       ${isV1 ? '' : `<div class="fs-body">${result.explanation || 'No explanation available.'}</div>`}
       ${!isV1 && evidenceItems ? `<div class="fs-evidence"><div class="fs-evidence-title">What we found</div><ul>${evidenceItems}</ul></div>` : ''}
       ${claimHTML}
+      <div class="fs-divider fs-secondary-divider"></div>
+      ${buildVoteHTML(result.vote_stats, result.fingerprint)}
+      ${buildCommunitySection(result)}
       <div class="fs-footer">Scanned by FactScope</div>
     `);
     panel.querySelector('.fs-close').addEventListener('click', removePanel);
@@ -1489,17 +1639,20 @@
     });
 
     if (result && result.authenticity_score !== undefined) {
-      showImageResultPanel(result, resolvedUrl);
-      if (chrome.runtime?.id) {
+      showImageResultPanel(result, resolvedUrl, () => verifyImage(imageUrl, pageUrl));
+      if (!classifyRecoveryState(result, 'image') && result.verdict !== 'rate_limited' && chrome.runtime?.id) {
         chrome.runtime.sendMessage({ type: 'update-badge', score: result.authenticity_score });
       }
     } else {
       showImageResultPanel({
-        authenticity_score: 0,
-        verdict: 'error',
-        explanation: 'Could not verify this image. Make sure the FactScope backend is running.',
+        authenticity_score: 50,
+        verdict: 'uncertain',
+        processing_state: 'failed',
+        error_state: 'connection_problem',
+        retryable: true,
+        explanation: 'FactScope did not receive a usable image-analysis response.',
         evidence: [],
-      }, resolvedUrl);
+      }, resolvedUrl, () => verifyImage(imageUrl, pageUrl));
     }
   }
 
@@ -1533,17 +1686,20 @@
     const result = await analyzePayload(payload);
 
     if (result && result.trust_score !== undefined) {
-      showResultPanel(result);
-      if (chrome.runtime?.id) {
+      showResultPanel(result, scanPage);
+      if (!classifyRecoveryState(result, 'page') && result.verdict !== 'rate_limited' && chrome.runtime?.id) {
         chrome.runtime.sendMessage({ type: 'update-badge', score: result.trust_score });
       }
     } else {
       showResultPanel({
-        trust_score: 0,
-        verdict: 'error',
-        explanation: 'Could not analyze this page. Make sure the FactScope backend is running.',
+        trust_score: 50,
+        verdict: 'unknown',
+        processing_state: 'failed',
+        error_state: 'connection_problem',
+        retryable: true,
+        explanation: 'FactScope did not receive a usable page-analysis response.',
         evidence: [],
-      });
+      }, scanPage);
     }
   }
 

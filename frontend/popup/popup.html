@@ -1,62 +1,88 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FactScope</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <div id="app" class="card">
+    <main id="app" class="card">
       <div class="brand-row">
-        <div class="logo-dot"><svg viewBox="0 0 100 100" width="26" height="26"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="logo-dot" aria-hidden="true"><svg viewBox="0 0 100 100" width="26" height="26"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="brand-text">
-          <p class="eyebrow">Content authenticity</p>
-          <h3>FactScope</h3>
+          <p class="eyebrow">Verification assistant</p>
+          <h1>FactScope</h1>
         </div>
+        <span class="beta-badge">Free beta</span>
       </div>
 
-      <p class="tagline">
-        Scan any page to check for misinformation, spam, phishing,
-        and AI&#8209;generated content.
-      </p>
+      <section id="onboarding" class="onboarding" hidden aria-labelledby="onboarding-title">
+        <p class="onboarding-kicker">A clearer way to investigate what you read</p>
+        <h2 id="onboarding-title">Check the evidence, not just a score.</h2>
+        <p class="onboarding-intro">FactScope helps you examine claims, related reporting, source signals, and uncertainty without leaving the page.</p>
 
-      <div id="usage-bar" class="usage-bar" style="display:none">
-        <div class="usage-row">
-          <span id="usage-tier" class="tier-badge">free</span>
-          <span id="usage-text" class="usage-text">–/– scans</span>
+        <ol class="onboarding-steps">
+          <li><span>1</span><div><strong>You choose what to scan</strong><small>Nothing is scanned automatically. Start a page scan or right-click an image.</small></div></li>
+          <li><span>2</span><div><strong>You stay informed</strong><small>Before the first scan, FactScope explains what page or image information will be sent.</small></div></li>
+          <li><span>3</span><div><strong>You get context, not a truth button</strong><small>Results separate claim evidence, matching coverage, source quality, and limitations.</small></div></li>
+        </ol>
+
+        <details class="example-verification">
+          <summary>Preview an example result</summary>
+          <div class="example-card">
+            <span class="example-label">Example claim</span>
+            <strong>A city announced a new public transport policy.</strong>
+            <span class="example-status">Matching coverage found</span>
+            <div class="example-sources"><span>Official notice</span><span>2 independent reports</span></div>
+            <small>Coverage supports investigation, but details should still be checked in the linked sources.</small>
+          </div>
+        </details>
+
+        <button id="onboarding-scan" type="button">Continue to scan this page</button>
+        <button id="onboarding-explore" class="secondary-button" type="button">Explore FactScope first</button>
+        <p class="onboarding-note">FactScope assists verification. It does not determine truth.</p>
+      </section>
+
+      <div id="main-view" hidden>
+        <p class="tagline">Scan this page for checkable claims, matching reporting, source signals, and important limitations.</p>
+
+        <div id="usage-bar" class="usage-bar" hidden>
+          <div class="usage-row">
+            <span id="usage-tier" class="tier-badge">free beta</span>
+            <span id="usage-text" class="usage-text">–/– scans</span>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <div id="usage-fill" class="progress-fill"></div>
+          </div>
         </div>
-        <div class="progress-track">
-          <div id="usage-fill" class="progress-fill"></div>
-        </div>
+
+        <button id="scan-tab" type="button">Scan current tab</button>
+
+        <p id="last-result" class="hint" role="status" aria-live="polite">Results appear as an overlay on the page you’re viewing.</p>
+
+        <section id="history-section" aria-labelledby="history-title">
+          <div class="history-header">
+            <span id="history-title" class="history-title">Recent scans</span>
+            <button id="clear-history" class="clear-btn" type="button">Clear</button>
+          </div>
+          <div id="history-list"></div>
+        </section>
+
+        <details class="privacy-settings">
+          <summary>Privacy &amp; data</summary>
+          <label class="setting-row" for="telemetry-enabled">
+            <span>
+              <strong>Anonymous telemetry</strong>
+              <small>Send event names such as "scan completed." Never sends page text, titles, claims, or URLs.</small>
+            </span>
+            <input id="telemetry-enabled" type="checkbox" />
+          </label>
+          <button id="delete-server-data" class="danger-outline" type="button">Delete my server data</button>
+          <p id="privacy-status" class="privacy-status" role="status" aria-live="polite"></p>
+          <a class="privacy-link" href="https://factscope.netlify.app/privacy" target="_blank" rel="noopener noreferrer">Read the privacy policy</a>
+        </details>
       </div>
-
-      <button id="scan-tab">Scan current tab</button>
-
-      <div id="last-result" class="hint">
-        Results appear as an overlay on the page you&rsquo;re viewing.
-      </div>
-
-      <div id="history-section">
-        <div class="history-header">
-          <span class="history-title">Recent scans</span>
-          <button id="clear-history" class="clear-btn">Clear</button>
-        </div>
-        <div id="history-list"></div>
-      </div>
-
-      <details class="privacy-settings">
-        <summary>Privacy &amp; data</summary>
-        <label class="setting-row" for="telemetry-enabled">
-          <span>
-            <strong>Anonymous telemetry</strong>
-            <small>Send event names such as "scan completed." Never sends page text, titles, claims, or URLs.</small>
-          </span>
-          <input id="telemetry-enabled" type="checkbox" />
-        </label>
-        <button id="delete-server-data" class="danger-outline" type="button">Delete my server data</button>
-        <p id="privacy-status" class="privacy-status" role="status"></p>
-        <a class="privacy-link" href="https://factscope.netlify.app/privacy" target="_blank" rel="noopener noreferrer">Read the privacy policy</a>
-      </details>
 
       <!-- Developer-only evaluation export UI (disabled in production).
       <section id="evaluation-section" class="evaluation-section" hidden aria-labelledby="evaluation-title">
@@ -79,15 +105,7 @@
         <p id="evaluation-status" class="privacy-status" role="status"></p>
       </section>
       -->
-      <!-- <details id="upgrade-section" class="upgrade-section">
-        <summary>Have a license key?</summary>
-        <div class="upgrade-form">
-          <input id="license-key" type="text" placeholder="Enter license key" spellcheck="false" />
-          <button id="redeem-btn">Activate</button>
-        </div>
-        <p id="redeem-msg" class="redeem-msg"></p>
-      </details> -->
-    </div>
+    </main>
     <script src="popup.js"></script>
   </body>
 </html>

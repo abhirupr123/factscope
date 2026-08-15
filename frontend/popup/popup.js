@@ -1,11 +1,34 @@
+const ONBOARDING_KEY = 'factscope_onboarding_complete_v1';
 const resultEl = document.getElementById('last-result');
 const scanButton = document.getElementById('scan-tab');
+const onboarding = document.getElementById('onboarding');
+const onboardingScanButton = document.getElementById('onboarding-scan');
+const onboardingExploreButton = document.getElementById('onboarding-explore');
+const mainView = document.getElementById('main-view');
 const historyList = document.getElementById('history-list');
 const historySection = document.getElementById('history-section');
 const clearBtn = document.getElementById('clear-history');
 const telemetryToggle = document.getElementById('telemetry-enabled');
 const deleteServerDataBtn = document.getElementById('delete-server-data');
 const privacyStatus = document.getElementById('privacy-status');
+
+function showMainView() {
+  onboarding.hidden = true;
+  mainView.hidden = false;
+}
+
+function completeOnboarding(callback) {
+  chrome.storage.local.set({ [ONBOARDING_KEY]: true }, () => {
+    showMainView();
+    if (callback) callback();
+  });
+}
+
+chrome.storage.local.get(ONBOARDING_KEY, (data) => {
+  const completed = data[ONBOARDING_KEY] === true;
+  onboarding.hidden = completed;
+  mainView.hidden = !completed;
+});
 
 const V1_RESULT_LABELS = {
   supported: 'Evidence supports claims',
@@ -121,7 +144,7 @@ const usageFill = document.getElementById('usage-fill');
 
 function updateUsageUI(info) {
   if (!info || info.error) return;
-  usageBar.style.display = 'block';
+  usageBar.hidden = false;
 
   usageTier.textContent = info.tier;
   usageTier.className = 'tier-badge ' + info.tier;
@@ -146,27 +169,45 @@ clearBtn.addEventListener('click', () => {
   });
 });
 
-scanButton.addEventListener('click', async () => {
+async function startPageScan() {
   try {
+    scanButton.disabled = true;
+    resultEl.textContent = 'Preparing the scan…';
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     if (!tab?.id) {
-      resultEl.textContent = 'No active tab found.';
+      resultEl.textContent = 'No active tab was found. Open a webpage and try again.';
+      scanButton.disabled = false;
+      return;
+    }
+    if (!/^https?:\/\//i.test(tab.url || '')) {
+      resultEl.textContent = 'This browser page cannot be scanned. Open a regular webpage and try again.';
+      resultEl.className = 'hint error';
+      scanButton.disabled = false;
       return;
     }
 
     chrome.runtime.sendMessage({ type: 'start-page-scan', tabId: tab.id }, (response) => {
+      scanButton.disabled = false;
       if (chrome.runtime.lastError || !response?.success) {
         resultEl.textContent = response?.error || 'FactScope cannot run on this page.';
+        resultEl.className = 'hint error';
         return;
       }
+      resultEl.className = 'hint';
       window.close();
     });
   } catch (err) {
     console.error('FactScope scan trigger failed:', err);
-    resultEl.textContent = 'Could not trigger the scan. Check permissions and reload the page.';
+    scanButton.disabled = false;
+    resultEl.textContent = 'Could not start the scan. Reload this page and try again.';
+    resultEl.className = 'hint error';
   }
-});
+}
+
+scanButton.addEventListener('click', startPageScan);
+onboardingScanButton.addEventListener('click', () => completeOnboarding(startPageScan));
+onboardingExploreButton.addEventListener('click', () => completeOnboarding(() => scanButton.focus()));
 
 chrome.storage.local.get('factscope_telemetry_enabled', (data) => {
   telemetryToggle.checked = data.factscope_telemetry_enabled === true;
@@ -298,31 +339,3 @@ disableEvaluationBtn.addEventListener('click', async () => {
 // Developer-only evaluation UI. Uncomment locally together with evaluation_capture.js.
 // void refreshEvaluationState();
 */
-const redeemBtn = document.getElementById('redeem-btn');
-const licenseInput = document.getElementById('license-key');
-const redeemMsg = document.getElementById('redeem-msg');
-
-redeemBtn?.addEventListener('click', () => {
-  const key = licenseInput.value.trim();
-  if (!key) return;
-
-  redeemBtn.disabled = true;
-  redeemBtn.textContent = '...';
-  redeemMsg.textContent = '';
-  redeemMsg.className = 'redeem-msg';
-
-  chrome.runtime.sendMessage({ type: 'redeem-key', key }, (resp) => {
-    redeemBtn.disabled = false;
-    redeemBtn.textContent = 'Activate';
-
-    if (resp?.success) {
-      redeemMsg.textContent = `Upgraded to ${resp.tier}!`;
-      redeemMsg.className = 'redeem-msg success';
-      licenseInput.value = '';
-      chrome.runtime.sendMessage({ type: 'get-usage' }, updateUsageUI);
-    } else {
-      redeemMsg.textContent = resp?.message || 'Invalid or used key.';
-      redeemMsg.className = 'redeem-msg error';
-    }
-  });
-});

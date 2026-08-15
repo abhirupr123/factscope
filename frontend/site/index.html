@@ -3,220 +3,103 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FactScope — Know What to Trust Online</title>
-<meta name="description" content="FactScope is a free AI-powered browser extension that scans any page or image and tells you if it's trustworthy — with evidence.">
-<meta property="og:title" content="FactScope — Know What to Trust Online">
-<meta property="og:description" content="Free AI-powered browser extension for real-time misinformation detection. Scan articles, images, and social media posts instantly.">
+<title>FactScope — Context for what you read online</title>
+<meta name="description" content="FactScope is a free Chrome verification assistant that checks claims, finds matching reporting, and explains uncertainty for pages and images you choose to scan.">
+<meta property="og:title" content="FactScope — Context for what you read online">
+<meta property="og:description" content="Check claims, compare reporting, and understand uncertainty without leaving the page you're reading.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="FactScope">
 <link rel="icon" href="assets/factscope-logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-
 <header class="nav" id="top">
-  <div class="nav-inner container-wide">
-    <a class="brand" href="#top">
-      <svg class="brand-logo" viewBox="0 0 100 100" width="32" height="32">
-        <circle cx="50" cy="50" r="46" fill="#4F46E5"/>
-        <circle cx="50" cy="50" r="38" fill="#6366F1"/>
-        <circle cx="50" cy="50" r="30" fill="#4F46E5"/>
-        <polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <span class="brand-name">FactScope</span>
-    </a>
-    <nav class="nav-links" aria-label="Primary">
-      <a href="#features">Features</a>
-      <a href="#how-it-works">How It Works</a>
-      <a href="privacy.html">Privacy</a>
+  <div class="nav-inner container">
+    <a class="brand" href="index.html" aria-label="FactScope home"><img src="assets/factscope-logo.svg" alt="" width="32" height="32"><span>FactScope</span></a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">Menu</button>
+    <nav class="nav-links" id="primary-nav" aria-label="Primary">
+      <a href="#product">Product</a><a href="methodology.html">Methodology</a><a href="support.html">Support</a><a href="status.html">Status</a>
     </nav>
-    <a class="btn btn-primary btn-sm" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener">Add to Chrome</a>
+    <a class="btn btn-primary btn-small nav-install" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">Add to Chrome</a>
   </div>
 </header>
-
 <main>
-
-  <!-- ═══ Hero ═══════════════════════════════════════════════════════════ -->
   <section class="hero">
-    <div class="container-wide hero-grid">
-      <div class="hero-text">
-        <div class="kicker">
-          <span class="kicker-dot"></span>
-          AI-powered trust layer for the web
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <span class="eyebrow"><span class="live-dot"></span> Free public beta</span>
+        <h1>Get the context behind a claim—not a truth button.</h1>
+        <p class="lead">FactScope is a browser verification assistant. Choose a page or image and it will surface checkable claims, matching reporting, direct evidence when available, source signals, and the limits of what could be established.</p>
+        <div class="actions">
+          <a class="btn btn-primary" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">Add to Chrome — free beta</a>
+          <a class="btn btn-secondary" href="#demo">See a result walkthrough</a>
         </div>
-        <h1>Know what to trust online.</h1>
-        <p class="subhead">
-          FactScope scans any article, social media post, or image and gives you an instant trust score with a clear explanation of <strong>why</strong> — right where you're reading.
-        </p>
-        <div class="cta-row">
-          <a class="btn btn-primary btn-lg" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-            Add to Chrome &mdash; It's Free
-          </a>
-          <a class="btn btn-ghost" href="#how-it-works">See how it works</a>
-        </div>
-        <div class="meta-row">
-          <span>&#10003; No sign-up required</span>
-          <span>&#10003; 100% free</span>
-          <span>&#10003; Works on any website</span>
-        </div>
+        <ul class="hero-facts" aria-label="Product facts"><li>No account</li><li>User-triggered scans</li><li>Evidence links included</li></ul>
       </div>
-
-      <aside class="hero-panel" aria-label="FactScope result preview">
-        <div class="panel-chrome">
-          <span class="dot-row"><span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span></span>
-          <div class="addr-bar">hindustantimes.com/sports/cricket/...</div>
-        </div>
-        <div class="panel-body">
-          <div class="mock-result">
-            <div class="mock-header">
-              <svg viewBox="0 0 100 100" width="22" height="22"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <strong>FactScope</strong>
-              <span class="mock-pill mock-pill-green">Authentic &middot; 89%</span>
-            </div>
-            <p class="mock-explanation">This article is published by Hindustan Times, a well-established news organization. The writing style is consistent with professional sports reporting.</p>
-            <div class="mock-evidence">
-              <div class="ev-item ev-green">&#10004; Author attributed: Aratrick Mondal</div>
-              <div class="ev-item ev-green">&#10004; hindustantimes.com is a known reputable source</div>
-              <div class="ev-item ev-blue">&#8505; Claim corroborated by 8 news sources</div>
-            </div>
-          </div>
-        </div>
+      <aside class="result-preview" aria-label="Example FactScope article result">
+        <div class="preview-top"><span class="preview-brand"><img src="assets/factscope-logo.svg" alt="" width="22" height="22">FactScope</span><span class="preview-chip">Example</span></div>
+        <p class="preview-kicker">Evidence assessment</p>
+        <h2>Matching coverage found</h2>
+        <p class="preview-meta">Matching reporting found for most claims · No claim-level verdict yet</p>
+        <p class="preview-summary">Independent reports discuss the same announcement. Open the sources to compare dates, wording, and any details that remain unsettled.</p>
+        <div class="preview-counts"><span><strong>3</strong> claims</span><span><strong>2</strong> with coverage</span><span><strong>1</strong> still open</span></div>
+        <article class="preview-claim"><span class="claim-index">1</span><div><strong>The ministry announced the policy on Tuesday.</strong><small>Multiple matching reports</small><a href="#demo">View reporting from 3 sources →</a></div></article>
+        <p class="preview-note">Example only. FactScope assists verification; it does not determine truth.</p>
       </aside>
     </div>
   </section>
 
-  <!-- ═══ Features ═══════════════════════════════════════════════════════ -->
-  <section class="section" id="features">
-    <div class="container-wide">
-      <div class="section-header">
-        <h2>Everything you need to verify what you see online</h2>
-        <p class="section-sub">FactScope combines AI analysis, news corroboration, and community intelligence into one seamless experience.</p>
+  <section class="trust-strip" aria-label="FactScope principles">
+    <div class="container trust-grid"><div><strong>Evidence first</strong><span>Claims and links appear before community reactions.</span></div><div><strong>Uncertainty stays visible</strong><span>Missing evidence is not treated as proof of falsehood.</span></div><div><strong>You stay in control</strong><span>Nothing is scanned until you choose an action.</span></div></div>
+  </section>
+
+  <section class="section" id="demo">
+    <div class="container narrow-heading"><span class="eyebrow">Product walkthrough</span><h2>One result, separated into things you can actually use.</h2><p>Explore representative states from the current product interface. The wording and evidence hierarchy match the extension; source names below are illustrative.</p></div>
+    <div class="container demo-shell">
+      <div class="demo-tabs" role="tablist" aria-label="Result examples">
+        <button role="tab" aria-selected="true" data-demo-target="article-demo">Article scan</button>
+        <button role="tab" aria-selected="false" data-demo-target="image-demo">Image check</button>
+        <button role="tab" aria-selected="false" data-demo-target="recovery-demo">When a scan fails</button>
       </div>
-      <div class="grid-3">
-        <div class="feature-card">
-          <div class="feature-icon">&#128240;</div>
-          <h3>Article Analysis</h3>
-          <p>One-click trust scores for any news article or blog post. Get a verdict, evidence, and structural signals explained in plain English.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">&#128248;</div>
-          <h3>Image Verification</h3>
-          <p>Right-click any image on social media. FactScope detects AI-generated content, manipulation artifacts, and checks the caption against real reporting.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">&#128270;</div>
-          <h3>Claim Corroboration</h3>
-          <p>Key claims are extracted and cross-checked against news sources in real time. See which outlets are reporting the same story — and which aren't.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">&#128483;</div>
-          <h3>Community Insights</h3>
-          <p>Flag suspicious content, vote on accuracy, and see what other users found. Community intelligence gets smarter with every scan.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">&#127760;</div>
-          <h3>Cross-Platform</h3>
-          <p>Works on Twitter/X, Reddit, Facebook, Instagram, news sites, and any webpage. Verify content wherever you find it.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">&#128279;</div>
-          <h3>Shareable Results</h3>
-          <p>Share verified results with a link. Recipients see the full analysis on a beautiful public page — no extension needed.</p>
-        </div>
+      <div class="demo-stage">
+        <section class="demo-panel active" id="article-demo" role="tabpanel">
+          <div class="demo-result"><span class="result-label">Evidence assessment</span><h3>Some matching coverage found</h3><p>Reporting was found for two of three checked claims. No direct fact-check established an overall factual status.</p><div class="demo-claim"><b>1</b><div><strong>A new payment policy was announced.</strong><span>Multiple matching reports</span><a href="methodology.html">How FactScope labels coverage →</a></div></div><div class="demo-claim muted"><b>2</b><div><strong>The policy starts next month.</strong><span>No external coverage found</span></div></div></div>
+          <div class="demo-explain"><h3>What to do next</h3><ol><li>Open the matching reports.</li><li>Compare whether they confirm the exact detail.</li><li>Check the date and primary source before sharing.</li></ol></div>
+        </section>
+        <section class="demo-panel" id="image-demo" role="tabpanel" hidden>
+          <div class="demo-result"><span class="result-label">Visual manipulation assessment</span><h3>Possible editing or compositing</h3><p>Visual indicators suggest the image may combine elements. Editing alone does not establish deceptive use.</p><div class="mini-grid"><div><small>Caption consistency</small><strong>Matching reporting found</strong></div><div><small>Visible source clues</small><strong>No visible credit detected</strong></div></div></div>
+          <div class="demo-explain"><h3>Three separate questions</h3><p>FactScope keeps visual editing, caption evidence, and visible provenance separate so one clue does not become a sweeping authenticity verdict.</p></div>
+        </section>
+        <section class="demo-panel" id="recovery-demo" role="tabpanel" hidden>
+          <div class="demo-result recovery-card"><span class="recovery-icon">◷</span><h3>FactScope is waking up</h3><p>The free beta service may need a moment to start after being idle.</p><button class="btn btn-primary" type="button" disabled>Try again in a moment</button></div>
+          <div class="demo-explain"><h3>Failures are not verdicts</h3><p>Offline, timeout, provider, blocked-image, and unsupported-page states are shown explicitly. A technical failure never appears as a low trust score.</p></div>
+        </section>
       </div>
     </div>
   </section>
 
-  <!-- ═══ How It Works ═══════════════════════════════════════════════════ -->
-  <section class="section section-alt" id="how-it-works">
-    <div class="container-wide">
-      <div class="section-header">
-        <h2>Three steps. Zero friction.</h2>
-        <p class="section-sub">FactScope works right in your browser. No accounts, no uploads, no extra tabs.</p>
-      </div>
-      <div class="steps-grid">
-        <div class="step-card">
-          <div class="step-number">1</div>
-          <h3>Install the extension</h3>
-          <p>Add FactScope to Chrome in one click. It sits quietly in your toolbar until you need it.</p>
-        </div>
-        <div class="step-arrow">&#8594;</div>
-        <div class="step-card">
-          <div class="step-number">2</div>
-          <h3>Scan any page or image</h3>
-          <p>Click the FactScope icon to scan an article, or right-click any image to verify it. Takes seconds.</p>
-        </div>
-        <div class="step-arrow">&#8594;</div>
-        <div class="step-card">
-          <div class="step-number">3</div>
-          <h3>Get trust insights</h3>
-          <p>See a trust score, plain-English explanation, evidence, and corroborated claims — all inline, right where you're reading.</p>
-        </div>
-      </div>
+  <section class="section section-alt" id="product">
+    <div class="container narrow-heading"><span class="eyebrow">What it helps with</span><h2>Investigate faster while keeping your judgment.</h2></div>
+    <div class="container feature-grid">
+      <article class="feature-card"><span class="feature-number">01</span><h3>Break a page into claims</h3><p>FactScope extracts specific statements that can be investigated instead of reducing an entire article to one score.</p></article>
+      <article class="feature-card"><span class="feature-number">02</span><h3>Find reporting and evidence</h3><p>See direct fact-checks, supporting or contradicting evidence, matching reports, and broader context under the claim they relate to.</p></article>
+      <article class="feature-card"><span class="feature-number">03</span><h3>Check images in context</h3><p>Right-click an image to review manipulation indicators, caption consistency, visible source clues, and uncertainty separately.</p></article>
+      <article class="feature-card"><span class="feature-number">04</span><h3>Share a verification snapshot</h3><p>Create a public result page that preserves the analysis and its caveats without requiring the recipient to install the extension.</p></article>
     </div>
   </section>
 
-  <!-- ═══ Free Banner ══════════════════════════════════════════════════ -->
-  <section class="section" id="free-banner">
-    <div class="container-wide free-banner-content">
-      <div class="free-badge-large">100% Free</div>
-      <h2>No subscriptions. No credit card. No catch.</h2>
-      <p class="section-sub">FactScope is completely free to use. Every feature — article analysis, image verification, claim corroboration, community insights, and shareable results — all included at zero cost.</p>
-      <div class="free-highlights">
-        <div class="free-highlight-item">
-          <span class="free-highlight-icon">&#9889;</span>
-          <div>
-            <strong>10 scans per day</strong>
-            <span>Enough for daily browsing and verification</span>
-          </div>
-        </div>
-        <div class="free-highlight-item">
-          <span class="free-highlight-icon">&#128274;</span>
-          <div>
-            <strong>No account required</strong>
-            <span>Install and start scanning immediately</span>
-          </div>
-        </div>
-        <div class="free-highlight-item">
-          <span class="free-highlight-icon">&#127760;</span>
-          <div>
-            <strong>Works on every website</strong>
-            <span>News, social media, blogs — anywhere in Chrome</span>
-          </div>
-        </div>
-      </div>
+  <section class="section">
+    <div class="container split-section">
+      <div><span class="eyebrow">How it works</span><h2>You choose what leaves the page.</h2><p class="section-copy">FactScope has no persistent access to every site you visit. It receives content only after an explicit scan or image-verification action and your first-scan disclosure.</p><a class="text-link" href="privacy.html">Read the privacy policy →</a></div>
+      <ol class="process-list"><li><span>1</span><div><strong>Start a scan</strong><p>Click the extension for a page or use the image context menu.</p></div></li><li><span>2</span><div><strong>Compare evidence</strong><p>Review claim-level sources, coverage labels, and limitations.</p></div></li><li><span>3</span><div><strong>Decide what you believe</strong><p>Open the original sources and use FactScope as a starting point, not a final authority.</p></div></li></ol>
     </div>
   </section>
 
-  <!-- ═══ CTA Banner ═════════════════════════════════════════════════════ -->
-  <section class="section section-alt" id="install">
-    <div class="container-wide cta-banner">
-      <h2>Start verifying in seconds</h2>
-      <p>Install FactScope and scan your first page. No sign-up, no cost, no limits on features.</p>
-      <a class="btn btn-primary btn-lg" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-        Add to Chrome &mdash; It's Free
-      </a>
-    </div>
+  <section class="section callout-section">
+    <div class="container callout"><div><span class="eyebrow">Free beta</span><h2>Try FactScope on the next claim that makes you pause.</h2><p>Ten scans per day, no account, and no paid controls during the beta.</p></div><a class="btn btn-light" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">Install from Chrome Web Store</a></div>
   </section>
-
 </main>
-
-<footer class="footer">
-  <div class="container-wide footer-inner">
-    <div class="footer-brand">
-      <svg viewBox="0 0 100 100" width="24" height="24"><circle cx="50" cy="50" r="46" fill="#4F46E5"/><circle cx="50" cy="50" r="38" fill="#6366F1"/><circle cx="50" cy="50" r="30" fill="#4F46E5"/><polyline points="33,52 45,64 68,38" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>FactScope</span>
-    </div>
-    <div class="footer-links">
-      <a href="privacy.html">Privacy Policy</a>
-      <a href="https://chromewebstore.google.com/" target="_blank" rel="noopener noreferrer">Chrome Web Store</a>
-    </div>
-    <div class="footer-copy">&copy; 2025&ndash;2026 FactScope. Licensed under AGPL-3.0.</div>
-  </div>
-</footer>
-
+<footer class="footer"><div class="container footer-grid"><div><a class="brand" href="index.html"><img src="assets/factscope-logo.svg" alt="" width="28" height="28"><span>FactScope</span></a><p>A verification assistant for the open web.</p></div><div><strong>Product</strong><a href="methodology.html">Methodology</a><a href="changelog.html">Changelog</a><a href="status.html">Service status</a></div><div><strong>Help</strong><a href="support.html">Support</a><a href="privacy.html">Privacy</a><a href="mailto:factscope@gmail.com">Contact</a></div><p class="footer-copy">© 2025–2026 FactScope · AGPL-3.0</p></div></footer>
 <script src="site.js"></script>
 </body>
 </html>

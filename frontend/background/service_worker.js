@@ -100,6 +100,58 @@ async function apiFetchVersioned(v1Path, legacyPath, options = {}) {
   return { response: await apiFetch(legacyPath, options), contract: 'legacy' };
 }
 
+function buildFailureResult(state, modality, details = {}) {
+  const messages = {
+    offline: 'You appear to be offline. Reconnect to the internet and try again.',
+    cold_start: 'The FactScope service is waking up. Wait a moment, then try again.',
+    timeout: 'The analysis took longer than expected. Try again when your connection is stable.',
+    provider_failure: 'The analysis provider is temporarily unavailable. Try again later.',
+    server_busy: 'FactScope is handling several scans right now. Wait a moment, then try again.',
+    blocked_image: 'The selected image could not be accessed. It may block external access or be too large.',
+    unsupported_page: 'This page cannot be scanned by a browser extension. Open a regular webpage and try again.',
+    connection_problem: 'FactScope could not reach the analysis service. Check your connection and try again.',
+    request_too_large: 'This page contains more content than FactScope can safely process. Try a shorter article or post.',
+  };
+  const retryable = !['unsupported_page', 'request_too_large'].includes(state);
+  return {
+    schema_version: '1.0',
+    processing_state: 'failed',
+    error_state: state,
+    error_code: details.code || state,
+    request_id: details.requestId || null,
+    retryable,
+    trust_score: 50,
+    authenticity_score: 50,
+    verdict: modality === 'image' ? 'uncertain' : 'unknown',
+    explanation: messages[state] || messages.connection_problem,
+    evidence: [],
+  };
+}
+
+async function failureFromResponse(response, modality) {
+  let payload = {};
+  try { payload = await response.json(); } catch {}
+  const code = String(payload.error || payload.code || '');
+  let state = 'connection_problem';
+  if (code === 'provider_timeout' || response.status === 504) state = 'timeout';
+  else if (code === 'server_busy' || code === 'burst_limited' || code === 'cache_request_limited') state = 'server_busy';
+  else if (code === 'budget_exhausted' || code === 'internal_error') state = 'provider_failure';
+  else if (code === 'request_too_large' || response.status === 413) state = 'request_too_large';
+  else if (response.status === 502 || (response.status === 503 && !code)) state = 'cold_start';
+  else if (response.status >= 500) state = 'provider_failure';
+  return buildFailureResult(state, modality, {
+    code: code || `http_${response.status}`,
+    requestId: payload.request_id,
+  });
+}
+
+function failureFromException(error, modality) {
+  const offline = globalThis.navigator?.onLine === false;
+  const timedOut = error?.name === 'AbortError' || /timed?\s*out|timeout/i.test(String(error?.message || ''));
+  return buildFailureResult(offline ? 'offline' : (timedOut ? 'timeout' : 'connection_problem'), modality, {
+    code: offline ? 'offline' : (timedOut ? 'client_timeout' : 'network_error'),
+  });
+}
 async function recordTelemetry(event) {
   const allowedEvents = new Set([
     'page_scan_completed',
@@ -337,7 +389,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await startPageScan(message.tabId);
         sendResponse({ success: true });
       } catch {
-        sendResponse({ success: false, error: 'FactScope cannot run on this page.' });
+        sendResponse({
+          success: false,
+          error_state: 'unsupported_page',
+          error: 'This browser page cannot be scanned. Open a regular http or https webpage and try again.',
+        });
       }
     })();
     return true;
@@ -371,10 +427,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
-        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        if (!r.ok) {
+          sendResponse(await failureFromResponse(r, 'page'));
+          return;
+        }
         const data = await r.json();
         data.api_contract = contract;
-        if (data.verdict !== 'error') {
+        if (data.verdict !== 'error' && data.processing_state !== 'failed') {
           const url = payload.url || sender.tab?.url || '';
           let domain = '';
           try { domain = new URL(url).hostname; } catch {}
@@ -393,16 +452,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         // Developer evaluation capture disabled: await capturePageEvaluation(data, payload, sender);
         sendResponse(data);
-        void recordTelemetry('page_scan_completed');
+        void recordTelemetry(data.processing_state === 'failed' ? 'scan_failed' : 'page_scan_completed');
       } catch (err) {
         console.error('FactScope backend error:', err);
         void recordTelemetry('scan_failed');
-        sendResponse({
-          trust_score: 50,
-          verdict: 'unknown',
-          explanation: 'FactScope could not complete the analysis. Please try again.',
-          evidence: [],
-        });
+        sendResponse(failureFromException(err, 'page'));
+
       }
     })();
     return true;
@@ -432,10 +487,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
-        if (!r.ok) throw new Error(`Backend returned ${r.status}`);
+        if (!r.ok) {
+          sendResponse(await failureFromResponse(r, 'image'));
+          return;
+        }
         const data = await r.json();
         data.api_contract = contract;
-        if (data.verdict !== 'error') {
+        if (data.verdict !== 'error' && data.processing_state !== 'failed') {
           const pageUrl = payload.page_url || sender.tab?.url || '';
           let domain = '';
           try { domain = new URL(pageUrl).hostname; } catch {}
@@ -455,16 +513,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         // Developer evaluation capture disabled: await captureImageEvaluation(data, payload, sender);
         sendResponse(data);
-        void recordTelemetry('image_scan_completed');
+        void recordTelemetry(data.processing_state === 'failed' ? 'scan_failed' : 'image_scan_completed');
       } catch (err) {
         console.error('FactScope image verify error:', err);
         void recordTelemetry('scan_failed');
-        sendResponse({
-          authenticity_score: 50,
-          verdict: 'uncertain',
-          explanation: 'FactScope could not complete the image analysis. Please try again.',
-          evidence: [],
-        });
+        sendResponse(failureFromException(err, 'image'));
+
       }
     })();
     return true;
@@ -559,22 +613,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'redeem-key') {
-    (async () => {
-      try {
-        const r = await apiFetch('/redeem-key', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key: message.key }),
-        });
-        const data = await r.json();
-        sendResponse(data);
-      } catch (err) {
-        sendResponse({ error: err.message });
-      }
-    })();
-    return true;
-  }
 
   if (message.type === 'share-result') {
     (async () => {
@@ -662,5 +700,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 if (globalThis.__FACTSCOPE_SESSION_TEST__) {
   globalThis.__FACTSCOPE_SESSION__ = {
     apiFetch, apiFetchVersioned, getSessionToken, isV1ApiEnabled,
+    buildFailureResult, failureFromResponse, failureFromException,
   };
 }

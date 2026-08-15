@@ -1,81 +1,70 @@
 # 🔍 FactScope
 
-**Know what to trust online.**
+**Get the context behind a claim—not a truth button.**
 
-FactScope is a free, AI-powered browser extension that helps you instantly verify if a news article, social media post, or image is trustworthy — right where you're reading it. No extra tabs, no sign-ups, no technical knowledge needed.
+FactScope is a free Chrome verification assistant for user-selected webpages and images. It identifies checkable claims, finds direct evidence and matching reporting, separates source signals from factual findings, and keeps uncertainty visible in an inline result.
 
----
+FactScope does not determine truth or guarantee that every claim is accurate. It helps users investigate faster and open the sources that matter.
 
-## 🧩 The Problem
+## What you can do
 
-Misinformation spreads faster than ever. Fake news looks real. AI-generated images are nearly indistinguishable from photos. Misleading posts go viral before anyone can verify them.
+### Scan a webpage
 
-Most people don't have the time or tools to fact-check everything they see online.
+- Identify concrete, checkable claims
+- See supported, contradicted, mixed, or still-open evidence findings
+- Explore matching reporting and broader context under each claim
+- Review source and presentation signals separately from factual evidence
+- Understand limitations when evidence is incomplete or still developing
 
-## 💡 The Solution
+### Verify an image
 
-FactScope sits quietly in your browser. When something looks off, click the extension and get an instant trust assessment — with a clear explanation of *why*.
+Right-click an image to review:
 
-No jargon. No dashboards. Just a straight answer.
+- Visual indicators associated with AI generation, compositing, or editing
+- Caption consistency against available reporting
+- Visible credits, watermarks, and other source clues
+- Model and evidence limitations
 
----
+### Share a result
 
-## ✨ What You Can Do
+Create a public verification snapshot containing the stored analysis, claims, source links, confidence, and limitations. Recipients do not need the extension.
 
-🗞️ **Scan any webpage** — One click on any news article, blog, or social media page gives you:
-- A trust score with a plain-English verdict
-- An explanation of what makes the content credible or suspicious
-- Key claims automatically checked against real news sources
-- Links to supporting or contradicting articles
+### Contribute context
 
-🖼️ **Verify images** — Right-click any image on social media to check:
-- Whether the image is AI-generated or manipulated
-- Whether the caption or claim is backed by real reporting
-- Links to news articles covering the same event
+Vote on whether an analysis was helpful or submit a sourced flag. Anonymous community contributions are displayed as context and do not automatically determine future factual results.
 
-🗣️ **Community insights** — Every scan contributes to a shared trust layer:
-- See if other FactScope users have flagged the same content
-- Vote on whether an analysis was helpful
-- Read crowd-sourced context notes from other users
-- Flag content you believe is misinformation
+## Quick start
 
-🌍 **Works everywhere** — FactScope works on:
-- Twitter/X, Reddit, Facebook, Instagram
-- News sites (Hindustan Times, NDTV, The Onion, etc.)
-- Any webpage you can open in Chrome
+1. Install FactScope from the [Chrome Web Store](https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd).
+2. Open a normal public webpage.
+3. Click the FactScope icon to scan the page, or right-click an image and select **Verify image with FactScope**.
+4. Review the claim-level evidence, matching coverage, source context, and limitations.
+5. Open the linked sources before making a consequential decision or sharing the claim.
 
-🔗 **Share your findings** — Verified a page or image? Share a link. Recipients see the full analysis on a public page — no extension needed.
+The public beta includes 10 scans per day and requires no account.
 
----
+## Methodology and support
 
-## 🚀 Quick Start
+- [How FactScope evaluates claims and images](https://factscope.netlify.app/methodology.html)
+- [Support and common error states](https://factscope.netlify.app/support.html)
+- [Service availability](https://factscope.netlify.app/status.html)
+- [Public changelog](https://factscope.netlify.app/changelog.html)
 
-1. Install FactScope from the Chrome Web Store
-2. Browse the web as usual
-3. See something questionable? Click the FactScope icon or right-click an image
-4. Get your result in seconds — a trust score, a verdict, and the reasoning behind it
+## Privacy
 
-That's it. FactScope does the heavy lifting.
+FactScope processes content only after an explicit page-scan or image-verification action.
 
----
-
-## 🔒 Privacy
-
-FactScope requires no account and processes content only after an explicit scan action.
-
-- No accounts or sign-ups required
+- No account or sign-up
 - No scripts run on pages you merely visit
-- A random signed installation session supports quotas, deletion, and community features
+- First-scan disclosure before transmitting selected content
 - Optional event-name-only telemetry is off by default
 - Raw scan records and telemetry are deleted after 30 days
 - Local history can be cleared and installation-linked server data can be deleted
 
-Read the full [privacy policy](https://factscope.netlify.app/privacy).
+Read the full [privacy policy](https://factscope.netlify.app/privacy.html).
 
----
-
-## 📜 License
+## License
 
 Copyright (C) 2025–2026 FactScope
 
-Licensed under [AGPL-3.0](LICENSE). You may view and fork the source code, but any modified version deployed as a service must also be open-sourced under the same license.
+Licensed under [AGPL-3.0](LICENSE). Modified versions deployed as a service must also make their corresponding source available under the license.

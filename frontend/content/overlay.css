@@ -1272,6 +1272,83 @@
   margin-top: 5px;
 }
 
+.factscope-popup .fs-assessment-meta {
+  margin-top: 3px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.factscope-popup .fs-evidence-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.factscope-popup .fs-overview-item {
+  min-width: 0;
+  padding: 6px 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #fff;
+  text-align: center;
+}
+
+.factscope-popup .fs-overview-item strong,
+.factscope-popup .fs-overview-item span {
+  display: block;
+}
+
+.factscope-popup .fs-overview-item strong {
+  color: #1e293b;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.factscope-popup .fs-overview-item span {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 8px;
+  line-height: 1.15;
+}
+
+.factscope-popup .fs-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.factscope-popup .fs-section-heading .fs-factchecks-title {
+  margin-bottom: 0;
+}
+
+.factscope-popup .fs-section-heading > span {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.factscope-popup .fs-claim-number {
+  display: grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  margin-top: 1px;
+  border-radius: 6px;
+  background: #e0e7ff;
+  color: #4338ca;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.factscope-popup .fs-secondary-divider {
+  margin-top: 14px;
+}
+
 .factscope-popup .fs-v1-source-heading {
   color: #64748b;
 }
@@ -1290,7 +1367,132 @@
   .factscope-popup .fs-confidence,
   .factscope-popup .fs-v1-source-heading,
   .factscope-popup .fs-caveat { color: #94a3b8; }
+  .factscope-popup .fs-assessment-meta,
+  .factscope-popup .fs-section-heading > span { color: #94a3b8; }
+  .factscope-popup .fs-overview-item { background: #1e293b; border-color: #334155; }
+  .factscope-popup .fs-overview-item strong { color: #f8fafc; }
+  .factscope-popup .fs-overview-item span { color: #94a3b8; }
+  .factscope-popup .fs-claim-number { background: #312e81; color: #c7d2fe; }
   .factscope-popup .fs-mini-assessment,
   .factscope-popup .fs-secondary-assessment { background: #1e293b; border-color: #334155; }
   .factscope-popup .fs-limitations { background: #431407; color: #fdba74; }
+}
+/* ── Recoverable scan states ─────────────────────────────────────── */
+.factscope-popup .fs-recovery {
+  padding: 20px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #f8fafc;
+  text-align: center;
+}
+
+.factscope-popup .fs-recovery-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.factscope-popup .fs-recovery-warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.factscope-popup .fs-recovery-neutral {
+  background: #f8fafc;
+}
+
+.factscope-popup .fs-recovery-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin: 0 auto 10px;
+  place-items: center;
+  border-radius: 13px;
+  background: #fff;
+  color: #475569;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.factscope-popup .fs-recovery h2 {
+  margin: 0 0 7px;
+  color: #0f172a;
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.factscope-popup .fs-recovery p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.factscope-popup .fs-recovery .fs-recovery-advice {
+  margin-top: 7px;
+  color: #64748b;
+}
+
+.factscope-popup .fs-recovery-reference {
+  margin-top: 10px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.factscope-popup .fs-retry-btn {
+  margin-top: 14px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.factscope-popup .fs-retry-btn:hover {
+  background: #1d4ed8;
+}
+
+.factscope-popup .fs-retry-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.factscope-popup .fs-empty-state {
+  border-style: dashed;
+}
+
+.factscope-popup .fs-state-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  .factscope-popup .fs-recovery,
+  .factscope-popup .fs-recovery-neutral {
+    border-color: #475569;
+    background: #0f172a;
+  }
+  .factscope-popup .fs-recovery-info {
+    border-color: #1d4ed8;
+    background: #172554;
+  }
+  .factscope-popup .fs-recovery-warning {
+    border-color: #92400e;
+    background: #451a03;
+  }
+  .factscope-popup .fs-recovery-icon { background: #1e293b; color: #cbd5e1; }
+  .factscope-popup .fs-recovery h2 { color: #f8fafc; }
+  .factscope-popup .fs-recovery p { color: #cbd5e1; }
+  .factscope-popup .fs-recovery .fs-recovery-advice { color: #94a3b8; }
+  .factscope-popup .fs-state-hint { background: #172554; color: #bfdbfe; }
 }

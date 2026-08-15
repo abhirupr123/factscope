@@ -52,3 +52,4 @@ docs/releases/chunk-*.md
 docs/*.md
 /AGENTS.md
 /frontend/site/README.md
+/frontend/site/chrome-web-store-listing.txt
