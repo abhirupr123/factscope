@@ -100,6 +100,14 @@ class FakeSession:
         return self.response
 
 
+class FakeSequenceSession(FakeSession):
+    def __init__(self, responses):
+        self.responses = iter(responses)
+
+    def get(self, *_args, **_kwargs):
+        return next(self.responses)
+
+
 class SafeFetchTests(unittest.TestCase):
     def test_rejects_loopback_private_and_credential_urls(self):
         for url in (
@@ -142,6 +150,49 @@ class SafeFetchTests(unittest.TestCase):
             with patch("safe_fetch.requests.Session", return_value=FakeSession(rebound)):
                 with self.assertRaises(UnsafeURLError):
                     safe_get("https://example.com/a", max_bytes=100)
+
+
+    def test_accepts_socketless_empty_same_origin_redirect(self):
+        public_answer = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ]
+        redirect = FakeResponse(headers={
+            "content-length": "0",
+            "location": "https://example.com/final",
+        })
+        redirect.is_redirect = True
+        redirect.status_code = 302
+        redirect.raw._connection.sock = None
+        final = FakeResponse(headers={"content-type": "text/html"})
+
+        with patch("safe_fetch.socket.getaddrinfo", return_value=public_answer):
+            with patch(
+                "safe_fetch.requests.Session",
+                return_value=FakeSequenceSession([redirect, final]),
+            ):
+                result = safe_probe(
+                    "https://example.com/start",
+                    allowed_content_prefixes=("text/html",),
+                )
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.final_url, "https://example.com/final")
+
+    def test_rejects_socketless_cross_origin_redirect(self):
+        public_answer = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ]
+        redirect = FakeResponse(headers={
+            "content-length": "0",
+            "location": "https://other.example/final",
+        })
+        redirect.is_redirect = True
+        redirect.status_code = 302
+        redirect.raw._connection.sock = None
+
+        with patch("safe_fetch.socket.getaddrinfo", return_value=public_answer):
+            with patch("safe_fetch.requests.Session", return_value=FakeSession(redirect)):
+                with self.assertRaises(UnsafeURLError):
+                    safe_probe("https://example.com/start")
 
 
 class ProductionBoundaryTests(unittest.TestCase):
@@ -948,7 +999,8 @@ class ChunkFourV1ContractTests(unittest.TestCase):
         self.assertEqual(insufficient.confidence, "low")
         self.assertEqual(insufficient.supporting_sources, [])
         self.assertEqual([s.url for s in insufficient.related_sources], ["https://news.example/topic"])
-        self.assertTrue(any("threshold for a factual status" in item for item in insufficient.limitations))
+        self.assertEqual(insufficient.limitations, [])
+        self.assertEqual(insufficient.hidden_source_count, 0)
 
     def test_v1_provider_failure_is_retryable_and_never_zero_confidence_score(self):
         legacy = main.AnalyzeResponse(

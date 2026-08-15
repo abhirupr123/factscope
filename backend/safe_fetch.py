@@ -56,7 +56,7 @@ def validate_public_url(url: str) -> str:
 
     try:
         addresses = {
-            item[4][0]
+            str(item[4][0])
             for item in socket.getaddrinfo(
                 hostname,
                 parsed.port or (443 if parsed.scheme == "https" else 80),
@@ -77,10 +77,10 @@ def _validate_connected_peer(response) -> None:
     connection = getattr(raw, "_connection", None)
     sock = getattr(connection, "sock", None)
     if sock is None:
-        try:
-            sock = raw._fp.fp.raw._sock
-        except AttributeError:
-            sock = None
+        original_response = getattr(raw, "_fp", None)
+        buffered_reader = getattr(original_response, "fp", None)
+        socket_io = getattr(buffered_reader, "raw", None)
+        sock = getattr(socket_io, "_sock", None)
     if sock is None:
         raise UnsafeURLError("Could not verify the remote network address")
 
@@ -91,6 +91,38 @@ def _validate_connected_peer(response) -> None:
 
     if not _is_public_ip(peer_address):
         raise UnsafeURLError("Connected peer is a local or reserved address")
+
+
+def _is_empty_same_origin_redirect(response, current_url: str) -> bool:
+    """Handle zero-byte redirects whose socket urllib3 already released."""
+    if not (response.is_redirect or response.is_permanent_redirect):
+        return False
+    if str(response.headers.get("content-length", "")).strip() != "0":
+        return False
+    location = response.headers.get("location")
+    if not location:
+        return False
+
+    current = urlsplit(current_url)
+    destination = urlsplit(urljoin(current_url, location))
+    return (
+        destination.scheme == current.scheme
+        and destination.hostname == current.hostname
+        and destination.port == current.port
+    )
+
+
+def _validate_response_peer(response, current_url: str) -> None:
+    """Verify the peer, except for content-free same-origin redirect hops."""
+    try:
+        _validate_connected_peer(response)
+    except UnsafeURLError as exc:
+        if (
+            str(exc) == "Could not verify the remote network address"
+            and _is_empty_same_origin_redirect(response, current_url)
+        ):
+            return
+        raise
 
 
 def safe_get(
@@ -120,7 +152,7 @@ def safe_get(
                 allow_redirects=False,
                 stream=True,
             ) as response:
-                _validate_connected_peer(response)
+                _validate_response_peer(response, current_url)
                 if response.is_redirect or response.is_permanent_redirect:
                     if redirect_count >= max_redirects:
                         raise UnsafeURLError("Too many redirects")
@@ -192,7 +224,7 @@ def safe_probe(
                 allow_redirects=False,
                 stream=True,
             ) as response:
-                _validate_connected_peer(response)
+                _validate_response_peer(response, current_url)
                 if response.is_redirect or response.is_permanent_redirect:
                     if redirect_count >= max_redirects:
                         raise UnsafeURLError("Too many redirects")

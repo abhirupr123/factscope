@@ -13,8 +13,32 @@
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   color: #0f172a;
   animation: fs-slide-in 0.25s ease-out;
+  isolation: isolate;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+  font-synthesis: none;
 }
 
+.factscope-popup,
+.factscope-popup * {
+  box-sizing: border-box;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.factscope-popup button,
+.factscope-popup input,
+.factscope-popup select,
+.factscope-popup textarea {
+  font: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  font-synthesis: none;
+}
 @media (prefers-color-scheme: dark) {
   .factscope-popup {
     background: #1e293b;
@@ -534,9 +558,46 @@
   text-decoration: underline;
 }
 
+.factscope-popup .fs-reviewed-claim {
+  display: block;
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
 .factscope-popup .fs-article-source {
   color: #94a3b8;
   font-size: 10px;
+}
+
+.factscope-popup .fs-source-repetition {
+  display: block;
+  margin-top: 2px;
+  color: #7c3aed;
+  font-size: 10px;
+}
+
+.factscope-popup .fs-context-notes {
+  margin: 7px 0 0;
+  padding-left: 16px;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.factscope-popup .fs-more-sources {
+  margin-top: 4px;
+}
+
+.factscope-popup .fs-more-sources > summary {
+  color: #4f46e5;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.factscope-popup .fs-more-sources > summary:hover {
+  text-decoration: underline;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -568,6 +629,9 @@
   .factscope-popup .fs-corr-count { color: #94a3b8; }
   .factscope-popup .fs-article-link { color: #60a5fa; }
   .factscope-popup .fs-article-source { color: #64748b; }
+  .factscope-popup .fs-source-repetition { color: #a78bfa; }
+  .factscope-popup .fs-context-notes { color: #94a3b8; }
+  .factscope-popup .fs-more-sources > summary { color: #818cf8; }
 }
 
 /* ── Collapsible score details ────────────────────────────────────── */

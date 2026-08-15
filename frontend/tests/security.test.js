@@ -52,23 +52,61 @@ const v1ClaimHTML = security.buildV1ClaimsHTML([{
 }]);
 assert.match(v1ClaimHTML, /&lt;img src=x onerror=alert\(1\)&gt;/);
 assert.match(v1ClaimHTML, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
-assert.match(v1ClaimHTML, /&lt;b&gt;unsafe&lt;\/b&gt;/);
+assert.doesNotMatch(v1ClaimHTML, /&lt;b&gt;unsafe&lt;\/b&gt;/);
 assert.doesNotMatch(v1ClaimHTML, /javascript:/);
 
 const relatedClaimHTML = security.buildV1ClaimsHTML([{
   claim: 'A developing claim', status: 'insufficient_evidence', confidence: 'low',
   supporting_sources: [], contradicting_sources: [],
   related_sources: [
-    { title: 'Report one', publisher: 'Outlet A', url: 'https://a.example/report' },
-    { title: 'Report two', publisher: 'Outlet B', url: 'https://b.example/report' },
+    { title: 'Report one', publisher: 'Outlet A', url: 'https://a.example/report', evidence_level: 'matching_coverage' },
+    { title: 'Report two', publisher: 'Outlet B', url: 'https://b.example/report', evidence_level: 'matching_coverage' },
   ],
+  hidden_source_count: 5,
   limitations: ['Evidence is indirect.'],
 }], ['Evidence is indirect.']);
-assert.match(relatedClaimHTML, /Multiple related reports found/);
-assert.match(relatedClaimHTML, /Related coverage — not verified as supporting evidence/);
+assert.match(relatedClaimHTML, /Multiple matching reports/);
+assert.match(relatedClaimHTML, /Matching coverage/);
+assert.doesNotMatch(relatedClaimHTML, /fs-v1-source-heading">Matching coverage/);
+assert.doesNotMatch(relatedClaimHTML, /not verified as supporting evidence/i);
 assert.match(relatedClaimHTML, /https:\/\/a\.example\/report/);
-assert.equal((relatedClaimHTML.match(/Evidence is indirect\./g) || []).length, 1);
-assert.match(relatedClaimHTML, /Why these results\?/);
+assert.doesNotMatch(relatedClaimHTML, /Evidence is indirect\./);
+assert.match(relatedClaimHTML, /How to read these results/);
+assert.match(relatedClaimHTML, /same claim or event/);
+assert.match(relatedClaimHTML, /5 other results were hidden/);
+const broaderContextHTML = security.buildV1ClaimsHTML([{
+  claim: 'A low-reported infrastructure claim', status: 'insufficient_evidence', confidence: 'low',
+  supporting_sources: [], contradicting_sources: [], related_sources: [],
+  context_sources: [1, 2, 3, 4, 5].map((index) => ({
+    title: `Context report ${index}`, publisher: `Outlet ${index}`,
+    url: `https://context${index}.example/report`, evidence_level: 'broader_context',
+    discovery_basis: index === 1 ? 'repeated_report' : 'topic_overlap',
+    independent: index === 1 ? false : null,
+    additional_reports: index === 1 ? 2 : 0,
+  })),
+  context_notes: [
+    '5 additional sources provide broader or repeated-report context.',
+    'No authoritative primary source was identified in the displayed results.',
+  ],
+  limitations: [],
+}]);
+assert.match(broaderContextHTML, /Broader context found/);
+assert.doesNotMatch(broaderContextHTML, /fs-v1-source-heading">Broader context/);
+assert.match(broaderContextHTML, /Repeated or non-independent/);
+assert.match(broaderContextHTML, /\+2 similar results grouped/);
+assert.match(broaderContextHTML, /Show 1 more source/);
+assert.doesNotMatch(broaderContextHTML, /No authoritative primary source/);
+assert.match(broaderContextHTML, /useful background but is not direct confirmation/);
+const reviewedClaimHTML = security.buildV1ClaimsHTML([{
+  claim: 'Consumers will not pay UPI transaction charges', status: 'mixed', confidence: 'medium',
+  supporting_sources: [], contradicting_sources: [],
+  related_sources: [{
+    title: 'Fact-check rating: Misleading', publisher: 'Factly', url: 'https://facts.example/upi',
+    reviewed_claim: '<b>Consumers may face selected merchant charges</b>', stance: 'contextual',
+  }], limitations: [],
+}]);
+assert.match(reviewedClaimHTML, /Fact-check rating: Misleading/);
+assert.match(reviewedClaimHTML, /Reviewed claim: &lt;b&gt;Consumers may face selected merchant charges&lt;\/b&gt;/);
 assert.doesNotMatch(relatedClaimHTML, /low evidence confidence/i);
 assert.match(overlayCSS, /fs-limitations-compact > summary[\s\S]*?cursor:\s*pointer/);
 
@@ -110,7 +148,7 @@ assert.equal((imageAssessmentHTML.match(/Credits do not prove origin/g) || []).l
 assert.match(imageAssessmentHTML, /Technical result was partial/);
 
 const articleAssessmentHTML = security.buildV1ArticleSummaryHTML({
-  factual_evidence: { status: 'insufficient_evidence', confidence: 'low', summary: 'Evidence is incomplete.' },
+  factual_evidence: { status: 'insufficient_evidence', confidence: 'low', coverage_breadth: 'none', verification_strength: 'limited', summary: 'Evidence is incomplete.' },
   overall_evidence_summary: 'Evidence is incomplete.',
   content_classification: {
     content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable',
@@ -119,18 +157,56 @@ const articleAssessmentHTML = security.buildV1ArticleSummaryHTML({
   source_quality: { level: 'high', score: 82, summary: 'Strong page signals.', signals: [], limitations: [] },
   explanation: 'Professional article presentation with a named author.',
   evidence: ['Published by a recognized outlet'],
-  limitations: ['Evidence may change.'],
+  limitations: [
+    'Evidence may change.',
+    'The legacy score includes model judgment and structural website signals; it is not a probability that the content is true.',
+    'At least one claim lacks enough evidence for a supported or contradicted status.',
+  ],
 });
+const broadCoverageHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: {
+    status: 'insufficient_evidence', confidence: 'low', coverage_breadth: 'broad',
+    verification_strength: 'limited', summary: 'Matching coverage was found.',
+  },
+  overall_evidence_summary: 'Matching coverage was found.',
+  content_classification: { content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable' },
+  source_quality: {}, limitations: [],
+});
+const contextOnlySummaryHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: {
+    status: 'insufficient_evidence', confidence: 'low', coverage_breadth: 'none',
+    context_breadth: 'broad', verification_strength: 'limited',
+    summary: 'Broader reporting was found.',
+  },
+  overall_evidence_summary: 'Broader reporting was found.',
+  content_classification: { content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable' },
+  source_quality: {}, limitations: [],
+});
+assert.match(contextOnlySummaryHTML, /Context found; verification remains open/);
+assert.match(contextOnlySummaryHTML, /Coverage: None/);
+assert.match(contextOnlySummaryHTML, /Context: Broad/);
+assert.doesNotMatch(contextOnlySummaryHTML, /Evidence still developing/);
+assert.match(broadCoverageHTML, /Matching coverage found/);
+assert.match(broadCoverageHTML, /Coverage: Broad/);
+assert.doesNotMatch(broadCoverageHTML, /Evidence still developing/);
 assert.match(articleAssessmentHTML, /Evidence still developing/);
-assert.match(articleAssessmentHTML, /Evidence confidence: low/);
+assert.match(articleAssessmentHTML, /Coverage: None/);
+assert.match(articleAssessmentHTML, /Evidence strength: Limited/);
+assert.doesNotMatch(articleAssessmentHTML, /Evidence confidence: low/);
 assert.match(articleAssessmentHTML, /Content and source assessment/);
 assert.match(articleAssessmentHTML, /Professional article presentation/);
 assert.match(articleAssessmentHTML, /does not verify individual factual claims/);
 assert.match(articleAssessmentHTML, /About this assessment/);
+assert.match(articleAssessmentHTML, /does not guarantee that every claim is true/);
+assert.doesNotMatch(articleAssessmentHTML, /legacy score|probability that the content is true/i);
+assert.doesNotMatch(articleAssessmentHTML, /At least one claim lacks enough evidence/i);
 assert.match(articleAssessmentHTML, /Classification confidence: Medium/);
 assert.match(articleAssessmentHTML, /Checkability: Checkable/);
 assert.doesNotMatch(articleAssessmentHTML, /checkable checkability/);
 assert.match(source, /identified as satire, so its statements were not evaluated as literal factual claims/);
+assert.match(source, /mergeCompletedClaimResult[\s\S]*processing_state: 'complete'/);
+assert.match(source, /fs-primary-assessment-slot[\s\S]*primarySlot\.innerHTML = buildV1ArticleSummaryHTML\(completed\)/);
+assert.match(overlayCSS, /factscope-popup,\s*\.factscope-popup \*[\s\S]*font-family/);
 
 const corroboratedArticleHTML = security.buildV1ArticleSummaryHTML({
   factual_evidence: { status: 'supported', confidence: 'medium', summary: 'Independent reports corroborate the checked claim.' },

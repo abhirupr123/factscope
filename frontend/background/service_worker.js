@@ -1,3 +1,6 @@
+// Developer-only evaluation helper. Uncomment locally when collecting an audit export.
+// if (typeof importScripts === 'function') importScripts('evaluation_capture.js');
+
 const API_BASE = 'https://factscope-api.onrender.com';
 
 const SESSION_TOKEN_KEY = 'factscope_session_token';
@@ -5,6 +8,14 @@ const SESSION_EXPIRY_KEY = 'factscope_session_expires_at';
 const TELEMETRY_ENABLED_KEY = 'factscope_telemetry_enabled';
 const HISTORY_KEY = 'factscope_history';
 const V1_API_ENABLED_KEY = 'factscope_use_v1_api';
+/* Developer-only evaluation constants (disabled in production).
+const EVALUATION_MODE_KEY = 'factscope_evaluation_mode';
+const EVALUATION_CASES_KEY = 'factscope_evaluation_cases';
+const EVALUATION_PENDING_KEY = 'factscope_evaluation_pending';
+const MAX_EVALUATION_CASES = 100;
+const MAX_PENDING_EVALUATIONS = 25;
+const EVALUATION_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
+*/
 const V1_FALLBACK_STATUSES = new Set([404, 405, 501]);
 let _sessionPromise = null;
 
@@ -194,6 +205,131 @@ function saveHistoryEntry(entry) {
 
 /* ── Message routing ──────────────────────────────────────────────── */
 
+/* Developer-only local evidence evaluation capture (disabled in production).
+function evaluationPublisher(payload, sender) {
+  const siteName = payload?.metadata?.site_name;
+  if (siteName) return siteName;
+  const rawUrl = payload?.url || payload?.page_url || sender?.tab?.url || '';
+  try { return new URL(rawUrl).hostname; } catch { return 'Unknown public publisher'; }
+}
+
+async function evaluationModeEnabled() {
+  const stored = await storageGet([EVALUATION_MODE_KEY]);
+  return stored[EVALUATION_MODE_KEY] === true;
+}
+
+async function storeEvaluationCase(auditCase, analysisId, modality) {
+  if (!auditCase) return false;
+  const stored = await storageGet([EVALUATION_CASES_KEY]);
+  const cases = Array.isArray(stored[EVALUATION_CASES_KEY]) ? stored[EVALUATION_CASES_KEY] : [];
+  const record = {
+    ...auditCase,
+    _analysis_id: String(analysisId || ''),
+    _modality: modality,
+    _captured_at: new Date().toISOString(),
+  };
+  const existing = record._analysis_id
+    ? cases.findIndex((item) => item?._analysis_id === record._analysis_id)
+    : -1;
+  if (existing >= 0) cases.splice(existing, 1);
+  cases.unshift(record);
+  if (cases.length > MAX_EVALUATION_CASES) cases.length = MAX_EVALUATION_CASES;
+  await storageSet({ [EVALUATION_CASES_KEY]: cases });
+  return true;
+}
+
+async function rememberPendingEvaluation(analysisId, claimOriginPublisher, modality) {
+  if (!analysisId) return;
+  const stored = await storageGet([EVALUATION_PENDING_KEY]);
+  const pending = stored[EVALUATION_PENDING_KEY] && typeof stored[EVALUATION_PENDING_KEY] === 'object'
+    ? stored[EVALUATION_PENDING_KEY] : {};
+  pending[String(analysisId)] = {
+    claim_origin_publisher: String(claimOriginPublisher || '').slice(0, 120),
+    modality,
+    created_at: Date.now(),
+  };
+  const cutoff = Date.now() - EVALUATION_PENDING_TTL_MS;
+  const entries = Object.entries(pending)
+    .filter(([, value]) => (value?.created_at || 0) >= cutoff)
+    .sort((a, b) => (b[1]?.created_at || 0) - (a[1]?.created_at || 0))
+    .slice(0, MAX_PENDING_EVALUATIONS);
+  await storageSet({ [EVALUATION_PENDING_KEY]: Object.fromEntries(entries) });
+}
+
+async function captureEvaluationClaims({ claims, analysisId, claimOriginPublisher, modality }) {
+  if (!(await evaluationModeEnabled()) || !globalThis.FactScopeEvaluation) return false;
+  const auditCase = FactScopeEvaluation.buildAuditCase({
+    auditCaseId: `eval-${crypto.randomUUID()}`,
+    curatedOn: new Date().toISOString().slice(0, 10),
+    claims,
+    claimOriginPublisher,
+  });
+  return storeEvaluationCase(auditCase, analysisId, modality);
+}
+
+async function capturePageEvaluation(data, payload, sender) {
+  if (!(await evaluationModeEnabled())) return;
+  const claimOriginPublisher = evaluationPublisher(payload, sender);
+  const captured = await captureEvaluationClaims({
+    claims: data?.claims,
+    analysisId: data?.analysis_id,
+    claimOriginPublisher,
+    modality: 'article',
+  });
+  if (!captured && data?.analysis_id && (data?.claims_pending || data?.processing_state === 'processing')) {
+    await rememberPendingEvaluation(data.analysis_id, claimOriginPublisher, 'article');
+  }
+}
+
+async function captureImageEvaluation(data, payload, sender) {
+  await captureEvaluationClaims({
+    claims: data?.assessment?.caption_consistency?.claims,
+    analysisId: data?.analysis_id,
+    claimOriginPublisher: evaluationPublisher(payload, sender),
+    modality: 'image',
+  });
+}
+
+async function completePendingEvaluation(analysisId, claimResponse) {
+  if (!(await evaluationModeEnabled()) || !analysisId) return false;
+  const stored = await storageGet([EVALUATION_PENDING_KEY]);
+  const pending = stored[EVALUATION_PENDING_KEY] && typeof stored[EVALUATION_PENDING_KEY] === 'object'
+    ? stored[EVALUATION_PENDING_KEY] : {};
+  const item = pending[String(analysisId)];
+  if (!item) return false;
+  if (!FactScopeEvaluation.isCompletedClaimResponse(claimResponse)) return false;
+
+  const captured = await captureEvaluationClaims({
+    claims: claimResponse.claims,
+    analysisId,
+    claimOriginPublisher: item.claim_origin_publisher,
+    modality: item.modality || 'article',
+  });
+  // A completed response cannot gain more claims. Remove it whether it had
+  // exportable displayed evidence or completed legitimately without any.
+  delete pending[String(analysisId)];
+  await storageSet({ [EVALUATION_PENDING_KEY]: pending });
+  return captured;
+}
+
+async function getEvaluationState() {
+  const stored = await storageGet([EVALUATION_MODE_KEY, EVALUATION_CASES_KEY]);
+  const cases = Array.isArray(stored[EVALUATION_CASES_KEY]) ? stored[EVALUATION_CASES_KEY] : [];
+  return {
+    enabled: stored[EVALUATION_MODE_KEY] === true,
+    cases: cases.map((item) => ({
+      audit_case_id: item.audit_case_id,
+      modality: item._modality || 'article',
+      captured_at: item._captured_at || '',
+      publisher: item.claims?.[0]?.claim_origin_publisher || 'Unknown public publisher',
+      claim_count: Array.isArray(item.claims) ? item.claims.length : 0,
+      source_count: Array.isArray(item.claims)
+        ? item.claims.reduce((sum, claim) => sum + (Array.isArray(claim.evidence) ? claim.evidence.length : 0), 0)
+        : 0,
+    })),
+  };
+}
+*/
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'start-page-scan') {
     (async () => {
@@ -255,6 +391,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             timestamp: Date.now(),
           });
         }
+        // Developer evaluation capture disabled: await capturePageEvaluation(data, payload, sender);
         sendResponse(data);
         void recordTelemetry('page_scan_completed');
       } catch (err) {
@@ -316,6 +453,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             timestamp: Date.now(),
           });
         }
+        // Developer evaluation capture disabled: await captureImageEvaluation(data, payload, sender);
         sendResponse(data);
         void recordTelemetry('image_scan_completed');
       } catch (err) {
@@ -343,6 +481,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!r.ok) throw new Error(`Backend returned ${r.status}`);
         const data = await r.json();
         data.api_contract = contract;
+        // Developer evaluation capture disabled: await completePendingEvaluation(analysisId, data);
         sendResponse(data);
       } catch (err) {
         sendResponse({ pending: true, processing_state: 'processing', fact_checks: null, claims: null });
@@ -454,6 +593,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  /* Developer-only evaluation message routes (disabled in production).
+  if (message.type === 'get-evaluation-state') {
+    getEvaluationState().then(sendResponse);
+    return true;
+  }
+
+  if (message.type === 'export-evaluation-cases') {
+    (async () => {
+      const stored = await storageGet([EVALUATION_CASES_KEY]);
+      const cases = globalThis.FactScopeEvaluation
+        ? FactScopeEvaluation.exportCases(stored[EVALUATION_CASES_KEY])
+        : [];
+      sendResponse({ success: true, cases });
+    })();
+    return true;
+  }
+
+  if (message.type === 'remove-evaluation-case') {
+    (async () => {
+      const stored = await storageGet([EVALUATION_CASES_KEY]);
+      const cases = Array.isArray(stored[EVALUATION_CASES_KEY]) ? stored[EVALUATION_CASES_KEY] : [];
+      const filtered = cases.filter((item) => item?.audit_case_id !== message.auditCaseId);
+      await storageSet({ [EVALUATION_CASES_KEY]: filtered });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
+
+  if (message.type === 'clear-evaluation-cases') {
+    storageRemove([EVALUATION_CASES_KEY, EVALUATION_PENDING_KEY]).then(() => sendResponse({ success: true }));
+    return true;
+  }
+
+  if (message.type === 'disable-evaluation-mode') {
+    storageSet({ [EVALUATION_MODE_KEY]: false }).then(async () => {
+      await storageRemove([EVALUATION_PENDING_KEY]);
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+  */
   if (message.type === 'record-telemetry') {
     void recordTelemetry(message.event);
     sendResponse({ success: true });

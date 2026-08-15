@@ -599,6 +599,7 @@ class V1ClaimResult(BaseModel):
     context_sources: list[V1EvidenceSource] = Field(default_factory=list)
     context_notes: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    hidden_source_count: int = 0
 
 
 class V1FactualEvidenceAssessment(BaseModel):
@@ -729,49 +730,9 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         status, confidence, related = "insufficient_evidence", "low", direct_source + article_sources
         if fact_check.status == "opinion":
             limitations.append("This statement appears to be opinion or rhetoric rather than a checkable fact.")
-        elif related:
-            limitations.append("Reporting or a related fact-check was found but did not meet the threshold for a factual status.")
-        elif context_sources:
-            limitations.append("Broader context was found, but no source directly matched enough of the claim for a factual status.")
-        else:
-            limitations.append("No useful external coverage was found for this claim.")
-
-    material_rejections = [
-        item for item in (fact_check.rejected_articles or [])
-        if isinstance(item, dict) and item.get("reason") not in {
-            "duplicate_publisher", "syndicated_duplicate",
-        }
-    ]
-    if material_rejections:
-        reasons = sorted({
-            str(item.get("reason") or "validation_failed").replace("_", " ")
-            for item in material_rejections
-        })
-        limitations.append(
-            f"{len(material_rejections)} candidate source(s) could not be shown after validation: "
-            + ", ".join(reasons[:4]) + "."
-        )
-
-    all_visible = [*supporting, *contradicting, *related, *context_sources]
-    matching_count = sum(source.evidence_level == "matching_coverage" for source in all_visible)
-    broader_count = len(context_sources)
-    additional_count = sum(source.additional_reports for source in all_visible)
-    has_primary = any(source.source_type == "primary" for source in all_visible)
-    context_notes = []
-    if matching_count:
-        context_notes.append(
-            f"{matching_count} matching report{'s' if matching_count != 1 else ''} found."
-        )
-    if broader_count:
-        context_notes.append(
-            f"{broader_count} additional source{'s' if broader_count != 1 else ''} provide broader or repeated-report context."
-        )
-    if additional_count:
-        context_notes.append(
-            f"{additional_count} additional similar result{'s were' if additional_count != 1 else ' was'} grouped and not counted as independent confirmation."
-        )
-    if all_visible and not has_primary:
-        context_notes.append("No authoritative primary source was identified in the displayed results.")
+    hidden_source_count = sum(
+        isinstance(item, dict) for item in (fact_check.rejected_articles or [])
+    )
 
     return V1ClaimResult(
         claim=fact_check.claim, status=status, confidence=confidence,
@@ -779,8 +740,9 @@ def _map_v1_claim(fact_check: FactCheckResult) -> V1ClaimResult:
         contradicting_sources=_deduplicate_v1_sources(contradicting),
         related_sources=_deduplicate_v1_sources(related),
         context_sources=_deduplicate_v1_sources(context_sources),
-        context_notes=context_notes,
+        context_notes=[],
         limitations=limitations,
+        hidden_source_count=hidden_source_count,
     )
 def _provider_failed(legacy: AnalyzeResponse) -> bool:
     explanation = (legacy.explanation or "").lower()
@@ -988,7 +950,7 @@ def _to_v1_analysis(legacy: AnalyzeResponse, fallback_analysis_id: str) -> V1Ana
         or classification.checkability == "no_checkable_claims"
     ))
     limitations = [
-        "The legacy score includes model judgment and structural website signals; it is not a probability that the content is true."
+        "This assessment looks at the page's source, presentation, and available evidence. It does not guarantee that every claim is true."
     ]
 
     if legacy.claims_pending:
@@ -2579,15 +2541,10 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
         confidence_html = "" if claim_status == "insufficient_evidence" else (
             f"<span>{claim_confidence.title()} evidence confidence</span>"
         )
-        notes = [str(item) for item in (claim.get("context_notes") or []) if item]
-        notes_html = (
-            '<ul class="context-notes">' + "".join(f"<li>{esc(item, 400)}</li>" for item in notes[:4]) + "</ul>"
-            if notes else ""
-        )
         claim_items.append(
             f'<article class="claim"><div class="claim-text">{esc(claim.get("claim"), 600)}</div>'
             f'<div class="claim-meta"><strong>{esc(claim_label)}</strong>{confidence_html}</div>'
-            f'{source_sections}{notes_html}</article>'
+            f'{source_sections}</article>'
         )
     claim_section_title = "Caption claim evidence" if result_type == "image" else "Claim evidence"
     claims_html = (
@@ -2678,7 +2635,14 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
 
     limitations = []
     for item in snapshot.get("limitations") or []:
-        if item and item not in limitations:
+        if not item:
+            continue
+        lowered = str(item).lower()
+        if "legacy score" in lowered and "probability" in lowered:
+            item = "This assessment looks at the page's source, presentation, and available evidence. It does not guarantee that every claim is true."
+        if "at least one claim lacks enough evidence" in lowered:
+            continue
+        if item not in limitations:
             limitations.append(item)
     limitations_html = ""
     if limitations:
@@ -2694,7 +2658,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     legacy_score = max(0, min(100, int(data.get("score", 50))))
     compatibility_html = (
         f'<details class="compat"><summary>Compatibility score: {legacy_score}/100</summary>'
-        '<p>This legacy score combines model judgment and page signals. It is not the probability that the content is true.</p></details>'
+        '<p>This older score combines an automated review with basic page signals. Use the evidence above to understand the result.</p></details>'
     )
 
     card_url = f"{share_url}/card.png" if share_url else ""

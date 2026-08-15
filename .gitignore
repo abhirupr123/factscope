@@ -35,3 +35,20 @@ Thumbs.db
 
 # Generated evaluation reports
 backend/evaluation/reports/
+
+# Local evaluation and manual review tooling
+backend/evaluation/
+backend/tests/test_evaluation.py
+backend/tests/test_evidence_audit.py
+frontend/background/evaluation_capture.js
+frontend/tests/evaluation-export.test.js
+review-tool/
+factscope-evidence-*.jsonl
+factscope-review-pass-*.csv
+backend/.env.example
+
+# Local incremental implementation notes
+docs/releases/chunk-*.md
+docs/*.md
+/AGENTS.md
+/frontend/site/README.md

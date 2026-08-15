@@ -478,54 +478,93 @@
     return `<div class="fs-limitations"><div class="fs-limitations-title">${title}</div>${content}</div>`;
   }
 
+  function friendlyAssessmentLimitations(limitations) {
+    const friendly = [];
+    for (const raw of limitations || []) {
+      const item = String(raw || '');
+      const lowered = item.toLowerCase();
+      if (lowered.includes('legacy score') && lowered.includes('probability')) {
+        friendly.push("This assessment looks at the page's source, presentation, and available evidence. It does not guarantee that every claim is true.");
+      } else if (!lowered.includes('at least one claim lacks enough evidence')) {
+        friendly.push(item);
+      }
+    }
+    return [...new Set(friendly.filter(Boolean))];
+  }
+
   function buildV1SourcesHTML(sources, heading) {
     if (!Array.isArray(sources) || sources.length === 0) return '';
-    const items = sources.slice(0, 4).map((source) => {
-      const title = source.title || source.publisher || 'Evidence source';
+    const renderSource = (source) => {
+      const title = source.title || source.publisher || 'Context source';
       const sourceMeta = [
         source.publisher,
         source.source_type === 'primary' ? 'Primary source' : '',
+        source.independent === false ? 'Repeated or non-independent' : '',
         ['current', 'recent', 'older'].includes(source.recency) ? formatV1Label(source.recency) : '',
       ].filter(Boolean).join(' · ');
       const publisher = sourceMeta ? `<span class="fs-article-source">${sourceMeta}</span>` : '';
+      const reviewedClaim = source.reviewed_claim
+        ? `<span class="fs-reviewed-claim">Reviewed claim: ${source.reviewed_claim}</span>`
+        : '';
+      const repetition = Number(source.additional_reports || 0) > 0
+        ? `<span class="fs-source-repetition">+${source.additional_reports} similar result${Number(source.additional_reports) === 1 ? '' : 's'} grouped</span>`
+        : '';
       const link = source.url
         ? `<a class="fs-article-link" href="${source.url}" target="_blank" rel="noopener">${title}</a>`
         : `<span>${title}</span>`;
-      return `<li>${link} ${publisher}</li>`;
-    }).join('');
-    return `<div class="fs-v1-source-group"><div class="fs-v1-source-heading">${heading}</div><ul class="fs-related-articles">${items}</ul></div>`;
+      return `<li>${link} ${publisher}${reviewedClaim}${repetition}</li>`;
+    };
+    const visible = sources.slice(0, 4).map(renderSource).join('');
+    const remaining = sources.slice(4).map(renderSource).join('');
+    const headingHTML = heading ? `<div class="fs-v1-source-heading">${heading}</div>` : '';
+    const moreHTML = remaining
+      ? `<details class="fs-more-sources"><summary>Show ${sources.length - 4} more source${sources.length - 4 === 1 ? '' : 's'}</summary><ul class="fs-related-articles">${remaining}</ul></details>`
+      : '';
+    return `<div class="fs-v1-source-group">${headingHTML}<ul class="fs-related-articles">${visible}</ul>${moreHTML}</div>`;
   }
-
   function buildV1ClaimsHTML(claims, limitations = [], title = 'Claim evidence') {
     const safe = sanitizeForHTML({ claims: claims || [], limitations: limitations || [] });
     if (!Array.isArray(safe.claims) || safe.claims.length === 0) {
       const message = safe.limitations[0] || 'No checkable factual claims were identified in the extracted content.';
       return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div><div class="fs-body">${message}</div>${buildLimitationsHTML(safe.limitations.slice(1), 'More context', true)}</div>`;
     }
-    const sharedLimitations = [...safe.limitations];
+    let hasMatchingCoverage = false;
+    let hasBroaderContext = false;
+    let hiddenSourceCount = 0;
     const items = safe.claims.map((claim) => {
       const presentation = v1StatusPresentation(claim.status);
       const statusClass = V1_STATUS_PRESENTATION[claim.status] ? claim.status.replace(/_/g, '-') : 'unknown';
-      const relatedCount = Array.isArray(claim.related_sources) ? claim.related_sources.length : 0;
       let contextualPresentation = presentation;
-      let contextNote = '';
       const reportingSupport = (claim.supporting_sources || []).some((source) => source.stance === 'corroborating');
       const reportingContradiction = (claim.contradicting_sources || []).some((source) => source.stance === 'contradicting');
+      const matchingSources = (claim.related_sources || []).filter((source) =>
+        source.evidence_level === 'matching_coverage'
+        || (!source.evidence_level && source.stance === 'unavailable'));
+      const relatedContext = (claim.related_sources || []).filter((source) => !matchingSources.includes(source));
+      const broaderContext = claim.context_sources || [];
+      const legacyHiddenCount = (claim.limitations || []).reduce((sum, item) => {
+        const match = String(item || '').match(/^(\d+) candidate source\(s\) could not be shown/i);
+        return sum + (match ? Number(match[1]) : 0);
+      }, 0);
+      hiddenSourceCount += Number(claim.hidden_source_count || 0) || legacyHiddenCount;
+      hasMatchingCoverage = hasMatchingCoverage || matchingSources.length > 0;
+      hasBroaderContext = hasBroaderContext || broaderContext.length > 0;
       if (claim.status === 'supported' && claim.confidence === 'medium' && reportingSupport) {
         contextualPresentation = { ...presentation, label: 'Corroborated by independent reporting' };
       } else if (claim.status === 'contradicted' && claim.confidence === 'medium' && reportingContradiction) {
         contextualPresentation = { ...presentation, label: 'Contradicted by independent reporting' };
-      } else if (claim.status === 'insufficient_evidence' && relatedCount > 1) {
-        contextualPresentation = { ...presentation, label: 'Multiple related reports found' };
-        contextNote = 'These reports discuss the claim but are not classified as direct confirmation.';
-      } else if (claim.status === 'insufficient_evidence' && relatedCount === 1) {
-        contextualPresentation = { ...presentation, label: 'Related coverage found' };
-        contextNote = 'This report is related to the claim but is not classified as direct confirmation.';
+      } else if (claim.status === 'insufficient_evidence' && matchingSources.length > 1) {
+        contextualPresentation = { ...presentation, label: 'Multiple matching reports' };
+      } else if (claim.status === 'insufficient_evidence' && matchingSources.length === 1) {
+        contextualPresentation = { ...presentation, label: 'Matching coverage' };
+      } else if (claim.status === 'insufficient_evidence' && relatedContext.length > 0) {
+        contextualPresentation = { ...presentation, label: 'Related reporting found' };
+      } else if (claim.status === 'insufficient_evidence' && broaderContext.length > 0) {
+        contextualPresentation = { ...presentation, label: 'Broader context found' };
       } else if (claim.status === 'insufficient_evidence') {
-        contextualPresentation = { ...presentation, label: 'No corroborating evidence found' };
+        contextualPresentation = { ...presentation, label: 'No external coverage found' };
       }
-      (claim.limitations || []).forEach((item) => sharedLimitations.push(item));
-      const confidenceHTML = claim.status === 'insufficient_evidence' && (claim.confidence || 'low') === 'low'
+      const confidenceHTML = claim.status === 'insufficient_evidence'
         ? ''
         : `<span class="fs-confidence">${claim.confidence || 'low'} evidence confidence</span>`;
       return `<div class="fs-factcheck-item fs-v1-claim-${statusClass}">
@@ -535,18 +574,34 @@
           <div class="fs-claim-meta"><span class="fs-v1-status" style="color:${contextualPresentation.color}">${contextualPresentation.label}</span>${confidenceHTML}</div>
           ${buildV1SourcesHTML(claim.supporting_sources, 'Supporting sources')}
           ${buildV1SourcesHTML(claim.contradicting_sources, 'Contradicting sources')}
-          ${buildV1SourcesHTML(claim.related_sources, 'Related coverage — not verified as supporting evidence')}
-          ${contextNote ? `<div class="fs-caveat">${contextNote}</div>` : ''}
+          ${buildV1SourcesHTML(matchingSources, '')}
+          ${buildV1SourcesHTML(relatedContext, 'Related reporting')}
+          ${buildV1SourcesHTML(
+            broaderContext,
+            contextualPresentation.label === 'Broader context found' ? '' : 'Broader context',
+          )}
         </div>
       </div>`;
     }).join('');
-    return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div>${items}${buildLimitationsHTML(sharedLimitations, 'Why these results?', true)}</div>`;
+    const guide = [];
+    if (hasMatchingCoverage) {
+      guide.push('Matching coverage reports on the same claim or event, but may not confirm every detail.');
+    }
+    if (hasBroaderContext) {
+      guide.push('Broader context provides useful background but is not direct confirmation.');
+    }
+    if (hiddenSourceCount > 0) {
+      guide.push(`${hiddenSourceCount} other result${hiddenSourceCount === 1 ? ' was' : 's were'} hidden because ${hiddenSourceCount === 1 ? 'it was' : 'they were'} repetitive, outdated, unrelated, or could not be checked.`);
+    }
+    return `<div class="fs-factchecks"><div class="fs-factchecks-title">${title}</div>${items}${buildLimitationsHTML(guide, 'How to read these results', true)}</div>`;
   }
-
   function buildV1ArticleSummaryHTML(result) {
     result = sanitizeForHTML(result || {});
     const factual = result.factual_evidence || {};
     const classification = result.content_classification || {};
+    const coverage = factual.coverage_breadth || 'none';
+    const contextBreadth = factual.context_breadth || 'none';
+    const strength = factual.verification_strength || 'limited';
     let presentation = v1StatusPresentation(factual.status);
     if (factual.status === 'not_applicable') {
       const labels = {
@@ -556,8 +611,16 @@
         unsupported_page: 'Unable to assess this page',
       };
       presentation = { ...presentation, label: labels[classification.content_type] || 'Context-only assessment' };
+    } else if (factual.status === 'insufficient_evidence' && coverage === 'broad') {
+      presentation = { ...presentation, label: 'Matching coverage found' };
+    } else if (factual.status === 'insufficient_evidence' && ['partial', 'limited'].includes(coverage)) {
+      presentation = { ...presentation, label: 'Some matching coverage found' };
+    } else if (factual.status === 'insufficient_evidence' && contextBreadth !== 'none') {
+      presentation = { ...presentation, label: 'Context found; verification remains open' };
     } else if (factual.status === 'insufficient_evidence' && classification.content_type === 'breaking_news') {
       presentation = { ...presentation, label: 'Evidence still developing' };
+    } else if (factual.status === 'insufficient_evidence') {
+      presentation = { ...presentation, label: 'No corroborating evidence found' };
     } else if (factual.status === 'supported' && (result.claims || []).some((claim) =>
       (claim.supporting_sources || []).some((source) => source.stance === 'corroborating'))) {
       presentation = { ...presentation, label: 'Supported by independent reporting' };
@@ -566,9 +629,7 @@
       presentation = { ...presentation, label: 'Contradicted by independent reporting' };
     }
     const quality = result.source_quality || {};
-    const classificationLabel = classification.content_type
-      ? formatV1Label(classification.content_type)
-      : '';
+    const classificationLabel = classification.content_type ? formatV1Label(classification.content_type) : '';
     const classificationDetails = classificationLabel
       ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Content type: ${classificationLabel}</summary><div class="fs-body">${classification.rationale || ''}</div><div class="fs-confidence">Classification confidence: ${formatV1Label(classification.confidence)} &middot; Checkability: ${formatV1Label(classification.checkability)}</div></details>`
       : '';
@@ -580,12 +641,15 @@
     const qualityDetails = quality.summary || qualitySignals || (quality.limitations || []).length
       ? `<details class="fs-details fs-secondary-assessment"><summary class="fs-details-summary">Source quality: ${quality.level || 'unknown'} (${Number.isFinite(quality.score) ? quality.score : result.legacy_score || 0}/100)</summary><div class="fs-body">${quality.summary || ''}</div>${qualitySignals ? `<ul class="fs-details-list">${qualitySignals}</ul>` : ''}${buildLimitationsHTML(quality.limitations, 'About source quality', true)}</details>`
       : '';
+    const evidenceMeta = factual.status === 'insufficient_evidence'
+      ? `<div class="fs-confidence">Coverage: ${formatV1Label(coverage)} &middot; Context: ${formatV1Label(contextBreadth)} &middot; Evidence strength: ${formatV1Label(strength)}</div>`
+      : `<div class="fs-confidence">Evidence confidence: ${factual.confidence || result.confidence || 'low'}</div>`;
     return `<div class="fs-assessment-card">
       <div class="fs-assessment-kicker">Evidence assessment</div>
       <div class="fs-assessment-status" style="color:${presentation.color}"><span>${presentation.icon}</span>${presentation.label}</div>
-      <div class="fs-confidence">Evidence confidence: ${factual.confidence || result.confidence || 'low'}</div>
+      ${evidenceMeta}
       <div class="fs-body">${result.overall_evidence_summary || factual.summary || 'No evidence summary is available.'}</div>
-    </div>${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(result.limitations, 'About this assessment', true)}`;
+    </div>${modelAssessment}${classificationDetails}${qualityDetails}${buildLimitationsHTML(friendlyAssessmentLimitations(result.limitations), 'About this assessment', true)}`;
   }
   function buildV1ImageAssessmentHTML(result) {
     const assessment = result.assessment || {};
@@ -872,7 +936,25 @@
     });
   }
 
-  function pollForClaims(fingerprint, analysisId, attempts) {
+  function mergeCompletedClaimResult(baseResult, response) {
+    const stale = /claim-level evidence is still being processed/i;
+    const limitations = [
+      ...(baseResult?.limitations || []).filter((item) => !stale.test(String(item))),
+      ...(response?.limitations || []),
+    ];
+    return {
+      ...baseResult,
+      processing_state: 'complete',
+      claims_pending: false,
+      claims: response.claims || [],
+      factual_evidence: response.factual_evidence || baseResult?.factual_evidence,
+      overall_evidence_summary: response.overall_evidence_summary || '',
+      confidence: response.confidence || baseResult?.confidence || 'low',
+      limitations: [...new Set(limitations)],
+    };
+  }
+
+  function pollForClaims(fingerprint, analysisId, attempts, baseResult) {
     if (attempts <= 0) {
       const slot = document.getElementById('fs-claims-slot');
       if (slot) slot.innerHTML = '<div class="fs-factchecks"><div class="fs-factchecks-title">Claim evidence</div><div class="fs-body">Claim evidence is taking longer than expected. The overall result remains limited until it is available.</div></div>';
@@ -885,11 +967,16 @@
       if (resp?.processing_state === 'failed') {
         if (slot) slot.innerHTML = buildV1ClaimsHTML([], resp.limitations || ['Claim evidence could not be loaded.']);
       } else if (resp?.processing_state === 'complete' && Array.isArray(resp.claims)) {
-        if (slot) slot.innerHTML = buildV1ClaimsHTML(resp.claims, resp.limitations);
+        const completed = mergeCompletedClaimResult(baseResult, resp);
+        if (slot) slot.innerHTML = buildV1ClaimsHTML(completed.claims, resp.limitations);
+        const primarySlot = document.getElementById('fs-primary-assessment-slot');
+        if (primarySlot && completed.factual_evidence) {
+          primarySlot.innerHTML = buildV1ArticleSummaryHTML(completed);
+        }
       } else if (resp && !resp.pending && Array.isArray(resp.fact_checks)) {
         if (slot) slot.innerHTML = buildFactChecksHTML(resp.fact_checks);
       } else {
-        setTimeout(() => pollForClaims(fingerprint, analysisId, attempts - 1), 3000);
+        setTimeout(() => pollForClaims(fingerprint, analysisId, attempts - 1, baseResult), 3000);
       }
     });
   }
@@ -1001,7 +1088,7 @@
     const icon = verdictIcon(result.verdict);
     const isV1 = result.schema_version === '1.0' && result.factual_evidence && result.source_quality;
     const primaryAssessmentHTML = isV1
-      ? buildV1ArticleSummaryHTML(result)
+      ? `<div id="fs-primary-assessment-slot">${buildV1ArticleSummaryHTML(result)}</div>`
       : `<div class="fs-verdict-row"><span class="fs-verdict-icon">${icon}</span><span class="fs-verdict-label" style="color:${color}">${label}</span></div><div class="fs-scorebar"><div class="fs-scorebar-fill" style="width:${score}%;background:${color}"></div></div><div class="fs-score-text"><strong style="color:${color}">${score}%</strong> trust score</div>`;
 
     const evidenceItems = (result.evidence || [])
@@ -1088,7 +1175,7 @@
     }
 
     if (result.claims_pending && result.fingerprint) {
-      pollForClaims(result.fingerprint, result.analysis_id || result.fingerprint, 10);
+      pollForClaims(result.fingerprint, result.analysis_id || result.fingerprint, 10, result);
     }
   }
 

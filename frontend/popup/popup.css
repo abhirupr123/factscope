@@ -23,6 +23,14 @@ body {
     radial-gradient(circle at 90% 20%, rgba(16, 185, 129, 0.1), transparent 20%),
     var(--bg);
   color: var(--text);
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.4;
+  font-synthesis: none;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
 }
 
 .card {
@@ -394,3 +402,119 @@ button.danger-outline:hover {
   font-size: 11px;
   margin-top: 8px;
 }
+
+/* Developer-only evaluation export styles (disabled in production).
+.evaluation-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.evaluation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.developer-badge {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.evaluation-warning,
+.evaluation-count {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.evaluation-count {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.evaluation-list {
+  max-height: 170px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.evaluation-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+}
+
+.evaluation-item-info {
+  min-width: 0;
+}
+
+.evaluation-publisher,
+.evaluation-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evaluation-publisher {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.evaluation-meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+button.evaluation-remove,
+button.text-action {
+  width: auto;
+  padding: 3px 6px;
+  background: transparent;
+  color: #b91c1c;
+  box-shadow: none;
+  font-size: 10px;
+}
+
+button.evaluation-remove:hover,
+button.text-action:hover {
+  background: #fef2f2;
+  box-shadow: none;
+  transform: none;
+}
+
+.evaluation-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.evaluation-actions button {
+  padding: 8px;
+  font-size: 11px;
+}
+
+.evaluation-actions .secondary-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: none;
+}
+
+button.text-action {
+  margin-top: 6px;
+}
+*/

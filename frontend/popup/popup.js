@@ -203,6 +203,101 @@ deleteServerDataBtn.addEventListener('click', () => {
 
 /* ── License key redemption ─────────────────────────────────────── */
 
+/* Developer-only local evidence evaluation export (disabled in production).
+const evaluationSection = document.getElementById('evaluation-section');
+const evaluationCount = document.getElementById('evaluation-count');
+const evaluationList = document.getElementById('evaluation-list');
+const evaluationStatus = document.getElementById('evaluation-status');
+const exportEvaluationBtn = document.getElementById('export-evaluation');
+const clearEvaluationBtn = document.getElementById('clear-evaluation');
+const disableEvaluationBtn = document.getElementById('disable-evaluation');
+
+function runtimeMessage(message) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
+      else resolve(response || {});
+    });
+  });
+}
+
+function renderEvaluationState(state) {
+  if (!state?.enabled) {
+    evaluationSection.hidden = true;
+    return;
+  }
+  evaluationSection.hidden = false;
+  const cases = Array.isArray(state.cases) ? state.cases : [];
+  const sourceTotal = cases.reduce((sum, item) => sum + (item.source_count || 0), 0);
+  evaluationCount.textContent = `${cases.length} case${cases.length === 1 ? '' : 's'} ready · ${sourceTotal} evidence link${sourceTotal === 1 ? '' : 's'}`;
+  exportEvaluationBtn.disabled = cases.length === 0;
+  clearEvaluationBtn.disabled = cases.length === 0;
+  evaluationList.replaceChildren();
+
+  for (const item of cases) {
+    const row = document.createElement('div');
+    row.className = 'evaluation-item';
+    const info = document.createElement('div');
+    info.className = 'evaluation-item-info';
+    const publisher = document.createElement('span');
+    publisher.className = 'evaluation-publisher';
+    publisher.textContent = item.publisher || 'Unknown public publisher';
+    const meta = document.createElement('span');
+    meta.className = 'evaluation-meta';
+    meta.textContent = `${item.modality === 'image' ? 'Image caption' : 'Article'} · ${item.claim_count} claims · ${item.source_count} links`;
+    info.append(publisher, meta);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'evaluation-remove';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', async () => {
+      await runtimeMessage({ type: 'remove-evaluation-case', auditCaseId: item.audit_case_id });
+      await refreshEvaluationState();
+    });
+    row.append(info, remove);
+    evaluationList.append(row);
+  }
+}
+
+async function refreshEvaluationState() {
+  renderEvaluationState(await runtimeMessage({ type: 'get-evaluation-state' }));
+}
+
+exportEvaluationBtn.addEventListener('click', async () => {
+  evaluationStatus.textContent = 'Preparing privacy-filtered JSONL...';
+  const response = await runtimeMessage({ type: 'export-evaluation-cases' });
+  if (!response?.success || !Array.isArray(response.cases) || !response.cases.length) {
+    evaluationStatus.textContent = response?.error || 'No cases with displayed evidence are ready.';
+    return;
+  }
+  const jsonl = `${response.cases.map((item) => JSON.stringify(item)).join('\n')}\n`;
+  const blobUrl = URL.createObjectURL(new Blob([jsonl], { type: 'application/x-ndjson' }));
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = `factscope-evidence-${new Date().toISOString().slice(0, 10)}.jsonl`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  evaluationStatus.textContent = `Exported ${response.cases.length} privacy-filtered cases.`;
+});
+
+clearEvaluationBtn.addEventListener('click', async () => {
+  if (!window.confirm('Clear all locally captured evaluation cases? This cannot be undone.')) return;
+  await runtimeMessage({ type: 'clear-evaluation-cases' });
+  evaluationStatus.textContent = 'Local evaluation cases cleared.';
+  await refreshEvaluationState();
+});
+
+disableEvaluationBtn.addEventListener('click', async () => {
+  if (!window.confirm('Disable evaluation mode? Existing cases remain local until you clear them.')) return;
+  await runtimeMessage({ type: 'disable-evaluation-mode' });
+  evaluationSection.hidden = true;
+});
+
+// Developer-only evaluation UI. Uncomment locally together with evaluation_capture.js.
+// void refreshEvaluationState();
+*/
 const redeemBtn = document.getElementById('redeem-btn');
 const licenseInput = document.getElementById('license-key');
 const redeemMsg = document.getElementById('redeem-msg');
