@@ -47,7 +47,7 @@ jobs:
         run: node --test frontend/tests/*.test.js
       - name: Validate and package production extension
         run: python scripts/package_extension.py --output dist/factscope-extension.zip
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: factscope-extension
           path: dist/factscope-extension.zip
