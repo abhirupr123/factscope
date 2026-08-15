@@ -965,6 +965,37 @@ class ChunkFourFoundationTests(unittest.TestCase):
         self.assertIn("FactScope assists verification", html)
         self.assertTrue(main._share_card_png({"domain": "example.com", "snapshot": snapshot}).startswith(b"\x89PNG"))
 
+    def test_share_page_uses_state_appropriate_confidence_labels(self):
+        processing_html = main._render_share_page({
+            "result_type": "page",
+            "snapshot": {
+                "processing_state": "processing",
+                "overall_evidence_summary": "Claim-level evidence is still being processed.",
+                "factual_evidence": {"status": "processing", "confidence": "low"},
+                "content_classification": {
+                    "content_type": "breaking_news", "confidence": "medium",
+                },
+            },
+        })
+        self.assertIn("Checking claim-level evidence", processing_html)
+        self.assertNotIn("Evidence confidence: Low", processing_html)
+
+        satire_html = main._render_share_page({
+            "result_type": "page",
+            "snapshot": {
+                "processing_state": "complete",
+                "overall_evidence_summary": "This content was classified as satire.",
+                "factual_evidence": {"status": "not_applicable", "confidence": "low"},
+                "content_classification": {
+                    "content_type": "satire", "confidence": "high",
+                },
+            },
+        })
+        self.assertIn("Satire detected", satire_html)
+        self.assertIn("Classification confidence: High", satire_html)
+        self.assertNotIn("Evidence confidence: Low", satire_html)
+
+
 class ChunkFourV1ContractTests(unittest.TestCase):
     @staticmethod
     def _request():

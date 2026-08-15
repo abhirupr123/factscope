@@ -2579,6 +2579,7 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             f'{visual_block}</section>'
         )
     factual = snapshot.get("factual_evidence") or {}
+    classification = snapshot.get("content_classification") or {}
     counts_html = ""
     if result_type == "page" and factual:
         if factual.get("status") == "insufficient_evidence":
@@ -2697,7 +2698,12 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
             f'<button id="copyLink" data-url="{esc(share_url)}">Copy link</button></div>'
         )
 
-    if result_type == "page" and factual.get("status") == "insufficient_evidence":
+    if result_type == "page" and factual.get("status") == "processing":
+        assessment_meta = "Checking claim-level evidence…"
+    elif result_type == "page" and factual.get("status") == "not_applicable":
+        classification_confidence = str(classification.get("confidence") or "low").replace("_", " ").title()
+        assessment_meta = f"Classification confidence: {esc(classification_confidence)}"
+    elif result_type == "page" and factual.get("status") == "insufficient_evidence":
         raw_coverage = str(factual.get("coverage_breadth") or "none")
         raw_context = str(factual.get("context_breadth") or "none")
         effective_coverage = raw_coverage if raw_coverage != "none" else raw_context

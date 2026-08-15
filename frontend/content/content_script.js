@@ -626,6 +626,13 @@
   }
 
   function buildEvidenceMetaHTML(factual, result) {
+    if (factual.status === 'processing') {
+      return '<div class="fs-assessment-meta">Checking claim-level evidence&hellip;</div>';
+    }
+    if (factual.status === 'not_applicable') {
+      const classificationConfidence = result.content_classification?.confidence || 'low';
+      return `<div class="fs-assessment-meta">Classification confidence: ${formatV1Label(classificationConfidence)}</div>`;
+    }
     if (factual.status !== 'insufficient_evidence') {
       return `<div class="fs-assessment-meta" title="How strongly the displayed evidence supports this finding">Finding confidence: ${formatV1Label(factual.confidence || result.confidence || 'low')}</div>`;
     }
@@ -1057,21 +1064,29 @@
   }
 
   function mergeCompletedClaimResult(baseResult, response) {
+    const safeBase = sanitizeForHTML(baseResult || {});
+    const safeResponse = sanitizeForHTML(response || {});
     const stale = /claim-level evidence is still being processed/i;
     const limitations = [
-      ...(baseResult?.limitations || []).filter((item) => !stale.test(String(item))),
-      ...(response?.limitations || []),
+      ...(safeBase.limitations || []).filter((item) => !stale.test(String(item))),
+      ...(safeResponse.limitations || []),
     ];
-    return {
-      ...baseResult,
+    const completed = {
+      ...safeBase,
       processing_state: 'complete',
       claims_pending: false,
-      claims: response.claims || [],
-      factual_evidence: response.factual_evidence || baseResult?.factual_evidence,
-      overall_evidence_summary: response.overall_evidence_summary || '',
-      confidence: response.confidence || baseResult?.confidence || 'low',
+      claims: safeResponse.claims || [],
+      factual_evidence: safeResponse.factual_evidence || safeBase.factual_evidence,
+      overall_evidence_summary: safeResponse.overall_evidence_summary || '',
+      confidence: safeResponse.confidence || safeBase.confidence || 'low',
       limitations: [...new Set(limitations)],
     };
+    Object.defineProperty(completed, '__factscopeSanitized', { value: true });
+    return completed;
+  }
+
+  if (globalThis.__FACTSCOPE_SECURITY_TEST__) {
+    globalThis.__FACTSCOPE_SECURITY__.mergeCompletedClaimResult = mergeCompletedClaimResult;
   }
 
   function pollForClaims(fingerprint, analysisId, attempts, baseResult) {

@@ -42,6 +42,30 @@ assert.match(source, /function buildFactChecksHTML\(factChecks\)[\s\S]*?factChec
 
 assert.match(source, /function showImageResultPanel\(result, resolvedPageUrl, retryAction = null\)[\s\S]*?result = sanitizeForHTML\(result\);/);
 
+const sanitizedPendingResult = security.sanitizeForHTML({
+  schema_version: '1.0',
+  factual_evidence: {
+    status: 'insufficient_evidence', confidence: 'low', coverage_breadth: 'none',
+    verification_strength: 'limited', summary: 'Evidence is still processing.',
+  },
+  content_classification: { content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable' },
+  source_quality: {},
+  limitations: ["This assessment looks at the page's source, presentation, and available evidence."],
+});
+const safelyMergedResult = security.mergeCompletedClaimResult(sanitizedPendingResult, {
+  claims: [],
+  factual_evidence: {
+    status: 'insufficient_evidence', confidence: 'low', coverage_breadth: 'none',
+    verification_strength: 'limited', summary: 'Evidence check complete.',
+  },
+  overall_evidence_summary: 'Evidence check complete.',
+  limitations: ['Breaking-news evidence may be incomplete or change as reporting develops.'],
+});
+const safelyMergedHTML = security.buildV1ArticleSummaryHTML(safelyMergedResult);
+assert.match(safelyMergedHTML, /page&#39;s source/);
+assert.doesNotMatch(safelyMergedHTML, /page&amp;#39;s source/);
+assert.match(safelyMergedHTML, /Breaking-news evidence may be incomplete/);
+
 const v1ClaimHTML = security.buildV1ClaimsHTML([{
   claim: '<img src=x onerror=alert(1)>',
   status: 'supported',
@@ -207,7 +231,18 @@ const opinionSummaryHTML = security.buildV1ArticleSummaryHTML({
   content_classification: { content_type: 'opinion', confidence: 'high', checkability: 'not_checkable' },
   source_quality: {}, limitations: [],
 });
+const processingSummaryHTML = security.buildV1ArticleSummaryHTML({
+  factual_evidence: { status: 'processing', confidence: 'low', summary: 'Claim-level evidence is still being processed.' },
+  overall_evidence_summary: 'Claim-level evidence is still being processed.',
+  content_classification: { content_type: 'breaking_news', confidence: 'medium', checkability: 'checkable' },
+  source_quality: {}, limitations: [],
+}, 'summary');
+assert.match(processingSummaryHTML, /Evidence processing/);
+assert.match(processingSummaryHTML, /Checking claim-level evidence/);
+assert.doesNotMatch(processingSummaryHTML, /Finding confidence: Low/);
 assert.match(satireSummaryHTML, /Satire detected/);
+assert.match(satireSummaryHTML, /Classification confidence: High/);
+assert.doesNotMatch(satireSummaryHTML, /Finding confidence: Low/);
 assert.match(opinionSummaryHTML, /Opinion detected/);
 assert.doesNotMatch(`${satireSummaryHTML}${opinionSummaryHTML}`, /Satire identified|Opinion and context assessment/);
 assert.match(broadCoverageHTML, /Matching coverage found/);
