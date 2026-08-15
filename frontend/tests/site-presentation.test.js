@@ -50,16 +50,22 @@ assert.match(script, /AbortController/);
 assert.match(styles, /status-page \.page-hero > \.container/);
 assert.match(styles, /status-page \[data-status-check\][\s\S]*?flex:\s*0 0 auto/);
 
-const listing = fs.readFileSync(path.join(site, 'chrome-web-store-listing.txt'), 'utf8');
+const listingPath = path.join(site, 'chrome-web-store-listing.txt');
 const changelog = fs.readFileSync(path.join(site, 'changelog.html'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(site, '..', 'manifest.json'), 'utf8'));
-assert.match(listing, new RegExp(`Release notes \\u2014 version ${manifest.version.replace(/\\./g, '\\\\.')}`));
 assert.match(changelog, new RegExp(`Version ${manifest.version.replace(/\\./g, '\\\\.')}`));
-const shortDescription = listing.match(/Short description\r?\n([^\r\n]+)/)?.[1] || '';
-assert.ok(shortDescription.length > 0 && shortDescription.length <= 132,
-  `Store short description must be 1-132 characters; got ${shortDescription.length}`);
-assert.match(listing, /Single purpose/);
-assert.match(listing, /Permission justifications/);
-assert.match(listing, /FactScope is a verification assistant, not a truth detector/);
+
+// This Store submission copy is intentionally local-only. Validate it during
+// local release checks when present without making CI depend on the private file.
+if (fs.existsSync(listingPath)) {
+  const listing = fs.readFileSync(listingPath, 'utf8');
+  assert.match(listing, new RegExp(`Release notes \\u2014 version ${manifest.version.replace(/\\./g, '\\\\.')}`));
+  const shortDescription = listing.match(/Short description\r?\n([^\r\n]+)/)?.[1] || '';
+  assert.ok(shortDescription.length > 0 && shortDescription.length <= 132,
+    `Store short description must be 1-132 characters; got ${shortDescription.length}`);
+  assert.match(listing, /Single purpose/);
+  assert.match(listing, /Permission justifications/);
+  assert.match(listing, /FactScope is a verification assistant, not a truth detector/);
+}
 
 console.log('public site presentation tests passed');
