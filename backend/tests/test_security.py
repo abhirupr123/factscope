@@ -196,6 +196,12 @@ class SafeFetchTests(unittest.TestCase):
 
 
 class ProductionBoundaryTests(unittest.TestCase):
+    def test_successful_health_probes_are_not_logged_but_failures_are(self):
+        self.assertFalse(main._should_log_request("/health", 200))
+        self.assertFalse(main._should_log_request("/health", 302))
+        self.assertTrue(main._should_log_request("/health", 500))
+        self.assertTrue(main._should_log_request("/v1/analyze", 200))
+
     def test_health_endpoint_is_lightweight_and_non_cacheable(self):
         response = main.Response()
         payload = asyncio.run(main.health(response))

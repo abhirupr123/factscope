@@ -145,15 +145,21 @@ async def add_request_observability(request: Request, call_next):
     response = await call_next(request)
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     response.headers["X-Request-ID"] = request_id
-    logger.info(json.dumps({
-        "event": "request_complete",
-        "request_id": request_id,
-        "method": request.method,
-        "path": request.url.path,
-        "status": response.status_code,
-        "duration_ms": duration_ms,
-    }, separators=(",", ":")))
+    if _should_log_request(request.url.path, response.status_code):
+        logger.info(json.dumps({
+            "event": "request_complete",
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": duration_ms,
+        }, separators=(",", ":")))
     return response
+
+
+def _should_log_request(path: str, status_code: int) -> bool:
+    """Keep routine health probes quiet while retaining failed checks."""
+    return path != "/health" or status_code >= 400
 
 
 def _request_id(request: Request) -> str:
