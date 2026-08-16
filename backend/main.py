@@ -2471,7 +2471,6 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     scanned_url = safe_http_url(data.get("scanned_url", ""))
     scanned_title = esc(data.get("scanned_title", ""), 500)
     preview_image = safe_http_url(data.get("og_image", ""))
-    analysis_version = esc(data.get("analysis_version", "") or snapshot.get("analysis_version", ""), 80)
     scan_timestamp = esc(data.get("scan_timestamp", ""), 80)
     processing_state = esc(snapshot.get("processing_state", "complete" if not is_legacy else "legacy"), 40)
 
@@ -2673,8 +2672,6 @@ def _render_share_page(data: dict, share_url: str = "") -> str:
     metadata_parts = [f"State: {processing_state}"]
     if scan_timestamp:
         metadata_parts.append(f"Scanned: {scan_timestamp}")
-    if analysis_version:
-        metadata_parts.append(f"Analysis: {analysis_version}")
     metadata_html = "".join(f"<span>{part}</span>" for part in metadata_parts)
     legacy_score = max(0, min(100, int(data.get("score", 50))))
     compatibility_html = (

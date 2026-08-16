@@ -981,6 +981,10 @@ class ChunkFourFoundationTests(unittest.TestCase):
         self.assertNotIn('property="og:image" content="https://publisher.example/image.jpg"', html)
         self.assertIn('rel="icon"', html)
         self.assertIn("FactScope assists verification", html)
+        self.assertIn('class="theme-toggle"', html)
+        self.assertIn('class="icon-moon"', html)
+        self.assertNotIn(">Theme</button>", html)
+        self.assertNotIn("Analysis: 4h-test", html)
         self.assertTrue(main._share_card_png({"domain": "example.com", "snapshot": snapshot}).startswith(b"\x89PNG"))
 
     def test_share_page_uses_state_appropriate_confidence_labels(self):
