@@ -196,6 +196,18 @@ class SafeFetchTests(unittest.TestCase):
 
 
 class ProductionBoundaryTests(unittest.TestCase):
+    def test_health_endpoint_is_lightweight_and_non_cacheable(self):
+        response = main.Response()
+        payload = asyncio.run(main.health(response))
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["version"], main.app.version)
+        self.assertEqual(
+            response.headers["cache-control"],
+            "no-store, no-cache, must-revalidate",
+        )
+        render_config = (Path(main.__file__).parent / "render.yaml").read_text(encoding="utf-8")
+        self.assertIn("healthCheckPath: /health", render_config)
+
     def test_development_routes_are_absent_in_production(self):
         paths = {getattr(route, "path", None) for route in main.app.router.routes}
         self.assertNotIn("/debug/db-status", paths)

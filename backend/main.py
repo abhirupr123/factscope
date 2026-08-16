@@ -2817,7 +2817,8 @@ async def view_shared_result(share_id: str):
 
 
 @app.get("/health")
-async def health():
+async def health(response: Response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return {"status": "ok", "version": app.version}
 
 
