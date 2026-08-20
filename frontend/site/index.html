@@ -95,6 +95,47 @@
     </div>
   </section>
 
+
+  <section class="section section-alt beta-study" id="beta-study">
+    <div class="container beta-study-grid">
+      <div class="beta-study-copy">
+        <span class="eyebrow">Help shape FactScope</span>
+        <h2>Join the two-week beta study.</h2>
+        <p class="section-copy">Use FactScope on a few webpages or images, complete two short surveys, and tell us where the experience is useful or confusing.</p>
+        <ul class="beta-study-facts">
+          <li>Approximately 5–8 scans over two weeks</li>
+          <li>Desktop Chrome and the FactScope extension required</li>
+          <li>No positive review or public promotion expected</li>
+        </ul>
+        <p class="beta-study-privacy">Your application is used only to organize this beta study. Do not submit scanned page content through this form. See the <a href="privacy.html">privacy policy</a>.</p>
+      </div>
+      <form class="beta-study-form" name="factscope-beta-study" method="POST" data-netlify="true" netlify-honeypot="website">
+        <input type="hidden" name="form-name" value="factscope-beta-study">
+        <p class="form-honeypot"><label>Leave this field empty <input name="website" tabindex="-1" autocomplete="off"></label></p>
+        <div class="form-heading"><h3>Join the beta study</h3><p>We will email you the study instructions.</p></div>
+        <label>Email address<input type="email" name="email" autocomplete="email" required></label>
+        <label>Which best describes you?
+          <select name="role" required>
+            <option value="" selected disabled>Select one</option>
+            <option value="student">Student</option>
+            <option value="journalism-media">Journalism or media</option>
+            <option value="research-education">Research or education</option>
+            <option value="general-user">General internet user</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <fieldset>
+          <legend>What would you like to test?</legend>
+          <label class="check-row"><input type="checkbox" name="test-interest" value="webpages"> Webpage and social-post scans</label>
+          <label class="check-row"><input type="checkbox" name="test-interest" value="images"> Image verification</label>
+        </fieldset>
+        <label class="check-row"><input type="checkbox" name="desktop-chrome" value="confirmed" required> I can use desktop Chrome and install the extension.</label>
+        <button class="btn btn-primary" type="submit">Join the beta study</button>
+        <p class="form-note">Everyone who signs up can participate. You can stop at any time.</p>
+      </form>
+    </div>
+  </section>
+
   <section class="section callout-section">
     <div class="container callout"><div><span class="eyebrow">Free beta</span><h2>Try FactScope on the next claim that makes you pause.</h2><p>Ten scans per day, no account, and no paid controls during the beta.</p></div><a class="btn btn-light" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">Install from Chrome Web Store</a></div>
   </section>

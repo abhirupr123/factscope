@@ -32,6 +32,13 @@ assert.match(index, /not a truth button/i);
 assert.match(index, /data-demo-target="article-demo"/);
 assert.match(index, /data-demo-target="image-demo"/);
 assert.match(index, /data-demo-target="recovery-demo"/);
+assert.match(index, /id="beta-study"/);
+assert.match(index, /name="factscope-beta-study"/);
+assert.match(index, /data-netlify="true"/);
+assert.match(index, /No positive review or public promotion expected/i);
+assert.doesNotMatch(index, /unpaid|interview/i);
+assert.match(index, /Everyone who signs up can participate/i);
+assert.doesNotMatch(index, /does not guarantee selection|selected participants/i);
 assert.doesNotMatch(index, /tells you if it(?:'|’)s trustworthy|misinformation detection/i);
 
 const methodology = fs.readFileSync(path.join(site, 'methodology.html'), 'utf8');
