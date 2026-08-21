@@ -6,6 +6,7 @@ const site = path.join(__dirname, '..', 'site');
 const pages = [
   'index.html', 'methodology.html', 'support.html',
   'changelog.html', 'status.html', 'privacy.html', 'beta-thanks.html',
+  'beta-feedback.html', 'feedback-thanks.html',
 ];
 
 for (const page of pages) {
@@ -40,6 +41,13 @@ assert.match(index, /No positive review or public promotion expected/i);
 assert.doesNotMatch(index, /unpaid|interview/i);
 assert.match(index, /Everyone who signs up can participate/i);
 assert.doesNotMatch(index, /does not guarantee selection|selected participants/i);
+assert.match(index, /href="beta-feedback\.html"/);
+
+const betaFeedback = fs.readFileSync(path.join(site, "beta-feedback.html"), "utf8");
+assert.match(betaFeedback, /name="factscope-beta-feedback"/);
+assert.match(betaFeedback, /data-netlify="true"/);
+assert.match(betaFeedback, /action="\/feedback-thanks\.html"/);
+assert.match(betaFeedback, /FactScope assists verification rather than determining truth/i);
 assert.doesNotMatch(index, /tells you if it(?:'|’)s trustworthy|misinformation detection/i);
 
 const methodology = fs.readFileSync(path.join(site, 'methodology.html'), 'utf8');

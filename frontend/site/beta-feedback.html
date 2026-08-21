@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Beta feedback — FactScope</title>
+<meta name="description" content="Share feedback from your FactScope beta testing experience.">
+<link rel="icon" href="assets/factscope-logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="nav">
+  <div class="nav-inner container">
+    <a class="brand" href="index.html" aria-label="FactScope home"><img src="assets/factscope-logo.svg" alt="" width="32" height="32"><span>FactScope</span></a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">Menu</button>
+    <nav class="nav-links" id="primary-nav" aria-label="Primary"><a href="index.html#product">Product</a><a href="methodology.html">Methodology</a><a href="support.html">Support</a><a href="status.html">Status</a></nav>
+    <a class="btn btn-primary btn-small nav-install" href="https://chromewebstore.google.com/detail/cmmkbibkldbifbiefgebcecdakljejjd?utm_source=item-share-cb" target="_blank" rel="noopener noreferrer">Add to Chrome</a>
+  </div>
+</header>
+<main>
+  <section class="page-hero">
+    <div class="container beta-feedback-shell">
+      <span class="eyebrow">Beta study</span>
+      <h1>Share your FactScope feedback.</h1>
+      <p>Tell us what worked, what was confusing, and where FactScope needs improvement. Please submit this after you have used the extension several times.</p>
+    </div>
+  </section>
+  <section class="section">
+    <div class="container beta-feedback-shell">
+      <form class="beta-study-form" name="factscope-beta-feedback" action="/feedback-thanks.html" method="POST" data-netlify="true" netlify-honeypot="website">
+        <input type="hidden" name="form-name" value="factscope-beta-feedback">
+        <p class="form-honeypot"><label>Leave this field empty <input name="website" tabindex="-1" autocomplete="off"></label></p>
+        <div class="form-heading"><h2>Your testing experience</h2><p>Fields marked as required must be completed.</p></div>
+        <label>Email address (optional)<input type="email" name="email" autocomplete="email"></label>
+        <div class="beta-number-grid">
+          <label>Scans attempted<input type="number" name="scans-attempted" min="1" max="100" required></label>
+          <label>Scans completed successfully<input type="number" name="scans-completed" min="0" max="100" required></label>
+        </div>
+        <fieldset>
+          <legend>What did you test?</legend>
+          <label class="check-row"><input type="checkbox" name="scan-types" value="webpages"> Webpages or social posts</label>
+          <label class="check-row"><input type="checkbox" name="scan-types" value="images"> Images</label>
+        </fieldset>
+        <label>Did you open any evidence or coverage links?
+          <select name="opened-evidence" required><option value="" selected disabled>Select one</option><option value="yes">Yes</option><option value="no">No</option><option value="none-shown">No links were shown</option></select>
+        </label>
+        <label>How understandable were the results?
+          <select name="result-understanding" required><option value="" selected disabled>Select one</option><option value="very-clear">Very clear</option><option value="mostly-clear">Mostly clear</option><option value="mixed">Some parts were confusing</option><option value="unclear">Mostly unclear</option></select>
+        </label>
+        <label>How strongly do you agree: “FactScope assists verification rather than determining truth”?
+          <select name="assistant-understanding" required><option value="" selected disabled>Select one</option><option value="strongly-agree">Strongly agree</option><option value="agree">Agree</option><option value="unsure">Unsure</option><option value="disagree">Disagree</option><option value="strongly-disagree">Strongly disagree</option></select>
+        </label>
+        <label>Would you use FactScope again?
+          <select name="repeat-use" required><option value="" selected disabled>Select one</option><option value="yes">Yes</option><option value="maybe">Maybe</option><option value="no">No</option></select>
+        </label>
+        <fieldset>
+          <legend>Did you encounter any of these?</legend>
+          <label class="check-row"><input type="checkbox" name="issues" value="incorrect"> A result appeared incorrect</label>
+          <label class="check-row"><input type="checkbox" name="issues" value="misleading"> A result could be misleading or unsafe</label>
+          <label class="check-row"><input type="checkbox" name="issues" value="confusing"> Wording or labels were confusing</label>
+          <label class="check-row"><input type="checkbox" name="issues" value="missing"> Useful evidence or context appeared to be missing</label>
+          <label class="check-row"><input type="checkbox" name="issues" value="technical"> A scan failed or had a technical problem</label>
+          <label class="check-row"><input type="checkbox" name="issues" value="none"> None of these</label>
+        </fieldset>
+        <label>What was useful, confusing, or in need of improvement?<textarea name="feedback" maxlength="2000" required></textarea></label>
+        <label>Share-page link for the result (optional)<input type="url" name="share-url" placeholder="https://factscope-api.onrender.com/s/..."></label>
+        <label class="check-row"><input type="checkbox" name="content-confirmation" value="confirmed" required> I have not pasted private page content, personal information, or sensitive URLs into this form.</label>
+        <button class="btn btn-primary" type="submit">Submit feedback</button>
+      </form>
+    </div>
+  </section>
+</main>
+<footer class="footer"><div class="container footer-grid"><div><a class="brand" href="index.html"><img src="assets/factscope-logo.svg" alt="" width="28" height="28"><span>FactScope</span></a><p>A verification assistant for the open web.</p></div><div><strong>Product</strong><a href="methodology.html">Methodology</a><a href="changelog.html">Changelog</a><a href="status.html">Service status</a></div><div><strong>Help</strong><a href="support.html">Support</a><a href="privacy.html">Privacy</a><a href="mailto:factscope@gmail.com">Contact</a></div><p class="footer-copy">© 2025–2026 FactScope · AGPL-3.0</p></div></footer>
+<script src="site.js"></script>
+</body>
+</html>
