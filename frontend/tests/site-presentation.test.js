@@ -5,7 +5,7 @@ const path = require('node:path');
 const site = path.join(__dirname, '..', 'site');
 const pages = [
   'index.html', 'methodology.html', 'support.html',
-  'changelog.html', 'status.html', 'privacy.html',
+  'changelog.html', 'status.html', 'privacy.html', 'beta-thanks.html',
 ];
 
 for (const page of pages) {
@@ -35,6 +35,7 @@ assert.match(index, /data-demo-target="recovery-demo"/);
 assert.match(index, /id="beta-study"/);
 assert.match(index, /name="factscope-beta-study"/);
 assert.match(index, /data-netlify="true"/);
+assert.match(index, /action="\/beta-thanks\.html"/);
 assert.match(index, /No positive review or public promotion expected/i);
 assert.doesNotMatch(index, /unpaid|interview/i);
 assert.match(index, /Everyone who signs up can participate/i);
