@@ -916,7 +916,7 @@ def _build_factual_evidence_assessment(
         elif coverage_breadth in {"partial", "limited"}:
             summary = "Matching coverage was found for some checked claims, while other claims still lack corroborating evidence."
         elif context_breadth != "none":
-            summary = "Matching coverage and useful background were found, but they do not confirm every detail of the checked claims."
+            summary = "Broader reporting and background context were found, but they do not directly confirm or contradict the checked claims."
         else:
             summary = "No useful external coverage was found for the checked claims."
 
